@@ -221,8 +221,12 @@ impl Parser {
                     let value = self.parse_expression()?;
                     if self.match_token(&Token::Semicolon) {}
                     Stmt::Assign { name, expr: value }
+                } else if let Expr::Get { object, name } = expr {
+                    let value = self.parse_expression()?;
+                    if self.match_token(&Token::Semicolon) {}
+                    Stmt::Expr(Expr::Set { object, name, value: Box::new(value) })
                 } else {
-                    return Err("Left side of assignment must be a variable".to_string());
+                    return Err("Left side of assignment must be a variable or property access".to_string());
                 }
             } else {
                 if self.match_token(&Token::Semicolon) {}

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as TokioMutex;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use serde::ser::SerializeMap;
 use serde::de::{MapAccess, Visitor};
 use std::fmt;
+use async_recursion::async_recursion;
 
 pub type Bytecode = Vec<u8>;
 
@@ -42,8 +43,8 @@ pub enum Value {
     Float64(f64),
     Bool(bool),
     Null,
-    Instance(Instance),
-    Promise(Arc<Mutex<PromiseState>>),
+    Instance(Arc<Mutex<Instance>>),
+    Promise(Arc<TokioMutex<PromiseState>>),
 }
 
 impl PartialEq for Value {
@@ -52,7 +53,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Null) => true,
-            (Value::Instance(a), Value::Instance(b)) => a.class == b.class,
+            (Value::Instance(a), Value::Instance(b)) => Arc::ptr_eq(a, b),
             (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             // Compare all integer types by converting to i64
             (Value::Int64(a), Value::Int64(b)) => a == b,
@@ -317,12 +318,13 @@ impl VM {
         Ok(())
     }
 
+    #[async_recursion]
     pub async fn run(&mut self) -> Result<Option<Value>, String> {
         while self.pc < self.memory.len() {
             let opcode = self.memory[self.pc];
             let result = self.execute(opcode).await?;
 
-            if opcode == Opcode::Halt as u8 {
+            if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
                 break;
             }
 
@@ -336,6 +338,7 @@ impl VM {
         Ok(self.stack.last().cloned())
     }
 
+    #[async_recursion]
     async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, String> {
         match opcode {
             x if x == Opcode::Nop as u8 => {}
@@ -410,7 +413,8 @@ impl VM {
                     .clone();
 
                 if let Some(Value::Instance(instance)) = self.stack.pop() {
-                    let value = instance.fields.get(&name)
+                    let instance_lock = instance.lock().unwrap();
+                    let value = instance_lock.fields.get(&name)
                         .cloned()
                         .unwrap_or(Value::Null);
                     self.stack.push(value);
@@ -427,9 +431,10 @@ impl VM {
                     .clone();
 
                 let value = self.stack.pop();
-                if let Some(Value::Instance(mut instance)) = self.stack.pop() {
+                if let Some(Value::Instance(instance)) = self.stack.pop() {
                     if let Some(v) = value {
-                        instance.fields.insert(name, v);
+                        let mut instance_lock = instance.lock().unwrap();
+                        instance_lock.fields.insert(name, v);
                     }
                     self.stack.push(Value::Instance(instance));
                 } else {
@@ -455,7 +460,7 @@ impl VM {
                         class: func_name,
                         fields: class.fields.clone(),
                     };
-                    self.stack.push(Value::Instance(instance));
+                    self.stack.push(Value::Instance(Arc::new(Mutex::new(instance))));
                 } else if let Some(native_f) = self.native_functions.get(&func_name) {
                     let mut args = Vec::new();
                     for _ in 0..arg_count {
@@ -488,7 +493,7 @@ impl VM {
                     self.stack.pop();
                 }
 
-                let promise = Arc::new(Mutex::new(PromiseState::Resolved(Value::Null)));
+                let promise = Arc::new(TokioMutex::new(PromiseState::Resolved(Value::Null)));
                 self.stack.push(Value::Promise(promise));
             }
 
@@ -531,15 +536,37 @@ impl VM {
                 self.pc += 1;
                 let arg_count = self.memory[self.pc] as usize;
 
-                let _method_name = self.strings.get(method_idx)
+                let name = self.strings.get(method_idx)
                     .ok_or(format!("Invalid method index: {}", method_idx))?
                     .clone();
 
+                let mut args = Vec::new();
                 for _ in 0..arg_count {
-                    self.stack.pop();
+                    args.push(self.stack.pop().ok_or("Stack underflow during invoke")?);
                 }
+                args.reverse();
 
-                self.stack.push(Value::Null);
+                if let Some(Value::Instance(instance)) = args.get(0) {
+                    let class_name = instance.lock().unwrap().class.clone();
+                    if let Some(class) = self.classes.get(&class_name).cloned() {
+                        if let Some(method) = class.methods.get(&name) {
+                            let mut vm = VM::new();
+                            vm.load(&method.bytecode, self.strings.clone(), self.classes.values().cloned().collect())?;
+                            vm.native_functions = self.native_functions.clone();
+                            for (i, arg) in args.iter().enumerate() {
+                                vm.locals.insert(i.to_string(), arg.clone());
+                            }
+                            let result = vm.run().await?;
+                            self.stack.push(result.unwrap_or(Value::Null));
+                        } else {
+                            return Err(format!("Method '{}' not found on class '{}'", name, class_name));
+                        }
+                    } else {
+                        return Err(format!("Class '{}' not found", class_name));
+                    }
+                } else {
+                    return Err("Invoke requires an instance".to_string());
+                }
             }
 
             x if x == Opcode::InvokeAsync as u8 => {
@@ -556,7 +583,7 @@ impl VM {
                     self.stack.pop();
                 }
 
-                let promise = Arc::new(Mutex::new(PromiseState::Resolved(Value::Null)));
+                let promise = Arc::new(TokioMutex::new(PromiseState::Resolved(Value::Null)));
                 self.stack.push(Value::Promise(promise));
             }
 
@@ -589,7 +616,7 @@ impl VM {
             }
 
             x if x == Opcode::Return as u8 => {
-                // Return from current frame
+                return Ok(ExecutionResult::Continue);
             }
 
             x if x == Opcode::Jump as u8 => {
@@ -609,9 +636,10 @@ impl VM {
             x if x == Opcode::JumpIfFalse as u8 => {
                 self.pc += 1;
                 let target = self.memory[self.pc] as usize;
-                let should_jump = match self.stack.last() {
-                    Some(Value::Bool(false)) => true,
-                    Some(Value::Null) => true,
+                let condition = self.stack.pop().unwrap_or(Value::Null);
+                let should_jump = match condition {
+                    Value::Bool(false) => true,
+                    Value::Null => true,
                     _ => false,
                 };
                 if should_jump {
@@ -720,17 +748,13 @@ impl VM {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
                 let result = match (&left, &right) {
-                    // String concatenation
                     (Value::String(a), Value::String(b)) => Value::String(a.clone() + b),
-                    // Both integers >= 32 bits - result is i64
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
                         Value::Int64(left.to_arithmetic_int().unwrap() + right.to_arithmetic_int().unwrap())
                     }
-                    // Both floats - result is f64
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
                     }
-                    // Mixed int/float - promote to f64
                     _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
                          (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
                         let left_f = left.to_float().unwrap();
@@ -746,15 +770,12 @@ impl VM {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
                 let result = match (&left, &right) {
-                    // Both integers >= 32 bits - result is i64
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
                         Value::Int64(left.to_arithmetic_int().unwrap() - right.to_arithmetic_int().unwrap())
                     }
-                    // Both floats - result is f64
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
                     }
-                    // Mixed int/float - promote to f64
                     _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
                          (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
                         let left_f = left.to_float().unwrap();
@@ -770,15 +791,12 @@ impl VM {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
                 let result = match (&left, &right) {
-                    // Both integers >= 32 bits - result is i64
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
                         Value::Int64(left.to_arithmetic_int().unwrap() * right.to_arithmetic_int().unwrap())
                     }
-                    // Both floats - result is f64
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
                     }
-                    // Mixed int/float - promote to f64
                     _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
                          (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
                         let left_f = left.to_float().unwrap();
@@ -794,7 +812,6 @@ impl VM {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
                 let result = match (&left, &right) {
-                    // Both integers >= 32 bits - integer division, result is i64
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
                         let r = right.to_arithmetic_int().unwrap();
                         if r != 0 {
@@ -803,7 +820,6 @@ impl VM {
                             Value::Null
                         }
                     }
-                    // Both floats - float division, result is f64
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         let r = right.to_float().unwrap();
                         if r != 0.0 {
@@ -812,7 +828,6 @@ impl VM {
                             Value::Null
                         }
                     }
-                    // Mixed int/float - promote to f64
                     _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
                          (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
                         let r = right.to_float().unwrap();
@@ -856,7 +871,7 @@ impl VM {
 
 pub enum ExecutionResult {
     Continue,
-    Awaiting(Arc<Mutex<PromiseState>>),
+    Awaiting(Arc<TokioMutex<PromiseState>>),
 }
 
 impl Default for VM {
@@ -937,6 +952,7 @@ impl Serialize for Value {
             Value::Bool(b) => serializer.serialize_bool(*b),
             Value::Null => serializer.serialize_none(),
             Value::Instance(inst) => {
+                let inst = inst.lock().unwrap();
                 let mut map = serializer.serialize_map(Some(inst.fields.len()))?;
                 for (k, v) in &inst.fields {
                     map.serialize_entry(k, v)?;
@@ -1015,10 +1031,10 @@ impl<'de> Deserialize<'de> for Value {
                     idx += 1;
                 }
                 fields.insert("length".to_string(), Value::Int64(idx));
-                Ok(Value::Instance(Instance {
+                Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                     class: "Array".to_string(),
                     fields,
-                }))
+                }))))
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
@@ -1027,14 +1043,13 @@ impl<'de> Deserialize<'de> for Value {
                 while let Some((key, value)) = map.next_entry()? {
                     fields.insert(key, value);
                 }
-                Ok(Value::Instance(Instance {
+                Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                     class: "Object".to_string(),
                     fields,
-                }))
+                }))))
             }
         }
 
         deserializer.deserialize_any(ValueVisitor)
     }
 }
-

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use sparkler::{VM, Value, PromiseState};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as TokioMutex;
 use simd_json;
 
 pub fn register_all(vm: &mut VM) {
@@ -51,7 +51,7 @@ fn native_http_get(args: &mut Vec<Value>) -> Result<Value, String> {
     }
     let url = args[0].to_string();
     
-    let promise = Arc::new(Mutex::new(PromiseState::Pending));
+    let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
     let p_clone = promise.clone();
     
     tokio::spawn(async move {
@@ -77,7 +77,7 @@ fn native_http_post(args: &mut Vec<Value>) -> Result<Value, String> {
     let url = args[0].to_string();
     let body = args[1].to_string();
     
-    let promise = Arc::new(Mutex::new(PromiseState::Pending));
+    let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
     let p_clone = promise.clone();
     
     tokio::spawn(async move {
@@ -360,7 +360,7 @@ fn native_reflect_class_name(args: &mut Vec<Value>) -> Result<Value, String> {
     }
     
     match &args[0] {
-        Value::Instance(inst) => Ok(Value::String(inst.class.clone())),
+        Value::Instance(inst) => Ok(Value::String(inst.lock().unwrap().class.clone())),
         _ => Ok(Value::Null),
     }
 }
@@ -373,10 +373,10 @@ fn native_reflect_fields(args: &mut Vec<Value>) -> Result<Value, String> {
     match &args[0] {
         Value::Instance(inst) => {
             use sparkler::vm::Instance;
-            Ok(Value::Instance(Instance {
+            Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                 class: "Object".to_string(),
-                fields: inst.fields.clone(),
-            }))
+                fields: inst.lock().unwrap().fields.clone(),
+            }))))
         }
         _ => Ok(Value::Null),
     }

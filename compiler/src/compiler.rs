@@ -107,10 +107,30 @@ impl Compiler {
                 fields.insert(field.name.clone(), value);
             }
 
+            let mut vm_methods = std::collections::HashMap::new();
+            for method in &c.methods {
+                let mut method_bytecode = Vec::new();
+                
+                // Create a temporary type context for this method if none exists
+                let mut method_ctx = type_context.clone().unwrap_or_else(|| TypeContext::new());
+                method_ctx.current_class = Some(c.name.clone());
+                method_ctx.current_method_params = method.params.iter().map(|p| p.name.clone()).collect();
+                
+                for stmt in &method.body {
+                    self.compile_stmt(stmt, &mut method_bytecode, &mut strings, &classes, Some(&method_ctx))?;
+                }
+                method_bytecode.push(Opcode::Return as u8);
+                
+                vm_methods.insert(method.name.clone(), sparkler::vm::Method {
+                    name: method.name.clone(),
+                    bytecode: method_bytecode,
+                });
+            }
+
             vm_classes.push(Class {
                 name: c.name.clone(),
                 fields,
-                methods: std::collections::HashMap::new(),
+                methods: vm_methods,
             });
         }
 
@@ -155,11 +175,47 @@ impl Compiler {
                 bytecode.push(name_idx as u8);
             }
             Stmt::Assign { name, expr } => {
-                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
-                let name_idx = strings.len();
-                strings.push(name.clone());
-                bytecode.push(Opcode::StoreLocal as u8);
-                bytecode.push(name_idx as u8);
+                let mut handled = false;
+                if let Some(ctx) = type_context {
+                    // Check if it's a parameter
+                    if let Some(pos) = ctx.current_method_params.iter().position(|p| p == name) {
+                        self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                        let name_idx = strings.len();
+                        strings.push((pos + 1).to_string());
+                        bytecode.push(Opcode::StoreLocal as u8);
+                        bytecode.push(name_idx as u8);
+                        handled = true;
+                    } else if let Some(current_class_name) = &ctx.current_class {
+                        if let Some(class_info) = ctx.get_class(current_class_name) {
+                            if class_info.fields.contains_key(name) {
+                                // Field assignment: self.field = expr
+                                // Load self (index 0)
+                                let self_name_idx = strings.len();
+                                strings.push("0".to_string());
+                                bytecode.push(Opcode::LoadLocal as u8);
+                                bytecode.push(self_name_idx as u8);
+                                
+                                // Compile value
+                                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                                
+                                // SetProperty
+                                let field_name_idx = strings.len();
+                                strings.push(name.clone());
+                                bytecode.push(Opcode::SetProperty as u8);
+                                bytecode.push(field_name_idx as u8);
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+
+                if !handled {
+                    self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                    let name_idx = strings.len();
+                    strings.push(name.clone());
+                    bytecode.push(Opcode::StoreLocal as u8);
+                    bytecode.push(name_idx as u8);
+                }
             }
             Stmt::Return(expr) => {
                 if let Some(e) = expr {
@@ -357,6 +413,45 @@ impl Compiler {
                 }
             }
             Expr::Variable(name) => {
+                if let Some(ctx) = type_context {
+                    if let Some(current_class_name) = &ctx.current_class {
+                        if let Some(class_info) = ctx.get_class(current_class_name) {
+                            if class_info.fields.contains_key(name) {
+                                // Field access: self.field
+                                // Load self (index 0)
+                                let self_name_idx = strings.len();
+                                strings.push("0".to_string());
+                                bytecode.push(Opcode::LoadLocal as u8);
+                                bytecode.push(self_name_idx as u8);
+                                
+                                // GetProperty
+                                let field_name_idx = strings.len();
+                                strings.push(name.clone());
+                                bytecode.push(Opcode::GetProperty as u8);
+                                bytecode.push(field_name_idx as u8);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    
+                    // Handle parameters and 'self' mapping
+                    if let Some(pos) = ctx.current_method_params.iter().position(|p| p == name) {
+                        let idx = strings.len();
+                        strings.push((pos + 1).to_string()); // Parameters start at index 1
+                        bytecode.push(Opcode::LoadLocal as u8);
+                        bytecode.push(idx as u8);
+                        return Ok(());
+                    }
+
+                    if name == "self" {
+                        let idx = strings.len();
+                        strings.push("0".to_string());
+                        bytecode.push(Opcode::LoadLocal as u8);
+                        bytecode.push(idx as u8);
+                        return Ok(());
+                    }
+                }
+
                 let idx = strings.len();
                 strings.push(name.clone());
                 bytecode.push(Opcode::LoadLocal as u8);

@@ -55,6 +55,7 @@ impl Type {
         match (self, other) {
             (Type::Null, Type::Optional(_)) => true,
             (Type::Null, Type::Promise(_)) => true,
+            (inner, Type::Optional(target)) => inner.is_assignable_to(target),
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
             (a, b) if a == b => true,
             (Type::Int, Type::Float) => true,
@@ -135,6 +136,7 @@ pub struct TypeContext {
     pub current_class: Option<String>,
     pub current_method_return: Option<Type>,
     pub current_async_inner_return: Option<Type>,
+    pub current_method_params: Vec<String>,
     pub imports: Vec<String>,
     pub errors: Vec<TypeError>,
 }
@@ -155,6 +157,7 @@ impl TypeContext {
             current_class: None,
             current_method_return: None,
             current_async_inner_return: None,
+            current_method_params: Vec::new(),
             imports: Vec::new(),
             errors: Vec::new(),
         };
@@ -705,6 +708,13 @@ impl TypeChecker {
             Expr::Variable(name) => {
                 if let Some(var_info) = self.context.get_variable(name) {
                     var_info.type_name.clone()
+                } else if let Some(current_class) = &self.context.current_class {
+                    if let Some(class_info) = self.context.get_class(current_class) {
+                        if let Some(field_type) = class_info.fields.get(name) {
+                            return field_type.type_name.clone();
+                        }
+                    }
+                    Type::Unknown
                 } else if self.context.get_enum(name).is_some() {
                     // Enum type access
                     Type::Enum(name.clone())
