@@ -184,6 +184,15 @@ impl Parser {
             return Ok(None);
         }
 
+        let mut is_native = false;
+        let mut is_async = false;
+
+        while self.check(&Token::Native) || self.check(&Token::Async) {
+            if self.match_token(&Token::Native) { is_native = true; }
+            else if self.match_token(&Token::Async) { is_async = true; }
+            self.skip_newlines();
+        }
+
         let stmt = if self.match_token(&Token::Module) {
             self.parse_module()?
         } else if self.match_token(&Token::Import) {
@@ -192,22 +201,8 @@ impl Parser {
             self.parse_class()?
         } else if self.match_token(&Token::Enum) {
             self.parse_enum()?
-        } else if self.match_token(&Token::Native) {
-            let is_async = self.match_token(&Token::Async);
-            if self.match_token(&Token::Fn) {
-                self.parse_function_ext(false, is_async, true)?
-            } else {
-                return Err("Expected 'fn' after 'native'".to_string());
-            }
-        } else if self.match_token(&Token::Async) {
-            let is_native = self.match_token(&Token::Native);
-            if self.match_token(&Token::Fn) {
-                self.parse_function_ext(false, true, is_native)?
-            } else {
-                return Err("Expected 'fn' after 'async'".to_string());
-            }
         } else if self.match_token(&Token::Fn) {
-            self.parse_function_ext(false, false, false)?
+            self.parse_function_ext(false, is_async, is_native)?
         } else if self.match_token(&Token::Let) {
             self.parse_let()?
         } else if self.match_token(&Token::Return) {
@@ -299,10 +294,17 @@ impl Parser {
 
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
-            let is_private = self.match_token(&Token::Private);
-            let is_native = self.match_token(&Token::Native);
-            let is_async = self.match_token(&Token::Async);
+            let mut is_private = false;
+            let mut is_native = false;
+            let mut is_async = false;
+
             self.skip_newlines();
+            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) {
+                if self.match_token(&Token::Private) { is_private = true; }
+                else if self.match_token(&Token::Native) { is_native = true; }
+                else if self.match_token(&Token::Async) { is_async = true; }
+                self.skip_newlines();
+            }
 
             if self.match_token(&Token::Fn) {
                 let method = self.parse_method(is_private, is_async, is_native)?;
@@ -970,7 +972,14 @@ impl Parser {
             Token::String(s) => self.parse_interpolated_text(s),
             Token::Int(n) => Ok(Expr::Literal(Literal::Int(n))),
             Token::Float(n) => Ok(Expr::Literal(Literal::Float(n))),
-            Token::TypeBool => Ok(Expr::Literal(Literal::Bool(true))),
+            Token::Null => Ok(Expr::Literal(Literal::Null)),
+            Token::LParen => {
+                let expr = self.parse_expression()?;
+                if !self.match_token(&Token::RParen) {
+                    return Err("Expected ')' after expression".to_string());
+                }
+                Ok(expr)
+            },
             Token::Identifier(name) => {
                 let mut full_name = name;
                 while self.match_token(&Token::DoubleColon) {
