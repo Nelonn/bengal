@@ -116,6 +116,123 @@ impl Compiler {
                     bytecode[else_jump[0]] = (else_target & 0xFF) as u8;
                 }
             }
+            Stmt::For { var_name, range, body } => {
+                // Compile range expression
+                if let Expr::Range { start, end } = range.as_ref() {
+                    // Check if we can determine direction at compile time
+                    let is_descending = match (start.as_ref(), end.as_ref()) {
+                        (Expr::Literal(Literal::Int(start_val)), Expr::Literal(Literal::Int(end_val))) => {
+                            start_val > end_val
+                        }
+                        _ => false, // Default to ascending for non-literal ranges
+                    };
+
+                    // Compile start value
+                    self.compile_expr(start, bytecode, strings, classes)?;
+                    
+                    // Store as iterator
+                    let iter_idx = strings.len();
+                    strings.push(format!("__for_iter_{}", var_name));
+                    bytecode.push(Opcode::StoreLocal as u8);
+                    bytecode.push(iter_idx as u8);
+
+                    // Compile end value
+                    self.compile_expr(end, bytecode, strings, classes)?;
+                    
+                    // Store end
+                    let end_idx = strings.len();
+                    strings.push(format!("__for_end_{}", var_name));
+                    bytecode.push(Opcode::StoreLocal as u8);
+                    bytecode.push(end_idx as u8);
+
+                    // Loop start
+                    let loop_start = bytecode.len();
+
+                    // Load iterator
+                    bytecode.push(Opcode::LoadLocal as u8);
+                    bytecode.push(iter_idx as u8);
+
+                    // Load end
+                    bytecode.push(Opcode::LoadLocal as u8);
+                    bytecode.push(end_idx as u8);
+
+                    // Exit condition depends on direction
+                    if is_descending {
+                        // For descending: exit when iterator < end
+                        bytecode.push(Opcode::JumpIfLess as u8);
+                    } else {
+                        // For ascending: exit when iterator > end
+                        bytecode.push(Opcode::JumpIfGreater as u8);
+                    }
+                    let exit_jump = bytecode.len();
+                    bytecode.push(0);
+
+                    // Store iterator in loop variable
+                    bytecode.push(Opcode::LoadLocal as u8);
+                    bytecode.push(iter_idx as u8);
+
+                    let var_idx = strings.len();
+                    strings.push(var_name.clone());
+                    bytecode.push(Opcode::StoreLocal as u8);
+                    bytecode.push(var_idx as u8);
+
+                    // Compile body
+                    for stmt in body {
+                        self.compile_stmt(stmt, bytecode, strings, classes)?;
+                    }
+
+                    // Increment/decrement iterator
+                    bytecode.push(Opcode::LoadLocal as u8);
+                    bytecode.push(iter_idx as u8);
+
+                    bytecode.push(Opcode::PushInt as u8);
+                    bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                    if is_descending {
+                        bytecode.push(Opcode::Subtract as u8);
+                    } else {
+                        bytecode.push(Opcode::Add as u8);
+                    }
+
+                    bytecode.push(Opcode::StoreLocal as u8);
+                    bytecode.push(iter_idx as u8);
+
+                    // Jump back
+                    bytecode.push(Opcode::Jump as u8);
+                    let jump_back = bytecode.len();
+                    bytecode.push(0);
+
+                    // Fix up jumps
+                    let exit_pos = bytecode.len();
+                    bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
+                    bytecode[jump_back] = (loop_start & 0xFF) as u8;
+                }
+            }
+            Stmt::While { condition, body } => {
+                let _loop_start = bytecode.len();
+
+                // Compile condition
+                self.compile_expr(condition, bytecode, strings, classes)?;
+
+                bytecode.push(Opcode::JumpIfFalse as u8);
+                let exit_jump = bytecode.len();
+                bytecode.push(0); // placeholder
+
+                // Compile body
+                for stmt in body {
+                    self.compile_stmt(stmt, bytecode, strings, classes)?;
+                }
+
+                // Jump back to start
+                bytecode.push(Opcode::Jump as u8);
+                let jump_back_pos = bytecode.len();
+                bytecode.push(0);
+
+                // Exit position - fix up jumps
+                let exit_pos = bytecode.len();
+                bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
+                bytecode[jump_back_pos] = (exit_pos & 0xFF) as u8;
+            }
         }
         Ok(())
     }
@@ -204,10 +321,6 @@ impl Compiler {
                     bytecode.push(method_idx as u8);
                     bytecode.push((args.len() + 1) as u8);
                 }
-
-                for _ in args {
-                    bytecode.push(Opcode::Pop as u8);
-                }
             }
             Expr::Get { object, name } => {
                 self.compile_expr(object, bytecode, strings, classes)?;
@@ -240,6 +353,11 @@ impl Compiler {
                 }
                 bytecode.push(Opcode::Concat as u8);
                 bytecode.push(parts.len() as u8);
+            }
+            Expr::Range { start: _, end: _ } => {
+                // Range expressions are only used in for loops and handled specially
+                // This should not be reached during normal compilation
+                return Err("Range expression outside of for loop".to_string());
             }
         }
         Ok(())
@@ -280,6 +398,8 @@ pub enum Opcode {
     Jump = 0x50,
     JumpIfTrue = 0x51,
     JumpIfFalse = 0x52,
+    JumpIfGreater = 0x53,
+    JumpIfLess = 0x54,
 
     Equal = 0x60,
     NotEqual = 0x61,
@@ -287,6 +407,12 @@ pub enum Opcode {
     Or = 0x63,
     Not = 0x64,
     Concat = 0x65,
+    Add = 0x66,
+    Subtract = 0x67,
+    Multiply = 0x68,
+    Divide = 0x69,
+    Greater = 0x6A,
+    Less = 0x6B,
 
     Pop = 0x70,
 

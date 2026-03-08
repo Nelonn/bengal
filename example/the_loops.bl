@@ -1,0 +1,13 @@
+import std::io
+
+for (i in 1..5) {
+    println(i)
+}
+
+for (i in 10..5) {
+    println(i)
+}
+
+while (true) {
+    println("goida!")
+}
