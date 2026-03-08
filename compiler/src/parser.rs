@@ -406,12 +406,11 @@ impl Parser {
             return Err("Expected '}' to close if body".to_string());
         }
 
-        let else_branch = if self.match_token(&Token::Fn) && {
-            false
-        } {
-            None
-        } else if self.peek() == &Token::Identifier("else".to_string()) {
-            None
+        let else_branch = if self.match_token(&Token::Else) {
+            if !self.match_token(&Token::LBrace) {
+                return Err("Expected '{' for else body".to_string());
+            }
+            Some(self.parse_block()?)
         } else {
             None
         };
