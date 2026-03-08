@@ -1,25 +1,71 @@
 use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, BinaryOp, UnaryOp, InterpPart};
 use crate::lexer::Lexer;
+use crate::resolver::ModuleResolver;
 
 pub type Bytecode = sparkler::executor::Bytecode;
 
 pub struct Compiler {
     source: String,
+    source_path: Option<String>,
+}
+
+pub struct CompilerOptions {
+    pub enable_type_checking: bool,
+    pub search_paths: Vec<String>,
+}
+
+impl Default for CompilerOptions {
+    fn default() -> Self {
+        Self {
+            enable_type_checking: true,
+            search_paths: vec!["std".to_string()],
+        }
+    }
 }
 
 impl Compiler {
     pub fn new(source: &str) -> Self {
         Self {
             source: source.to_string(),
+            source_path: None,
+        }
+    }
+
+    pub fn with_path(source: &str, path: &str) -> Self {
+        Self {
+            source: source.to_string(),
+            source_path: Some(path.to_string()),
         }
     }
 
     pub fn compile(&self) -> Result<Bytecode, String> {
+        self.compile_with_options(&CompilerOptions::default())
+    }
+
+    pub fn compile_with_options(&self, options: &CompilerOptions) -> Result<Bytecode, String> {
         let mut lexer = Lexer::new(&self.source);
         let tokens = lexer.tokenize()?;
 
         let mut parser = Parser::new(tokens);
         let statements = parser.parse()?;
+
+        if options.enable_type_checking {
+            let mut resolver = ModuleResolver::new();
+            
+            for path in &options.search_paths {
+                if let Ok(full_path) = std::path::PathBuf::from(path).canonicalize() {
+                    resolver.add_search_path(full_path);
+                }
+            }
+
+            match resolver.build_type_context(&statements) {
+                Ok(_ctx) => {
+                }
+                Err(e) => {
+                    return Err(format!("Type checking failed:\n{}", e));
+                }
+            }
+        }
 
         self.generate_code(&statements)
     }
@@ -49,9 +95,19 @@ impl Compiler {
 
     fn compile_stmt(&self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef]) -> Result<(), String> {
         match stmt {
+            Stmt::Module { .. } => {
+                // Module declaration is currently a no-op for bytecode generation
+                // It can be used for module resolution and namespacing in the future
+            }
             Stmt::Import { .. } => {
+                // Import handled during type checking
             }
             Stmt::Class(_) => {
+                // Class definitions are handled during type checking
+            }
+            Stmt::Function(_) => {
+                // Function definitions are handled during type checking
+                // Runtime function calls are handled via the Call opcode
             }
             Stmt::Let { name, expr } => {
                 self.compile_expr(expr, bytecode, strings, classes)?;
@@ -84,7 +140,7 @@ impl Compiler {
 
                 let mut else_jump = Vec::new();
                 if else_branch.is_some() {
-                    bytecode.push(Opcode::JumpIfTrue as u8);
+                    bytecode.push(Opcode::JumpIfFalse as u8);
                     else_jump.push(bytecode.len());
                     bytecode.push(0);
                 } else {
@@ -165,6 +221,10 @@ impl Compiler {
                     }
                     BinaryOp::And => bytecode.push(Opcode::And as u8),
                     BinaryOp::Or => bytecode.push(Opcode::Or as u8),
+                    BinaryOp::Add => bytecode.push(Opcode::Add as u8),
+                    BinaryOp::Subtract => bytecode.push(Opcode::Subtract as u8),
+                    BinaryOp::Multiply => bytecode.push(Opcode::Multiply as u8),
+                    BinaryOp::Divide => bytecode.push(Opcode::Divide as u8),
                 }
             }
             Expr::Unary { op, expr } => {
@@ -287,6 +347,11 @@ pub enum Opcode {
     Or = 0x63,
     Not = 0x64,
     Concat = 0x65,
+
+    Add = 0x66,
+    Subtract = 0x67,
+    Multiply = 0x68,
+    Divide = 0x69,
 
     Pop = 0x70,
 

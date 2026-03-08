@@ -2,8 +2,10 @@ use crate::lexer::Token;
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    Module { path: Vec<String> },
     Import { path: Vec<String> },
     Class(ClassDef),
+    Function(FunctionDef),
     Let { name: String, expr: Expr },
     Assign { name: String, expr: Expr },
     Return(Option<Expr>),
@@ -12,6 +14,15 @@ pub enum Stmt {
 }
 
 pub type Block = Vec<Stmt>;
+
+#[derive(Debug, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Option<String>,
+    pub return_optional: bool,
+    pub body: Block,
+}
 
 #[derive(Debug, Clone)]
 pub struct ClassDef {
@@ -71,6 +82,10 @@ pub enum BinaryOp {
     NotEqual,
     And,
     Or,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,6 +111,10 @@ impl Parser {
 
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+    }
+
+    fn peek_next(&self) -> &Token {
+        self.tokens.get(self.pos + 1).unwrap_or(&Token::Eof)
     }
 
     fn advance(&mut self) -> Token {
@@ -142,18 +161,20 @@ impl Parser {
             return Ok(None);
         }
 
-        let stmt = if self.match_token(&Token::Import) {
+        let stmt = if self.match_token(&Token::Module) {
+            self.parse_module()?
+        } else if self.match_token(&Token::Import) {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
             self.parse_class()?
+        } else if self.match_token(&Token::Fn) {
+            self.parse_function()?
         } else if self.match_token(&Token::Let) {
             self.parse_let()?
         } else if self.match_token(&Token::Return) {
             self.parse_return()?
         } else if self.match_token(&Token::If) {
             self.parse_if()?
-        } else if self.match_token(&Token::Fn) {
-            return Err("Unexpected 'fn' outside of class".to_string());
         } else if self.match_token(&Token::Private) {
             return Err("Unexpected 'private' keyword".to_string());
         } else {
@@ -204,6 +225,29 @@ impl Parser {
         Ok(Stmt::Import { path })
     }
 
+    fn parse_module(&mut self) -> Result<Stmt, String> {
+        let mut path = Vec::new();
+
+        loop {
+            if let Token::Identifier(part) = self.advance() {
+                path.push(part);
+            } else {
+                return Err("Expected identifier in module path".to_string());
+            }
+
+            if self.match_token(&Token::Dot) {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if self.match_token(&Token::Semicolon) {}
+        self.skip_newlines();
+
+        Ok(Stmt::Module { path })
+    }
+
     fn parse_class(&mut self) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
@@ -237,6 +281,42 @@ impl Parser {
         }
 
         Ok(Stmt::Class(ClassDef { name, fields, methods }))
+    }
+
+    fn parse_function(&mut self) -> Result<Stmt, String> {
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return Err("Expected function name".to_string()),
+        };
+
+        if !self.match_token(&Token::LParen) {
+            return Err("Expected '(' after function name".to_string());
+        }
+
+        let params = self.parse_params()?;
+
+        if !self.match_token(&Token::RParen) {
+            return Err("Expected ')' after parameters".to_string());
+        }
+
+        let (return_type, return_optional) = if self.match_token(&Token::Colon) {
+            let (type_name, optional) = self.parse_type()?;
+            (Some(type_name), optional)
+        } else {
+            (None, false)
+        };
+
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' to start function body".to_string());
+        }
+
+        let body = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close function".to_string());
+        }
+
+        Ok(Stmt::Function(FunctionDef { name, params, return_type, return_optional, body }))
     }
 
     fn parse_field(&mut self, private: bool) -> Result<Field, String> {
@@ -312,10 +392,52 @@ impl Parser {
             return Ok(params);
         }
 
+        let mut current_type: Option<String> = None;
+
         loop {
+            if self.check(&Token::RParen) {
+                break;
+            }
+
+            let mut param_type: Option<String> = None;
+
+            let is_type_start = (self.check(&Token::TypeInt) || self.check(&Token::TypeFloat) ||
+               self.check(&Token::TypeStr) || self.check(&Token::TypeBool)) &&
+               matches!(self.peek_next(), Token::Identifier(_));
+
+            let is_class_type = !is_type_start && matches!(self.peek(), Token::Identifier(_)) &&
+               matches!(self.peek_next(), Token::Identifier(_));
+
+            if is_type_start || is_class_type {
+                let type_token = self.advance();
+                let potential_type = match &type_token {
+                    Token::TypeInt => Some("int".to_string()),
+                    Token::TypeFloat => Some("float".to_string()),
+                    Token::TypeStr => Some("str".to_string()),
+                    Token::TypeBool => Some("bool".to_string()),
+                    Token::Identifier(t) => Some(t.clone()),
+                    _ => None,
+                };
+
+                if potential_type.is_some() && matches!(self.peek(), Token::Identifier(_)) {
+                    param_type = potential_type;
+                    current_type = param_type.clone();
+                } else {
+                    if let Token::Identifier(name) = type_token {
+                        param_type = current_type.clone();
+                        params.push(Param { name, type_name: param_type });
+
+                        if !self.match_token(&Token::Comma) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+
             let name = match self.advance() {
                 Token::Identifier(n) => n,
-                _ => return Err("Expected parameter name".to_string()),
+                t => return Err(format!("Expected parameter name, got {:?}", t)),
             };
 
             let type_name = if self.match_token(&Token::Colon) {
@@ -325,10 +447,10 @@ impl Parser {
                     Token::TypeStr => Some("str".to_string()),
                     Token::TypeBool => Some("bool".to_string()),
                     Token::Identifier(t) => Some(t),
-                    _ => return Err("Expected parameter type".to_string()),
+                    t => return Err(format!("Expected parameter type, got {:?}", t)),
                 }
             } else {
-                None
+                param_type.or_else(|| current_type.clone())
             };
 
             params.push(Param { name, type_name });
@@ -457,13 +579,61 @@ impl Parser {
     }
 
     fn parse_equality(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_unary()?;
+        let mut expr = self.parse_additive()?;
 
         loop {
             if self.match_token(&Token::BangEqual) {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::NotEqual,
+                    right: Box::new(self.parse_additive()?),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_additive(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_multiplicative()?;
+
+        loop {
+            if self.match_token(&Token::Plus) {
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Add,
+                    right: Box::new(self.parse_multiplicative()?),
+                };
+            } else if self.match_token(&Token::Minus) {
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Subtract,
+                    right: Box::new(self.parse_multiplicative()?),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_unary()?;
+
+        loop {
+            if self.match_token(&Token::Star) {
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Multiply,
+                    right: Box::new(self.parse_unary()?),
+                };
+            } else if self.match_token(&Token::Slash) {
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Divide,
                     right: Box::new(self.parse_unary()?),
                 };
             } else {

@@ -6,6 +6,7 @@ pub enum Token {
     Float(f64),
 
     Import,
+    Module,
     Class,
     Fn,
     Let,
@@ -24,6 +25,11 @@ pub enum Token {
     Bang,
     BangEqual,
     Question,
+
+    Plus,
+    Minus,
+    Star,
+    Slash,
 
     LParen,
     RParen,
@@ -130,6 +136,19 @@ impl Lexer {
                 }
             }
             '?' => { self.advance(); Ok(Token::Question) }
+            '+' => { self.advance(); Ok(Token::Plus) }
+            '-' => { self.advance(); Ok(Token::Minus) }
+            '*' => { self.advance(); Ok(Token::Star) }
+            '/' => {
+                self.advance();
+                if self.peek() == Some('/') {
+                    // This is a comment, skip it
+                    self.skip_comment();
+                    self.next_token()
+                } else {
+                    Ok(Token::Slash)
+                }
+            }
             '"' => self.read_string(),
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
@@ -165,6 +184,7 @@ impl Lexer {
 
         let token = match s.as_str() {
             "import" => Token::Import,
+            "module" => Token::Module,
             "class" => Token::Class,
             "fn" => Token::Fn,
             "let" => Token::Let,
