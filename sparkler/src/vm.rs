@@ -295,6 +295,65 @@ impl VM {
                 self.stack.push(Value::Bool(result));
             }
 
+            x if x == Opcode::Add as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                    (Value::String(a), Value::String(b)) => Value::String(a + &b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Subtract as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Multiply as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Divide as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => {
+                        if b != 0 {
+                            Value::Int(a / b)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
             x if x == Opcode::Concat as u8 => {
                 self.pc += 1;
                 let count = self.memory[self.pc] as usize;
@@ -375,6 +434,11 @@ pub enum Opcode {
     Or = 0x63,
     Not = 0x64,
     Concat = 0x65,
+
+    Add = 0x66,
+    Subtract = 0x67,
+    Multiply = 0x68,
+    Divide = 0x69,
 
     Pop = 0x70,
 
