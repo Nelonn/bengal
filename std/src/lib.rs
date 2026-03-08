@@ -6,7 +6,7 @@ pub mod sys;
 pub mod fs;
 pub mod ffi;
 
-use sparkler::VM;
+use sparkler::{VM, Value};
 
 pub fn register_all(vm: &mut VM) {
     // Global built-ins
@@ -35,6 +35,6 @@ pub fn register_all(vm: &mut VM) {
 
     // Fallback function that throws an error
     vm.register_fallback(|_args| {
-        Err("Native method not available or disabled by runtime".to_string())
+        Err(Value::String("Native method not available or disabled by runtime".to_string()))
     });
 }

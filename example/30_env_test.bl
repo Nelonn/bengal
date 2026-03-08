@@ -2,9 +2,12 @@ import std::sys
 
 println("PATH: " + std::sys::env("PATH"))
 
+native fn exception_test()
+
 // Testing try-catch
 try {
     println("Entering try block")
+    exception_test()
     throw "Manual exception"
 } catch (e) {
     println("Caught: " + e)

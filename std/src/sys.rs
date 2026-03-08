@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use sparkler::vm::Instance;
 use sparkler::Value;
 
-pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, String> {
+pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
     if !args.is_empty() {
         if let Value::String(key) = &args[0] {
             return match std::env::var(key) {
@@ -13,7 +13,7 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, String> {
         } else if let Value::Null = &args[0] {
             // Fall through to returning all env vars
         } else {
-            return Err("env requires a string argument or null".to_string());
+            return Err(Value::String("env requires a string argument or null".to_string()));
         }
     }
 

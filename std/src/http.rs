@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use sparkler::{Value, PromiseState};
 
-pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, String> {
+pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     if args.is_empty() {
-        return Err("http_get requires URL argument".to_string());
+        return Err(Value::String("http_get requires URL argument".to_string()));
     }
     let url = args[0].to_string();
     
@@ -28,9 +28,9 @@ pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, String> {
     Ok(Value::Promise(promise))
 }
 
-pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, String> {
+pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     if args.len() < 2 {
-        return Err("http_post requires URL and body arguments".to_string());
+        return Err(Value::String("http_post requires URL and body arguments".to_string()));
     }
     let url = args[0].to_string();
     let body = args[1].to_string();

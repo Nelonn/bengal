@@ -271,7 +271,7 @@ pub struct Method {
     pub bytecode: Vec<u8>,
 }
 
-pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, String>;
+pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, Value>;
 
 pub struct VM {
     memory: Bytecode,
@@ -336,10 +336,10 @@ impl VM {
                     if let Some(handler) = self.exception_handlers.pop() {
                         self.pc = handler.catch_pc;
                         self.stack.truncate(handler.stack_depth);
-                        self.stack.push(Value::String(e));
+                        self.stack.push(e);
                         continue;
                     } else {
-                        return Err(e);
+                        return Err(e.to_string());
                     }
                 }
             };
@@ -359,7 +359,7 @@ impl VM {
     }
 
     #[async_recursion]
-    async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, String> {
+    async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
         match opcode {
             x if x == Opcode::Nop as u8 => {}
 
@@ -367,7 +367,7 @@ impl VM {
                 self.pc += 1;
                 let idx = self.memory[self.pc] as usize;
                 let s = self.strings.get(idx)
-                    .ok_or(format!("Invalid string index: {}", idx))?
+                    .ok_or(Value::String(format!("Invalid string index: {}", idx)))?
                     .clone();
                 self.stack.push(Value::String(s));
             }
@@ -376,7 +376,7 @@ impl VM {
                 self.pc += 1;
                 let bytes: [u8; 8] = self.memory[self.pc..self.pc + 8]
                     .try_into()
-                    .map_err(|_| "Invalid int encoding")?;
+                    .map_err(|_| Value::String("Invalid int encoding".to_string()))?;
                 let n = i64::from_le_bytes(bytes);
                 self.stack.push(Value::Int64(n));
                 self.pc += 7;
@@ -386,7 +386,7 @@ impl VM {
                 self.pc += 1;
                 let bytes: [u8; 8] = self.memory[self.pc..self.pc + 8]
                     .try_into()
-                    .map_err(|_| "Invalid float encoding")?;
+                    .map_err(|_| Value::String("Invalid float encoding".to_string()))?;
                 let n = f64::from_le_bytes(bytes);
                 self.stack.push(Value::Float64(n));
                 self.pc += 7;
@@ -406,7 +406,7 @@ impl VM {
                 self.pc += 1;
                 let idx = self.memory[self.pc] as usize;
                 let name = self.strings.get(idx)
-                    .ok_or(format!("Invalid string index: {}", idx))?
+                    .ok_or(Value::String(format!("Invalid string index: {}", idx)))?
                     .clone();
                 let value = self.locals.get(&name)
                     .cloned()
@@ -418,7 +418,7 @@ impl VM {
                 self.pc += 1;
                 let idx = self.memory[self.pc] as usize;
                 let name = self.strings.get(idx)
-                    .ok_or(format!("Invalid string index: {}", idx))?
+                    .ok_or(Value::String(format!("Invalid string index: {}", idx)))?
                     .clone();
                 if let Some(value) = self.stack.pop() {
                     self.locals.insert(name, value);
@@ -429,7 +429,7 @@ impl VM {
                 self.pc += 1;
                 let idx = self.memory[self.pc] as usize;
                 let name = self.strings.get(idx)
-                    .ok_or(format!("Invalid string index: {}", idx))?
+                    .ok_or(Value::String(format!("Invalid string index: {}", idx)))?
                     .clone();
 
                 if let Some(Value::Instance(instance)) = self.stack.pop() {
@@ -439,7 +439,7 @@ impl VM {
                         .unwrap_or(Value::Null);
                     self.stack.push(value);
                 } else {
-                    return Err("Expected instance for property get".to_string());
+                    return Err(Value::String("Expected instance for property get".to_string()));
                 }
             }
 
@@ -447,7 +447,7 @@ impl VM {
                 self.pc += 1;
                 let idx = self.memory[self.pc] as usize;
                 let name = self.strings.get(idx)
-                    .ok_or(format!("Invalid string index: {}", idx))?
+                    .ok_or(Value::String(format!("Invalid string index: {}", idx)))?
                     .clone();
 
                 let value = self.stack.pop();
@@ -458,7 +458,7 @@ impl VM {
                     }
                     self.stack.push(Value::Instance(instance));
                 } else {
-                    return Err("Expected instance for property set".to_string());
+                    return Err(Value::String("Expected instance for property set".to_string()));
                 }
             }
 
@@ -469,7 +469,7 @@ impl VM {
                 let arg_count = self.memory[self.pc] as usize;
 
                 let func_name = self.strings.get(func_idx)
-                    .ok_or(format!("Invalid function index: {}", func_idx))?
+                    .ok_or(Value::String(format!("Invalid function index: {}", func_idx)))?
                     .clone();
 
                 if let Some(class) = self.classes.get(&func_name).cloned() {
@@ -492,7 +492,7 @@ impl VM {
                     let result = native_f(&mut args)?;
                     self.stack.push(result);
                 } else {
-                    return Err(format!("Function not found: {}", func_name));
+                    return Err(Value::String(format!("Function not found: {}", func_name)));
                 }
             }
 
@@ -503,7 +503,7 @@ impl VM {
                 let arg_count = self.memory[self.pc] as usize;
 
                 let _func_name = self.strings.get(func_idx)
-                    .ok_or(format!("Invalid function index: {}", func_idx))?
+                    .ok_or(Value::String(format!("Invalid function index: {}", func_idx)))?
                     .clone();
 
                 for _ in 0..arg_count {
@@ -521,7 +521,7 @@ impl VM {
                 let arg_count = self.memory[self.pc] as usize;
 
                 let name = self.strings.get(name_idx)
-                    .ok_or(format!("Invalid native name index: {}", name_idx))?
+                    .ok_or(Value::String(format!("Invalid native name index: {}", name_idx)))?
                     .clone();
 
                 let mut args = Vec::new();
@@ -539,7 +539,7 @@ impl VM {
                         match &self.fallback_native {
                             Some(f) => f(&mut args)?,
                             None => {
-                                return Err(format!("Native function not found: {}", name));
+                                return Err(Value::String(format!("Native function not found: {}", name)));
                             }
                         }
                     }
@@ -554,12 +554,12 @@ impl VM {
                 let arg_count = self.memory[self.pc] as usize;
 
                 let name = self.strings.get(method_idx)
-                    .ok_or(format!("Invalid method index: {}", method_idx))?
+                    .ok_or(Value::String(format!("Invalid method index: {}", method_idx)))?
                     .clone();
 
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
-                    args.push(self.stack.pop().ok_or("Stack underflow during invoke")?);
+                    args.push(self.stack.pop().ok_or(Value::String("Stack underflow during invoke".to_string()))?);
                 }
                 args.reverse();
 
@@ -568,21 +568,21 @@ impl VM {
                     if let Some(class) = self.classes.get(&class_name).cloned() {
                         if let Some(method) = class.methods.get(&name) {
                             let mut vm = VM::new();
-                            vm.load(&method.bytecode, self.strings.clone(), self.classes.values().cloned().collect())?;
+                            vm.load(&method.bytecode, self.strings.clone(), self.classes.values().cloned().collect()).map_err(|e| Value::String(e))?;
                             vm.native_functions = self.native_functions.clone();
                             for (i, arg) in args.iter().enumerate() {
                                 vm.locals.insert(i.to_string(), arg.clone());
                             }
-                            let result = vm.run().await?;
+                            let result = vm.run().await.map_err(|e| Value::String(e))?;
                             self.stack.push(result.unwrap_or(Value::Null));
                         } else {
-                            return Err(format!("Method '{}' not found on class '{}'", name, class_name));
+                            return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
                         }
                     } else {
-                        return Err(format!("Class '{}' not found", class_name));
+                        return Err(Value::String(format!("Class '{}' not found", class_name)));
                     }
                 } else {
-                    return Err("Invoke requires an instance".to_string());
+                    return Err(Value::String("Invoke requires an instance".to_string()));
                 }
             }
 
@@ -593,7 +593,7 @@ impl VM {
                 let arg_count = self.memory[self.pc] as usize;
 
                 let _method_name = self.strings.get(method_idx)
-                    .ok_or(format!("Invalid method index: {}", method_idx))?
+                    .ok_or(Value::String(format!("Invalid method index: {}", method_idx)))?
                     .clone();
 
                 for _ in 0..arg_count {
@@ -619,16 +619,16 @@ impl VM {
                                     self.stack.push(v.clone());
                                 }
                                 PromiseState::Rejected(e) => {
-                                    return Err(format!("Promise rejected: {}", e));
+                                    return Err(Value::String(format!("Promise rejected: {}", e)));
                                 }
                             }
                         }
                         _ => {
-                            return Err("Can only await Promise values".to_string());
+                            return Err(Value::String("Can only await Promise values".to_string()));
                         }
                     }
                 } else {
-                    return Err("Stack underflow during await".to_string());
+                    return Err(Value::String("Stack underflow during await".to_string()));
                 }
             }
 
@@ -898,14 +898,14 @@ impl VM {
                     self.stack.truncate(handler.stack_depth);
                     self.stack.push(exception);
                 } else {
-                    return Err(format!("Uncaught exception: {}", exception.to_string()));
+                    return Err(Value::String(format!("Uncaught exception: {}", exception.to_string())));
                 }
             }
 
             x if x == Opcode::Halt as u8 => {}
 
             _ => {
-                return Err(format!("Unknown opcode: 0x{:02X}", opcode));
+                return Err(Value::String(format!("Unknown opcode: 0x{:02X}", opcode)));
             }
         }
         Ok(ExecutionResult::Continue)
