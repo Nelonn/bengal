@@ -12,13 +12,21 @@ pub enum Type {
     Str,
     Bool,
     Class(String),
+    Enum(String),
     Optional(Box<Type>),
+    Promise(Box<Type>),
     Null,
     Unknown,
 }
 
 impl Type {
     pub fn from_str(s: &str) -> Self {
+        // Handle optional type suffix
+        if s.ends_with('?') {
+            let inner = s.trim_end_matches('?');
+            return Type::Optional(Box::new(Type::from_str(inner)));
+        }
+        
         match s {
             "int" => Type::Int,
             "float" => Type::Float,
@@ -35,7 +43,9 @@ impl Type {
             Type::Str => "str".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Class(name) => name.clone(),
+            Type::Enum(name) => name.clone(),
             Type::Optional(t) => format!("{}?", t.to_str()),
+            Type::Promise(t) => format!("Promise<{}>", t.to_str()),
             Type::Null => "null".to_string(),
             Type::Unknown => "unknown".to_string(),
         }
@@ -44,9 +54,10 @@ impl Type {
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         match (self, other) {
             (Type::Null, Type::Optional(_)) => true,
+            (Type::Null, Type::Promise(_)) => true,
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
             (a, b) if a == b => true,
-            (Type::Int, Type::Float) => true, // Allow int to float coercion
+            (Type::Int, Type::Float) => true,
             (_, Type::Unknown) => true,
             (Type::Unknown, _) => true,
             _ => false,
@@ -61,6 +72,7 @@ pub struct FunctionSignature {
     pub return_type: Option<Type>,
     pub return_optional: bool,
     pub is_method: bool,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +103,19 @@ pub struct MethodSignature {
     pub return_type: Option<Type>,
     pub return_optional: bool,
     pub private: bool,
+    pub is_async: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: HashMap<String, EnumVariantInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariantInfo {
+    pub name: String,
+    pub value: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,8 +129,10 @@ pub struct TypeContext {
     pub classes: HashMap<String, ClassInfo>,
     pub functions: HashMap<String, FunctionSignature>,
     pub variables: HashMap<String, VariableInfo>,
+    pub enums: HashMap<String, EnumInfo>,
     pub current_class: Option<String>,
     pub current_method_return: Option<Type>,
+    pub current_async_inner_return: Option<Type>,
     pub imports: Vec<String>,
     pub errors: Vec<TypeError>,
 }
@@ -122,15 +149,17 @@ impl TypeContext {
             classes: HashMap::new(),
             functions: HashMap::new(),
             variables: HashMap::new(),
+            enums: HashMap::new(),
             current_class: None,
             current_method_return: None,
+            current_async_inner_return: None,
             imports: Vec::new(),
             errors: Vec::new(),
         };
-        
+
         // Register native classes
         ctx.register_native_classes();
-        
+
         ctx
     }
 
@@ -145,6 +174,7 @@ impl TypeContext {
             return_type: None,
             return_optional: false,
             is_method: false,
+            is_async: false,
         };
 
         let io_println = FunctionSignature {
@@ -156,11 +186,12 @@ impl TypeContext {
             return_type: None,
             return_optional: false,
             is_method: false,
+            is_async: false,
         };
 
         self.functions.insert("print".to_string(), io_print);
         self.functions.insert("println".to_string(), io_println);
-        
+
         // Mark std.io as imported by default for native functions
         self.imports.push("std.io".to_string());
     }
@@ -188,6 +219,7 @@ impl TypeContext {
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
                 return_optional: method.return_optional,
                 private: method.private,
+                is_async: false, // Will be updated when parsing async methods
             });
         }
 
@@ -201,6 +233,45 @@ impl TypeContext {
 
     pub fn add_function(&mut self, name: &str, signature: FunctionSignature) {
         self.functions.insert(name.to_string(), signature);
+    }
+
+    pub fn add_enum(&mut self, enum_def: &crate::parser::EnumDef) {
+        let mut variants = HashMap::new();
+        let mut next_value: i64 = 0;
+
+        for variant in &enum_def.variants {
+            let value = if let Some(expr) = &variant.value {
+                if let Expr::Literal(Literal::Int(n)) = expr {
+                    next_value = *n + 1;
+                    Some(*n)
+                } else {
+                    next_value += 1;
+                    None
+                }
+            } else {
+                let v = Some(next_value);
+                next_value += 1;
+                v
+            };
+
+            variants.insert(variant.name.clone(), EnumVariantInfo {
+                name: variant.name.clone(),
+                value,
+            });
+        }
+
+        self.enums.insert(enum_def.name.clone(), EnumInfo {
+            name: enum_def.name.clone(),
+            variants,
+        });
+    }
+
+    pub fn get_enum(&self, name: &str) -> Option<&EnumInfo> {
+        self.enums.get(name)
+    }
+
+    pub fn get_enum_variant(&self, enum_name: &str, variant_name: &str) -> Option<&EnumVariantInfo> {
+        self.enums.get(enum_name).and_then(|e| e.variants.get(variant_name))
     }
 
     pub fn add_variable(&mut self, name: &str, type_name: Type) {
@@ -284,18 +355,22 @@ impl TypeChecker {
                 Stmt::Class(class) => {
                     self.context.add_class(class);
                 }
+                Stmt::Enum(enum_def) => {
+                    self.context.add_enum(enum_def);
+                }
                 Stmt::Function(func) => {
                     let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
                         name: p.name.clone(),
                         type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
                     }).collect();
-                    
+
                     self.context.add_function(&func.name, FunctionSignature {
                         name: func.name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
                         return_optional: func.return_optional,
                         is_method: false,
+                        is_async: func.is_async,
                     });
                 }
                 Stmt::Import { path: _ } => {
@@ -316,6 +391,9 @@ impl TypeChecker {
             }
             Stmt::Class(class) => {
                 self.check_class(class);
+            }
+            Stmt::Enum(_) => {
+                // Enum definitions are already processed in collect_definitions
             }
             Stmt::Function(func) => {
                 self.check_function(func);
@@ -345,24 +423,31 @@ impl TypeChecker {
                 }
             }
             Stmt::Return(expr) => {
-                if let Some(expected_return) = &self.context.current_method_return.clone() {
+                // For async functions, check against the inner return type
+                let expected_return = if self.context.current_async_inner_return.is_some() {
+                    self.context.current_async_inner_return.clone()
+                } else {
+                    self.context.current_method_return.clone()
+                };
+
+                if let Some(expected) = &expected_return {
                     if let Some(e) = expr {
                         let expr_type = self.infer_expr(e);
-                        if !expr_type.is_assignable_to(expected_return) {
+                        if !expr_type.is_assignable_to(expected) {
                             self.context.add_error(
                                 format!(
                                     "Return type mismatch: expected {}, got {}",
-                                    expected_return.to_str(),
+                                    expected.to_str(),
                                     expr_type.to_str()
                                 ),
                                 0
                             );
                         }
-                    } else if !matches!(expected_return, Type::Null | Type::Unknown) {
+                    } else if !matches!(expected, Type::Null | Type::Unknown) {
                         self.context.add_error(
                             format!(
                                 "Expected return value of type {}, but no value returned",
-                                expected_return.to_str()
+                                expected.to_str()
                             ),
                             0
                         );
@@ -407,9 +492,10 @@ impl TypeChecker {
 
     fn check_function(&mut self, func: &crate::parser::FunctionDef) {
         let old_return = self.context.current_method_return.clone();
-        
+        let old_async_inner = self.context.current_async_inner_return.clone();
+
         // Handle optional return types
-        let return_type = func.return_type.as_ref().map(|t| {
+        let mut return_type = func.return_type.as_ref().map(|t| {
             let ty = Type::from_str(t);
             if func.return_optional {
                 Type::Optional(Box::new(ty))
@@ -417,7 +503,14 @@ impl TypeChecker {
                 ty
             }
         });
-        
+
+        // Async functions return Promise<T> but inner return is T
+        if func.is_async {
+            let inner_type = return_type.clone().unwrap_or(Type::Null);
+            self.context.current_async_inner_return = Some(inner_type.clone());
+            return_type = Some(Type::Promise(Box::new(inner_type)));
+        }
+
         self.context.current_method_return = return_type;
 
         // Add parameters as local variables
@@ -441,13 +534,15 @@ impl TypeChecker {
         }
 
         self.context.current_method_return = old_return;
+        self.context.current_async_inner_return = old_async_inner;
     }
 
     fn check_method(&mut self, method: &Method, class_name: &str) {
         let old_return = self.context.current_method_return.clone();
-        
+        let old_async_inner = self.context.current_async_inner_return.clone();
+
         // Handle optional return types
-        let return_type = method.return_type.as_ref().map(|t| {
+        let mut return_type = method.return_type.as_ref().map(|t| {
             let ty = Type::from_str(t);
             if method.return_optional {
                 Type::Optional(Box::new(ty))
@@ -455,7 +550,14 @@ impl TypeChecker {
                 ty
             }
         });
-        
+
+        // Async methods return Promise<T> but inner return is T
+        if method.is_async {
+            let inner_type = return_type.clone().unwrap_or(Type::Null);
+            self.context.current_async_inner_return = Some(inner_type.clone());
+            return_type = Some(Type::Promise(Box::new(inner_type)));
+        }
+
         self.context.current_method_return = return_type;
 
         // Add parameters as local variables
@@ -483,6 +585,7 @@ impl TypeChecker {
         self.context.variables.remove("self");
 
         self.context.current_method_return = old_return;
+        self.context.current_async_inner_return = old_async_inner;
     }
 
     fn infer_expr(&mut self, expr: &Expr) -> Type {
@@ -499,6 +602,9 @@ impl TypeChecker {
             Expr::Variable(name) => {
                 if let Some(var_info) = self.context.get_variable(name) {
                     var_info.type_name.clone()
+                } else if self.context.get_enum(name).is_some() {
+                    // Enum type access
+                    Type::Enum(name.clone())
                 } else {
                     Type::Unknown
                 }
@@ -584,7 +690,16 @@ impl TypeChecker {
                     let func_sig = self.context.get_function(func_name).cloned();
                     if let Some(ref sig) = func_sig {
                         self.check_function_call(sig, args, func_name);
-                        sig.return_type.clone().unwrap_or(Type::Unknown)
+                        let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
+                        // If calling an async function, return type is Promise<T>
+                        if sig.is_async {
+                            if let Type::Promise(_) = return_type {
+                                // Already a Promise type
+                            } else {
+                                return_type = Type::Promise(Box::new(return_type));
+                            }
+                        }
+                        return_type
                     } else {
                         Type::Unknown
                     }
@@ -595,10 +710,19 @@ impl TypeChecker {
                     if let Type::Class(class_name) = object_type {
                         let method_sig = self.context.get_class(&class_name)
                             .and_then(|c| c.methods.get(name).cloned());
-                        
+
                         if let Some(ref sig) = method_sig {
                             self.check_method_call(sig, args, name, &class_name);
-                            sig.return_type.clone().unwrap_or(Type::Unknown)
+                            let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
+                            // If calling an async method, return type is Promise<T>
+                            if sig.is_async {
+                                if let Type::Promise(_) = return_type {
+                                    // Already a Promise type
+                                } else {
+                                    return_type = Type::Promise(Box::new(return_type));
+                                }
+                            }
+                            return_type
                         } else {
                             self.context.add_error(
                                 format!("Method '{}' not found on class '{}'", name, class_name),
@@ -615,7 +739,7 @@ impl TypeChecker {
             }
             Expr::Get { object, name } => {
                 let object_type = self.infer_expr(object);
-                
+
                 if let Type::Class(class_name) = object_type {
                     if let Some(class_info) = self.context.get_class(&class_name) {
                         if let Some(field_info) = class_info.fields.get(name) {
@@ -623,6 +747,21 @@ impl TypeChecker {
                         } else {
                             self.context.add_error(
                                 format!("Field '{}' not found on class '{}'", name, class_name),
+                                0
+                            );
+                            Type::Unknown
+                        }
+                    } else {
+                        Type::Unknown
+                    }
+                } else if let Type::Enum(enum_name) = object_type {
+                    // Enum variant access - enum variants are integers
+                    if let Some(enum_info) = self.context.get_enum(&enum_name) {
+                        if let Some(_variant) = enum_info.variants.get(name) {
+                            Type::Int  // Enum variants are integers
+                        } else {
+                            self.context.add_error(
+                                format!("Variant '{}' not found on enum '{}'", name, enum_name),
                                 0
                             );
                             Type::Unknown
@@ -673,6 +812,21 @@ impl TypeChecker {
                     }
                 }
                 Type::Str
+            }
+            Expr::Await { expr } => {
+                let inner_type = self.infer_expr(expr);
+                // Await unwraps Promise<T> to T
+                match inner_type {
+                    Type::Promise(t) => *t,
+                    Type::Unknown => Type::Unknown,
+                    _ => {
+                        self.context.add_error(
+                            format!("Can only await Promise values, got {}", inner_type.to_str()),
+                            0
+                        );
+                        Type::Unknown
+                    }
+                }
             }
         }
     }
