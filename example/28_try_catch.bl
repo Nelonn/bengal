@@ -1,0 +1,9 @@
+try {
+    println("Entering try block")
+    throw "Exception!"
+    println("This should not be reached")
+} catch (e) {
+    println("Caught: " + e)
+}
+
+println("Continuing after try-catch")

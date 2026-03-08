@@ -1,0 +1,11 @@
+module std::ffi
+
+class CProc {
+  native fn call(any...): any?
+}
+
+class CLibrary {
+  native fn load(name: str): bool
+
+  native fn getProc(name: str): CProc?
+}

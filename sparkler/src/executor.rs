@@ -1,12 +1,13 @@
-use crate::vm::{VM, Value, PromiseState};
+use crate::vm::{VM, Value, PromiseState, NativeFn, Class};
 
 pub struct Bytecode {
     pub data: Vec<u8>,
     pub strings: Vec<String>,
+    pub classes: Vec<Class>,
 }
 
 pub struct Executor {
-    vm: VM,
+    pub vm: VM,
 }
 
 impl Executor {
@@ -16,13 +17,21 @@ impl Executor {
         }
     }
 
+    pub fn register_native(&mut self, name: &str, f: NativeFn) {
+        self.vm.register_native(name, f);
+    }
+
+    pub fn register_fallback(&mut self, f: NativeFn) {
+        self.vm.register_fallback(f);
+    }
+
     pub async fn run(&mut self, bytecode: Bytecode) -> Result<Option<Value>, String> {
-        self.vm.load(&bytecode.data, bytecode.strings)?;
+        self.vm.load(&bytecode.data, bytecode.strings, bytecode.classes)?;
         self.vm.run().await
     }
 
     pub async fn run_to_completion(&mut self, bytecode: Bytecode) -> Result<Option<Value>, String> {
-        self.vm.load(&bytecode.data, bytecode.strings)?;
+        self.vm.load(&bytecode.data, bytecode.strings, bytecode.classes)?;
         
         loop {
             let result = self.vm.run().await?;

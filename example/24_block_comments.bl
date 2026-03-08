@@ -1,0 +1,24 @@
+// Test file for block comments
+
+/* This is a block comment */
+
+let x = 10  // line comment
+let y = 20  /* inline block comment */
+
+/*
+ * Multi-line block comment
+ * with multiple lines
+ */
+
+let z = x + y
+
+/* Nested /* block */ comment */
+let w = z * 2
+
+println("x = ${x}")
+println("y = ${y}")
+println("z = ${z}")
+println("w = ${w}")
+
+/* Final block comment */
+println("Block comments work!")

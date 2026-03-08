@@ -13,4 +13,4 @@ async fn fetch_example(): str {
 }
 
 print("Async HTTP support is ready!")
-println("Use std.http module for async requests")
+println("Use std::http module for async requests")

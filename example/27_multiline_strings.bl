@@ -1,0 +1,26 @@
+let name = "Bengal"
+let version = 1.0
+
+let multi = """
+    Welcome to ${name}!
+    Version: ${version}
+    
+    This is a multiline string
+    with indentation that should be stripped.
+"""
+
+println(multi)
+
+let no_strip = """one line"""
+println(no_strip)
+
+let first_line_stripped = """
+  first line was empty
+  so this is the new first line
+"""
+println(first_line_stripped)
+
+let complex = """Result of 1 + 2 is ${1 + 2}
+Multiple: ${name} ${version}
+    """
+println(complex)

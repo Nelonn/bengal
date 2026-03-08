@@ -169,24 +169,27 @@ impl ModuleResolver {
             .map(|(name, info)| (name.clone(), info.statements.clone()))
             .collect();
         
-        for (_module_name, statements) in &module_statements {
-            self.register_module_types(statements);
+        for (module_name, statements) in &module_statements {
+            self.register_module_types(module_name, statements);
         }
 
-        // Register native functions from std.io
+        // Register native functions from std::io
         self.register_native_functions();
 
         // Now type check all loaded modules
         for (module_name, statements) in &module_statements {
             let ctx = self.type_context.clone();
             let mut type_checker = TypeChecker::with_context(ctx);
-            if let Err(errors) = type_checker.check(statements) {
-                // Log errors but continue
-                for error in errors {
+            let _ = type_checker.check(statements);
+            
+            // Log errors but continue
+            if type_checker.get_context().has_errors() {
+                for error in type_checker.get_context().get_errors() {
                     eprintln!("Type error in module '{}': {}", module_name, error.message);
                 }
             }
-            // Merge the context back
+            
+            // Merge the context back (including errors)
             self.type_context = type_checker.get_context().clone();
         }
 
@@ -205,11 +208,14 @@ impl ModuleResolver {
         }
     }
 
-    fn register_module_types(&mut self, statements: &[Stmt]) {
+    fn register_module_types(&mut self, module_name: &str, statements: &[Stmt]) {
         for stmt in statements {
             match stmt {
                 Stmt::Class(class) => {
-                    self.type_context.add_class(class);
+                    let mut class_with_module = class.clone();
+                    class_with_module.name = format!("{}::{}", module_name, class.name);
+                    self.type_context.add_class(&class_with_module);
+                    self.type_context.add_class(class); // Also add without module for now
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
@@ -220,13 +226,15 @@ impl ModuleResolver {
                         type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
                     }).collect();
 
-                    self.type_context.add_function(&func.name, FunctionSignature {
-                        name: func.name.clone(),
+                    let full_name = format!("{}::{}", module_name, func.name);
+                    self.type_context.add_function(&full_name, FunctionSignature {
+                        name: full_name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
                         return_optional: func.return_optional,
                         is_method: false,
                         is_async: func.is_async,
+                        is_native: func.is_native,
                     });
                 }
                 _ => {}
@@ -235,7 +243,7 @@ impl ModuleResolver {
     }
 
     fn register_native_functions(&mut self) {
-        // std.io functions
+        // std::io functions
         self.type_context.functions.insert("print".to_string(), FunctionSignature {
             name: "print".to_string(),
             params: vec![ParamSignature {
@@ -246,6 +254,7 @@ impl ModuleResolver {
             return_optional: false,
             is_method: false,
             is_async: false,
+            is_native: true,
         });
 
         self.type_context.functions.insert("println".to_string(), FunctionSignature {
@@ -258,6 +267,7 @@ impl ModuleResolver {
             return_optional: false,
             is_method: false,
             is_async: false,
+            is_native: true,
         });
     }
 

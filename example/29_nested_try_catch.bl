@@ -1,0 +1,12 @@
+try {
+    println("Outer try")
+    try {
+        println("Inner try")
+        throw "Inner Exception"
+    } catch (e) {
+        println("Caught in inner: " + e)
+        throw "Re-thrown: " + e
+    }
+} catch (e) {
+    println("Caught in outer: " + e)
+}

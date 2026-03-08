@@ -9,5 +9,5 @@ for (i in 10..5) {
 }
 
 while (true) {
-    println("goida!")
+    println("Loop!")
 }

@@ -19,8 +19,12 @@ pub enum Token {
     Return,
     Private,
     Null,
+    Native,
     Async,
     Await,
+    Try,
+    Catch,
+    Throw,
 
     TypeInt,
     TypeFloat,
@@ -38,11 +42,15 @@ pub enum Token {
     Star,
     Slash,
 
+    Greater,
+    Less,
+
     LParen,
     RParen,
     LBrace,
     RBrace,
     Colon,
+    DoubleColon,
     Comma,
     Semicolon,
     Dot,
@@ -90,12 +98,39 @@ impl Lexer {
     }
 
     fn skip_comment(&mut self) {
+        // Line comment: //
         if self.peek() == Some('/') && self.peek_next() == Some('/') {
+            self.advance(); // skip first /
+            self.advance(); // skip second /
             while let Some(ch) = self.peek() {
                 if ch == '\n' {
                     break;
                 }
                 self.advance();
+            }
+        }
+        // Block comment: /* */
+        else if self.peek() == Some('/') && self.peek_next() == Some('*') {
+            self.advance(); // skip /
+            self.advance(); // skip *
+            let mut depth = 1;
+            while let Some(ch) = self.peek() {
+                if ch == '/' && self.peek_next() == Some('*') {
+                    // Nested block comment
+                    self.advance();
+                    self.advance();
+                    depth += 1;
+                } else if ch == '*' && self.peek_next() == Some('/') {
+                    // End of block comment
+                    self.advance();
+                    self.advance();
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    self.advance();
+                }
             }
         }
     }
@@ -119,7 +154,15 @@ impl Lexer {
             ')' => { self.advance(); Ok(Token::RParen) }
             '{' => { self.advance(); Ok(Token::LBrace) }
             '}' => { self.advance(); Ok(Token::RBrace) }
-            ':' => { self.advance(); Ok(Token::Colon) }
+            ':' => {
+                self.advance();
+                if self.peek() == Some(':') {
+                    self.advance();
+                    Ok(Token::DoubleColon)
+                } else {
+                    Ok(Token::Colon)
+                }
+            }
             ',' => { self.advance(); Ok(Token::Comma) }
             ';' => { self.advance(); Ok(Token::Semicolon) }
             '.' => {
@@ -165,6 +208,8 @@ impl Lexer {
                 }
             }
             '"' => self.read_string(),
+            '>' => { self.advance(); Ok(Token::Greater) }
+            '<' => { self.advance(); Ok(Token::Less) }
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
             _ => Err(format!("Unexpected character: '{}'", ch)),
@@ -172,9 +217,15 @@ impl Lexer {
     }
 
     fn read_string(&mut self) -> Result<Token, String> {
-        self.advance();
-        let mut s = String::new();
+        self.advance(); // consume first "
+        
+        if self.peek() == Some('"') && self.peek_next() == Some('"') {
+            self.advance(); // consume second "
+            self.advance(); // consume third "
+            return self.read_multiline_string();
+        }
 
+        let mut s = String::new();
         while let Some(ch) = self.peek() {
             if ch == '"' {
                 self.advance();
@@ -184,6 +235,69 @@ impl Lexer {
             self.advance();
         }
         Err("Unterminated string".to_string())
+    }
+
+    fn read_multiline_string(&mut self) -> Result<Token, String> {
+        let mut s = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '"' && self.peek_next() == Some('"') && self.chars.get(self.pos + 2) == Some(&'"') {
+                self.advance();
+                self.advance();
+                self.advance();
+                
+                let processed = self.process_multiline_string(&s);
+                return Ok(Token::String(processed));
+            }
+            s.push(ch);
+            self.advance();
+        }
+        Err("Unterminated multiline string".to_string())
+    }
+
+    fn process_multiline_string(&self, s: &str) -> String {
+        let mut lines: Vec<&str> = s.split('\n').collect();
+        
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        if let Some(first) = lines.first() {
+            if first.trim().is_empty() {
+                lines.remove(0);
+            }
+        }
+
+        if let Some(last) = lines.last() {
+            if last.trim().is_empty() {
+                lines.pop();
+            }
+        }
+
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        let min_indent = lines.iter()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.chars().take_while(|c| c.is_whitespace()).count())
+            .min()
+            .unwrap_or(0);
+
+        let processed_lines: Vec<String> = lines.into_iter()
+            .map(|line| {
+                if line.len() <= min_indent {
+                    if line.trim().is_empty() {
+                        String::new()
+                    } else {
+                        line.to_string()
+                    }
+                } else {
+                    line.chars().skip(min_indent).collect()
+                }
+            })
+            .collect();
+
+        processed_lines.join("\n")
     }
 
     fn read_identifier(&mut self) -> Result<Token, String> {
@@ -212,8 +326,12 @@ impl Lexer {
             "return" => Token::Return,
             "private" => Token::Private,
             "null" => Token::Null,
+            "native" => Token::Native,
             "async" => Token::Async,
             "await" => Token::Await,
+            "try" => Token::Try,
+            "catch" => Token::Catch,
+            "throw" => Token::Throw,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,

@@ -1,0 +1,38 @@
+// Test JSON and Reflection
+import std::io
+
+class User {
+  name: str = "Alice"
+  age: int = 30
+}
+
+let u = User()
+
+println("Original object:")
+println(u.name)
+
+// Reflection
+let type = std::reflect::type_of(u)
+println("Type: ${type}")
+
+let className = std::reflect::class_name(u)
+println("Class: ${className}")
+
+let fields = std::reflect::fields(u)
+println("Fields map (as object):")
+println("fields.name: ${fields.name}")
+
+// JSON
+let jsonStr = std::json::stringify(u)
+println("JSON: ${jsonStr}")
+
+let parsed = std::json::parse(jsonStr)
+println("Parsed object class: ${std::reflect::class_name(parsed)}")
+println("Parsed name: ${parsed.name}")
+println("Parsed age: ${parsed.age}")
+
+// Test primitives
+let numJson = std::json::stringify(123)
+println("Num JSON: ${numJson}")
+let parsedNum = std::json::parse(numJson)
+println("Parsed Num type: ${std::reflect::type_of(parsedNum)}")
