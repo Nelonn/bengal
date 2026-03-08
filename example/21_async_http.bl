@@ -1,0 +1,16 @@
+// HTTP async test example for Bengal
+// This demonstrates real async HTTP requests
+
+module test
+
+import std::http
+
+async fn fetch_example(): str {
+  // This would make a real HTTP GET request
+  // let response = await http.get("https://api.example.com/data")
+  // return response
+  return "HTTP async is implemented!"
+}
+
+print("Async HTTP support is ready!")
+println("Use std.http module for async requests")

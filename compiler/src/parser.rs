@@ -5,6 +5,7 @@ pub enum Stmt {
     Module { path: Vec<String> },
     Import { path: Vec<String> },
     Class(ClassDef),
+    Enum(EnumDef),
     Function(FunctionDef),
     Let { name: String, expr: Expr },
     Assign { name: String, expr: Expr },
@@ -16,12 +17,25 @@ pub enum Stmt {
 pub type Block = Vec<Stmt>;
 
 #[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub value: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<String>,
     pub return_optional: bool,
     pub body: Block,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +61,7 @@ pub struct Method {
     pub return_optional: bool,
     pub body: Block,
     pub private: bool,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +80,7 @@ pub enum Expr {
     Get { object: Box<Expr>, name: String },
     Set { object: Box<Expr>, name: String, value: Box<Expr> },
     Interpolated { parts: Vec<InterpPart> },
+    Await { expr: Box<Expr> },
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +183,14 @@ impl Parser {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
             self.parse_class()?
+        } else if self.match_token(&Token::Enum) {
+            self.parse_enum()?
+        } else if self.match_token(&Token::Async) {
+            if self.match_token(&Token::Fn) {
+                self.parse_async_function()?
+            } else {
+                return Err("Expected 'fn' after 'async'".to_string());
+            }
         } else if self.match_token(&Token::Fn) {
             self.parse_function()?
         } else if self.match_token(&Token::Let) {
@@ -264,10 +288,11 @@ impl Parser {
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             let is_private = self.match_token(&Token::Private);
+            let is_async = self.match_token(&Token::Async);
             self.skip_newlines();
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_method(is_private)?;
+                let method = self.parse_method(is_private, is_async)?;
                 methods.push(method);
             } else {
                 let field = self.parse_field(is_private)?;
@@ -281,6 +306,45 @@ impl Parser {
         }
 
         Ok(Stmt::Class(ClassDef { name, fields, methods }))
+    }
+
+    fn parse_enum(&mut self) -> Result<Stmt, String> {
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return Err("Expected enum name".to_string()),
+        };
+
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' after enum name".to_string());
+        }
+
+        let mut variants = Vec::new();
+        self.skip_newlines();
+
+        while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
+            let variant_name = match self.advance() {
+                Token::Identifier(n) => n,
+                _ => return Err("Expected variant name".to_string()),
+            };
+
+            let value = if self.match_token(&Token::Equal) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+
+            if self.match_token(&Token::Comma) {}
+            if self.match_token(&Token::Semicolon) {}
+            self.skip_newlines();
+
+            variants.push(EnumVariant { name: variant_name, value });
+        }
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close enum".to_string());
+        }
+
+        Ok(Stmt::Enum(EnumDef { name, variants }))
     }
 
     fn parse_function(&mut self) -> Result<Stmt, String> {
@@ -316,7 +380,43 @@ impl Parser {
             return Err("Expected '}' to close function".to_string());
         }
 
-        Ok(Stmt::Function(FunctionDef { name, params, return_type, return_optional, body }))
+        Ok(Stmt::Function(FunctionDef { name, params, return_type, return_optional, body, is_async: false }))
+    }
+
+    fn parse_async_function(&mut self) -> Result<Stmt, String> {
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return Err("Expected function name".to_string()),
+        };
+
+        if !self.match_token(&Token::LParen) {
+            return Err("Expected '(' after function name".to_string());
+        }
+
+        let params = self.parse_params()?;
+
+        if !self.match_token(&Token::RParen) {
+            return Err("Expected ')' after parameters".to_string());
+        }
+
+        let (return_type, return_optional) = if self.match_token(&Token::Colon) {
+            let (type_name, optional) = self.parse_type()?;
+            (Some(type_name), optional)
+        } else {
+            (None, false)
+        };
+
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' to start function body".to_string());
+        }
+
+        let body = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close function".to_string());
+        }
+
+        Ok(Stmt::Function(FunctionDef { name, params, return_type, return_optional, body, is_async: true }))
     }
 
     fn parse_field(&mut self, private: bool) -> Result<Field, String> {
@@ -329,7 +429,7 @@ impl Parser {
             return Err(format!("Expected ':' after field name, got {:?}", self.peek()));
         }
 
-        let type_name = match self.advance() {
+        let mut type_name = match self.advance() {
             Token::TypeInt => "int".to_string(),
             Token::TypeFloat => "float".to_string(),
             Token::TypeStr => "str".to_string(),
@@ -337,6 +437,11 @@ impl Parser {
             Token::Identifier(t) => t,
             t => return Err(format!("Expected type name, got {:?}", t)),
         };
+
+        // Handle optional type marker (?)
+        if self.match_token(&Token::Question) {
+            type_name = type_name + "?";
+        }
 
         let default = if self.match_token(&Token::Equal) {
             Some(self.parse_expression()?)
@@ -349,7 +454,7 @@ impl Parser {
         Ok(Field { name, type_name, default, private })
     }
 
-    fn parse_method(&mut self, private: bool) -> Result<Method, String> {
+    fn parse_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return Err("Expected method name".to_string()),
@@ -382,7 +487,7 @@ impl Parser {
             return Err("Expected '}' to close method".to_string());
         }
 
-        Ok(Method { name, params, return_type, return_optional, body, private })
+        Ok(Method { name, params, return_type, return_optional, body, private, is_async })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -652,6 +757,12 @@ impl Parser {
             });
         }
 
+        if self.match_token(&Token::Await) {
+            return Ok(Expr::Await {
+                expr: Box::new(self.parse_unary()?),
+            });
+        }
+
         self.parse_call()
     }
 
@@ -667,6 +778,41 @@ impl Parser {
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
+                };
+            } else if self.match_token(&Token::LBrace) {
+                // Class instantiation with {} - for now we just consume the braces
+                // Full field initialization support would go here
+                
+                // Check for empty braces first
+                if !self.check(&Token::RBrace) {
+                    // Try to parse field initializers (name: value pairs)
+                    loop {
+                        if self.check(&Token::RBrace) {
+                            break;
+                        }
+                        // Skip field name
+                        self.advance();
+                        // Skip colon
+                        if self.match_token(&Token::Colon) {
+                            // Skip value expression
+                            self.parse_expression()?;
+                        }
+                        // Skip comma or semicolon
+                        if self.match_token(&Token::Comma) || self.match_token(&Token::Semicolon) {
+                            continue;
+                        }
+                        if self.check(&Token::RBrace) {
+                            break;
+                        }
+                    }
+                }
+                if !self.match_token(&Token::RBrace) {
+                    return Err("Expected '}' to close class instantiation".to_string());
+                }
+                // For now, class instantiation is just a Call with no args
+                expr = Expr::Call {
+                    callee: Box::new(expr),
+                    args: vec![],
                 };
             } else if self.match_token(&Token::Dot) {
                 let name = match self.advance() {

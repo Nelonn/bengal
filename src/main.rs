@@ -3,7 +3,8 @@ use sparkler::Executor;
 use std::env;
 use std::fs;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -31,7 +32,7 @@ fn main() {
     };
 
     let mut executor = Executor::new();
-    if let Err(e) = executor.run(bytecode) {
+    if let Err(e) = executor.run_to_completion(bytecode).await {
         eprintln!("Runtime error: {}", e);
         std::process::exit(1);
     }

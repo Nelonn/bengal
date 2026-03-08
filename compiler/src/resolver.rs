@@ -211,18 +211,22 @@ impl ModuleResolver {
                 Stmt::Class(class) => {
                     self.type_context.add_class(class);
                 }
+                Stmt::Enum(enum_def) => {
+                    self.type_context.add_enum(enum_def);
+                }
                 Stmt::Function(func) => {
                     let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
                         name: p.name.clone(),
                         type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
                     }).collect();
-                    
+
                     self.type_context.add_function(&func.name, FunctionSignature {
                         name: func.name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
                         return_optional: func.return_optional,
                         is_method: false,
+                        is_async: func.is_async,
                     });
                 }
                 _ => {}
@@ -241,6 +245,7 @@ impl ModuleResolver {
             return_type: None,
             return_optional: false,
             is_method: false,
+            is_async: false,
         });
 
         self.type_context.functions.insert("println".to_string(), FunctionSignature {
@@ -252,6 +257,7 @@ impl ModuleResolver {
             return_type: None,
             return_optional: false,
             is_method: false,
+            is_async: false,
         });
     }
 
