@@ -49,6 +49,10 @@ impl Compiler {
 
     fn compile_stmt(&self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef]) -> Result<(), String> {
         match stmt {
+            Stmt::Module { .. } => {
+                // Module declaration is currently a no-op for bytecode generation
+                // It can be used for module resolution and namespacing in the future
+            }
             Stmt::Import { .. } => {
             }
             Stmt::Class(_) => {

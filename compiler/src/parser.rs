@@ -2,6 +2,7 @@ use crate::lexer::Token;
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    Module { path: Vec<String> },
     Import { path: Vec<String> },
     Class(ClassDef),
     Let { name: String, expr: Expr },
@@ -142,7 +143,9 @@ impl Parser {
             return Ok(None);
         }
 
-        let stmt = if self.match_token(&Token::Import) {
+        let stmt = if self.match_token(&Token::Module) {
+            self.parse_module()?
+        } else if self.match_token(&Token::Import) {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
             self.parse_class()?
@@ -202,6 +205,29 @@ impl Parser {
         self.skip_newlines();
 
         Ok(Stmt::Import { path })
+    }
+
+    fn parse_module(&mut self) -> Result<Stmt, String> {
+        let mut path = Vec::new();
+
+        loop {
+            if let Token::Identifier(part) = self.advance() {
+                path.push(part);
+            } else {
+                return Err("Expected identifier in module path".to_string());
+            }
+
+            if self.match_token(&Token::Dot) {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if self.match_token(&Token::Semicolon) {}
+        self.skip_newlines();
+
+        Ok(Stmt::Module { path })
     }
 
     fn parse_class(&mut self) -> Result<Stmt, String> {

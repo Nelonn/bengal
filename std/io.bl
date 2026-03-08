@@ -1,4 +1,4 @@
-package std.io
+module std.io
 
 fn print(text: str) {
   C.bengal_print(text)

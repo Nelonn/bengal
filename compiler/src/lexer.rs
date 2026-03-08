@@ -6,6 +6,7 @@ pub enum Token {
     Float(f64),
 
     Import,
+    Module,
     Class,
     Fn,
     Let,
@@ -164,6 +165,7 @@ impl Lexer {
 
         let token = match s.as_str() {
             "import" => Token::Import,
+            "module" => Token::Module,
             "class" => Token::Class,
             "fn" => Token::Fn,
             "let" => Token::Let,
