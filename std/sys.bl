@@ -1,0 +1,7 @@
+module std::sys
+
+class Process {
+
+}
+
+native fn exit(code: int)

@@ -1,19 +1,9 @@
-module std.io
+module std::io
 
-fn print(text: str) {
-  C.bengal_print(text)
-}
+native fn print(text: str)
 
-fn println(line: str) {
-  C.bengal_println(line)
-}
+native fn println(line: str)
 
-// Async sleep - returns Promise<null>
-async fn sleep(ms: int): null {
-  C.sleep(ms)
-}
+async native fn sleep(ms: int)
 
-// Async read line from stdin - returns Promise<str>
-async fn read_line(): str {
-  return C.read_line()
-}
+async native fn read_line(): str
