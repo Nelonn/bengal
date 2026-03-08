@@ -582,6 +582,23 @@ impl TypeChecker {
                     self.check_stmt(stmt);
                 }
             }
+            Stmt::TryCatch { try_block, catch_var, catch_block } => {
+                for stmt in try_block {
+                    self.check_stmt(stmt);
+                }
+                
+                // Add catch variable (exception object) - currently unknown type
+                self.context.add_variable(catch_var, Type::Unknown);
+                
+                for stmt in catch_block {
+                    self.check_stmt(stmt);
+                }
+                
+                self.context.variables.remove(catch_var);
+            }
+            Stmt::Throw(expr) => {
+                self.infer_expr(expr);
+            }
         }
     }
 
@@ -761,6 +778,10 @@ impl TypeChecker {
                     }
                     crate::parser::BinaryOp::Add | crate::parser::BinaryOp::Subtract |
                     crate::parser::BinaryOp::Multiply | crate::parser::BinaryOp::Divide => {
+                        if op == &crate::parser::BinaryOp::Add && (left_type == Type::Str || right_type == Type::Str) {
+                            return Type::Str;
+                        }
+
                         // Arithmetic operations require numeric types
                         if !is_numeric_type(&left_type) && left_type != Type::Unknown {
                             self.context.add_error(

@@ -5,3 +5,4 @@ class Process {
 }
 
 native fn exit(code: int)
+native fn env(key: str): str?

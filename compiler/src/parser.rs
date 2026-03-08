@@ -14,6 +14,8 @@ pub enum Stmt {
     If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
     For { var_name: String, range: Box<Expr>, body: Block },
     While { condition: Expr, body: Block },
+    TryCatch { try_block: Block, catch_var: String, catch_block: Block },
+    Throw(Expr),
 }
 
 pub type Block = Vec<Stmt>;
@@ -213,6 +215,10 @@ impl Parser {
             self.parse_for()?
         } else if self.match_token(&Token::While) {
             self.parse_while()?
+        } else if self.match_token(&Token::Try) {
+            self.parse_try_catch()?
+        } else if self.match_token(&Token::Throw) {
+            self.parse_throw()?
         } else {
             let expr = self.parse_expression()?;
 
@@ -721,6 +727,57 @@ impl Parser {
         }
 
         Ok(Stmt::While { condition, body })
+    }
+
+    fn parse_try_catch(&mut self) -> Result<Stmt, String> {
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' for try body".to_string());
+        }
+
+        let try_block = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close try body".to_string());
+        }
+
+        self.skip_newlines();
+
+        if !self.match_token(&Token::Catch) {
+            return Err("Expected 'catch' after try block".to_string());
+        }
+
+        if !self.match_token(&Token::LParen) {
+            return Err("Expected '(' after 'catch'".to_string());
+        }
+
+        let catch_var = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return Err("Expected identifier for catch variable".to_string()),
+        };
+
+        if !self.match_token(&Token::RParen) {
+            return Err("Expected ')' after catch variable".to_string());
+        }
+
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' for catch body".to_string());
+        }
+
+        let catch_block = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close catch body".to_string());
+        }
+
+        Ok(Stmt::TryCatch { try_block, catch_var, catch_block })
+    }
+
+    fn parse_throw(&mut self) -> Result<Stmt, String> {
+        let expr = self.parse_expression()?;
+
+        if self.match_token(&Token::Semicolon) {}
+
+        Ok(Stmt::Throw(expr))
     }
 
     fn parse_block(&mut self) -> Result<Block, String> {

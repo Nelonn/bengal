@@ -282,6 +282,13 @@ pub struct VM {
     classes: HashMap<String, Class>,
     pub native_functions: HashMap<String, NativeFn>,
     pub fallback_native: Option<NativeFn>,
+    exception_handlers: Vec<ExceptionHandler>,
+}
+
+#[derive(Clone, Copy)]
+struct ExceptionHandler {
+    catch_pc: usize,
+    stack_depth: usize,
 }
 
 impl VM {
@@ -295,6 +302,7 @@ impl VM {
             classes: HashMap::new(),
             native_functions: HashMap::new(),
             fallback_native: None,
+            exception_handlers: Vec::new(),
         }
     }
 
@@ -322,7 +330,19 @@ impl VM {
     pub async fn run(&mut self) -> Result<Option<Value>, String> {
         while self.pc < self.memory.len() {
             let opcode = self.memory[self.pc];
-            let result = self.execute(opcode).await?;
+            let result = match self.execute(opcode).await {
+                Ok(res) => res,
+                Err(e) => {
+                    if let Some(handler) = self.exception_handlers.pop() {
+                        self.pc = handler.catch_pc;
+                        self.stack.truncate(handler.stack_depth);
+                        self.stack.push(Value::String(e));
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
 
             if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
                 break;
@@ -472,10 +492,7 @@ impl VM {
                     let result = native_f(&mut args)?;
                     self.stack.push(result);
                 } else {
-                    for _ in 0..arg_count {
-                        self.stack.pop();
-                    }
-                    self.stack.push(Value::Null);
+                    return Err(format!("Function not found: {}", func_name));
                 }
             }
 
@@ -749,6 +766,8 @@ impl VM {
                 let left = self.stack.pop().unwrap_or(Value::Null);
                 let result = match (&left, &right) {
                     (Value::String(a), Value::String(b)) => Value::String(a.clone() + b),
+                    (Value::String(a), b) => Value::String(a.clone() + &b.to_string()),
+                    (a, Value::String(b)) => Value::String(a.to_string() + b),
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
                         Value::Int64(left.to_arithmetic_int().unwrap() + right.to_arithmetic_int().unwrap())
                     }
@@ -859,6 +878,30 @@ impl VM {
                 self.stack.pop();
             }
 
+            x if x == Opcode::TryStart as u8 => {
+                self.pc += 1;
+                let catch_pc = self.memory[self.pc] as usize;
+                self.exception_handlers.push(ExceptionHandler {
+                    catch_pc,
+                    stack_depth: self.stack.len(),
+                });
+            }
+
+            x if x == Opcode::TryEnd as u8 => {
+                self.exception_handlers.pop();
+            }
+
+            x if x == Opcode::Throw as u8 => {
+                let exception = self.stack.pop().unwrap_or(Value::Null);
+                if let Some(handler) = self.exception_handlers.pop() {
+                    self.pc = handler.catch_pc.saturating_sub(1);
+                    self.stack.truncate(handler.stack_depth);
+                    self.stack.push(exception);
+                } else {
+                    return Err(format!("Uncaught exception: {}", exception.to_string()));
+                }
+            }
+
             x if x == Opcode::Halt as u8 => {}
 
             _ => {
@@ -928,6 +971,10 @@ pub enum Opcode {
     Divide = 0x71,
 
     Pop = 0x72,
+
+    TryStart = 0x80,
+    TryEnd = 0x81,
+    Throw = 0x82,
 
     Halt = 0xFF,
 }

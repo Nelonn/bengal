@@ -169,8 +169,8 @@ impl ModuleResolver {
             .map(|(name, info)| (name.clone(), info.statements.clone()))
             .collect();
         
-        for (_module_name, statements) in &module_statements {
-            self.register_module_types(statements);
+        for (module_name, statements) in &module_statements {
+            self.register_module_types(module_name, statements);
         }
 
         // Register native functions from std::io
@@ -208,11 +208,14 @@ impl ModuleResolver {
         }
     }
 
-    fn register_module_types(&mut self, statements: &[Stmt]) {
+    fn register_module_types(&mut self, module_name: &str, statements: &[Stmt]) {
         for stmt in statements {
             match stmt {
                 Stmt::Class(class) => {
-                    self.type_context.add_class(class);
+                    let mut class_with_module = class.clone();
+                    class_with_module.name = format!("{}::{}", module_name, class.name);
+                    self.type_context.add_class(&class_with_module);
+                    self.type_context.add_class(class); // Also add without module for now
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
@@ -223,8 +226,9 @@ impl ModuleResolver {
                         type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
                     }).collect();
 
-                    self.type_context.add_function(&func.name, FunctionSignature {
-                        name: func.name.clone(),
+                    let full_name = format!("{}::{}", module_name, func.name);
+                    self.type_context.add_function(&full_name, FunctionSignature {
+                        name: full_name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
                         return_optional: func.return_optional,

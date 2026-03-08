@@ -132,6 +132,9 @@ fn get_opcode_name(op: u8) -> &'static str {
         0x70 => "Multiply",
         0x71 => "Divide",
         0x72 => "Pop",
+        0x80 => "TryStart",
+        0x81 => "TryEnd",
+        0x82 => "Throw",
         0xFF => "Halt",
         _ => "Unknown",
     }

@@ -381,6 +381,44 @@ impl Compiler {
                 let exit_pos = bytecode.len();
                 bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
             }
+            Stmt::TryCatch { try_block, catch_var, catch_block } => {
+                bytecode.push(Opcode::TryStart as u8);
+                let catch_jump_pos = bytecode.len();
+                bytecode.push(0); // placeholder for catch block PC
+
+                for stmt in try_block {
+                    self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
+                }
+
+                bytecode.push(Opcode::TryEnd as u8);
+                
+                // Jump over catch block after successful try
+                bytecode.push(Opcode::Jump as u8);
+                let end_jump_pos = bytecode.len();
+                bytecode.push(0);
+
+                // Start of catch block
+                let catch_start = bytecode.len();
+                bytecode[catch_jump_pos] = (catch_start & 0xFF) as u8;
+
+                // Store exception in catch variable
+                let var_idx = strings.len();
+                strings.push(catch_var.clone());
+                bytecode.push(Opcode::StoreLocal as u8);
+                bytecode.push(var_idx as u8);
+
+                for stmt in catch_block {
+                    self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
+                }
+
+                // End of catch block - fix up jump
+                let end_pos = bytecode.len();
+                bytecode[end_jump_pos] = (end_pos & 0xFF) as u8;
+            }
+            Stmt::Throw(expr) => {
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                bytecode.push(Opcode::Throw as u8);
+            }
         }
         Ok(())
     }
@@ -529,6 +567,17 @@ impl Compiler {
                         bytecode.push(idx as u8);
                         bytecode.push(args.len() as u8);
                     } else {
+                        // Check if it's a known function in type context
+                        let is_defined = if let Some(ctx) = type_context {
+                            ctx.get_function(func_name).is_some() || classes.iter().any(|c| c.name == *func_name)
+                        } else {
+                            false
+                        };
+
+                        if !is_defined {
+                            return Err(format!("Undefined function: {}", func_name));
+                        }
+
                         let idx = strings.len();
                         strings.push(func_name.clone());
                         bytecode.push(Opcode::Call as u8);

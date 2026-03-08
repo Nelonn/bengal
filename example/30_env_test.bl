@@ -1,0 +1,13 @@
+import std::sys
+
+println("PATH: " + std::sys::env("PATH"))
+
+// Testing try-catch
+try {
+    println("Entering try block")
+    throw "Manual exception"
+} catch (e) {
+    println("Caught: " + e)
+}
+
+println("Continuing after try-catch")
