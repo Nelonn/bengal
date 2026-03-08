@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use serde_json::Value;
 
 pub const NATIVE_BENGAL_PRINT: u8 = 0;
 pub const NATIVE_BENGAL_PRINTLN: u8 = 1;

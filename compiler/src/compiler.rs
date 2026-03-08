@@ -7,8 +7,8 @@ pub type Bytecode = sparkler::executor::Bytecode;
 
 pub struct Compiler {
     source: String,
-    source_path: Option<String>,
-    type_context: Option<TypeContext>,
+    _source_path: Option<String>,
+    _type_context: Option<TypeContext>,
 }
 
 pub struct CompilerOptions {
@@ -29,16 +29,16 @@ impl Compiler {
     pub fn new(source: &str) -> Self {
         Self {
             source: source.to_string(),
-            source_path: None,
-            type_context: None,
+            _source_path: None,
+            _type_context: None,
         }
     }
 
     pub fn with_path(source: &str, path: &str) -> Self {
         Self {
             source: source.to_string(),
-            source_path: Some(path.to_string()),
-            type_context: None,
+            _source_path: Some(path.to_string()),
+            _type_context: None,
         }
     }
 
@@ -76,7 +76,7 @@ impl Compiler {
         self.generate_code(&statements, type_context)
     }
 
-    fn generate_code(&self, statements: &[Stmt], type_context: Option<TypeContext>) -> Result<Bytecode, String> {
+    fn generate_code(&self, statements: &[Stmt], _type_context: Option<TypeContext>) -> Result<Bytecode, String> {
         let mut bytecode = Vec::new();
         let mut strings: Vec<String> = Vec::new();
         let mut classes: Vec<ClassDef> = Vec::new();
@@ -500,14 +500,14 @@ pub enum Opcode {
     Or = 0x63,
     Not = 0x64,
     Concat = 0x65,
-    Add = 0x66,
-    Subtract = 0x67,
-    Multiply = 0x68,
-    Divide = 0x69,
-    Greater = 0x6A,
-    Less = 0x6B,
+    Greater = 0x66,
+    Less = 0x67,
+    Add = 0x68,
+    Subtract = 0x69,
+    Multiply = 0x70,
+    Divide = 0x71,
 
-    Pop = 0x70,
+    Pop = 0x72,
 
     Halt = 0xFF,
 }

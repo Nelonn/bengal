@@ -169,7 +169,7 @@ impl TypeContext {
             name: "print".to_string(),
             params: vec![ParamSignature {
                 name: "text".to_string(),
-                type_name: Some(Type::Str),
+                type_name: Some(Type::Unknown),
             }],
             return_type: None,
             return_optional: false,
@@ -181,7 +181,7 @@ impl TypeContext {
             name: "println".to_string(),
             params: vec![ParamSignature {
                 name: "line".to_string(),
-                type_name: Some(Type::Str),
+                type_name: Some(Type::Unknown),
             }],
             return_type: None,
             return_optional: false,
@@ -474,6 +474,27 @@ impl TypeChecker {
                     for stmt in else_b {
                         self.check_stmt(stmt);
                     }
+                }
+            }
+            Stmt::For { var_name, range, body } => {
+                let _range_type = self.infer_expr(range);
+                // For now, assume ranges are integers
+                self.context.add_variable(var_name, Type::Int);
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+                self.context.variables.remove(var_name);
+            }
+            Stmt::While { condition, body } => {
+                let cond_type = self.infer_expr(condition);
+                if cond_type != Type::Bool && cond_type != Type::Unknown {
+                    self.context.add_error(
+                        format!("Expected bool condition for while, got {}", cond_type.to_str()),
+                        0
+                    );
+                }
+                for stmt in body {
+                    self.check_stmt(stmt);
                 }
             }
         }
@@ -878,6 +899,17 @@ impl TypeChecker {
                     }
                 }
                 Type::Str
+            }
+            Expr::Range { start, end } => {
+                let start_type = self.infer_expr(start);
+                let end_type = self.infer_expr(end);
+                if start_type != Type::Int && start_type != Type::Unknown {
+                    self.context.add_error(format!("Range start must be an integer, got {}", start_type.to_str()), 0);
+                }
+                if end_type != Type::Int && end_type != Type::Unknown {
+                    self.context.add_error(format!("Range end must be an integer, got {}", end_type.to_str()), 0);
+                }
+                Type::Int
             }
             Expr::Await { expr } => {
                 let inner_type = self.infer_expr(expr);

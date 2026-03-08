@@ -218,6 +218,27 @@ impl Value {
             _ => true,
         }
     }
+
+    /// Convert any value to string
+    pub fn to_string(&self) -> String {
+        match self {
+            Value::String(s) => s.clone(),
+            Value::Int8(n) => n.to_string(),
+            Value::Int16(n) => n.to_string(),
+            Value::Int32(n) => n.to_string(),
+            Value::Int64(n) => n.to_string(),
+            Value::UInt8(n) => n.to_string(),
+            Value::UInt16(n) => n.to_string(),
+            Value::UInt32(n) => n.to_string(),
+            Value::UInt64(n) => n.to_string(),
+            Value::Float32(n) => n.to_string(),
+            Value::Float64(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Null => "null".to_string(),
+            Value::Instance(_) => "[instance]".to_string(),
+            Value::Promise(_) => "[promise]".to_string(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -257,6 +278,7 @@ pub struct VM {
 
 impl VM {
     pub fn new() -> Self {
+        println!("size_of(Value) = {}", std::mem::size_of::<Value>());
         Self {
             memory: Vec::new(),
             stack: Vec::new(),
@@ -436,15 +458,7 @@ impl VM {
 
                 let mut args: Vec<String> = Vec::new();
                 if let Some(value) = self.stack.pop() {
-                    let arg_str = match value {
-                        Value::String(s) => s,
-                        Value::Int64(n) => n.to_string(),
-                        Value::Float64(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        Value::Null => "null".to_string(),
-                        Value::Instance(_) => "[instance]".to_string(),
-                    };
-                    args.push(arg_str);
+                    args.push(value.to_string());
                 }
 
                 bengal_std::call_native_by_id(native_id, &mut args)?;
@@ -458,13 +472,7 @@ impl VM {
                 // Pop all arguments from stack
                 let mut args: Vec<String> = Vec::new();
                 while let Some(value) = self.stack.pop() {
-                    match value {
-                        Value::String(s) => args.push(s),
-                        Value::Int64(i) => args.push(i.to_string()),
-                        Value::Float64(f) => args.push(f.to_string()),
-                        Value::Bool(b) => args.push(b.to_string()),
-                        _ => args.push("".to_string()),
-                    }
+                    args.push(value.to_string());
                 }
                 args.reverse(); // Arguments are pushed in reverse order
 
@@ -647,9 +655,15 @@ impl VM {
             x if x == Opcode::JumpIfGreater as u8 => {
                 self.pc += 1;
                 let target = self.memory[self.pc] as usize;
-                let should_jump = match (self.stack.pop(), self.stack.pop()) {
-                    (Some(Value::Int(right)), Some(Value::Int(left))) => left > right,
-                    (Some(Value::Float(right)), Some(Value::Float(left))) => left > right,
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let should_jump = match (&left, &right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        left.to_arithmetic_int().unwrap() > right.to_arithmetic_int().unwrap()
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        left.to_float().unwrap() > right.to_float().unwrap()
+                    }
                     _ => false,
                 };
                 if should_jump {
@@ -660,9 +674,15 @@ impl VM {
             x if x == Opcode::JumpIfLess as u8 => {
                 self.pc += 1;
                 let target = self.memory[self.pc] as usize;
-                let should_jump = match (self.stack.pop(), self.stack.pop()) {
-                    (Some(Value::Int(right)), Some(Value::Int(left))) => left < right,
-                    (Some(Value::Float(right)), Some(Value::Float(left))) => left > right,
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let should_jump = match (&left, &right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        left.to_arithmetic_int().unwrap() < right.to_arithmetic_int().unwrap()
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        left.to_float().unwrap() < right.to_float().unwrap()
+                    }
                     _ => false,
                 };
                 if should_jump {
@@ -847,109 +867,10 @@ impl VM {
                 let mut result = String::new();
                 for _ in 0..count {
                     if let Some(value) = self.stack.pop() {
-                        match value {
-                            Value::String(s) => result = s + &result,
-                            Value::Int8(n) => result = n.to_string() + &result,
-                            Value::Int16(n) => result = n.to_string() + &result,
-                            Value::Int32(n) => result = n.to_string() + &result,
-                            Value::Int64(n) => result = n.to_string() + &result,
-                            Value::UInt8(n) => result = n.to_string() + &result,
-                            Value::UInt16(n) => result = n.to_string() + &result,
-                            Value::UInt32(n) => result = n.to_string() + &result,
-                            Value::UInt64(n) => result = n.to_string() + &result,
-                            Value::Float32(n) => result = n.to_string() + &result,
-                            Value::Float64(n) => result = n.to_string() + &result,
-                            Value::Bool(b) => result = b.to_string() + &result,
-                            Value::Null => result = "null".to_string() + &result,
-                            _ => {}
-                        }
+                        result = value.to_string() + &result;
                     }
                 }
                 self.stack.push(Value::String(result));
-            }
-
-            x if x == Opcode::Add as u8 => {
-                let right = self.stack.pop().unwrap_or(Value::Null);
-                let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
-                    _ => Value::Null,
-                };
-                self.stack.push(result);
-            }
-
-            x if x == Opcode::Subtract as u8 => {
-                let right = self.stack.pop().unwrap_or(Value::Null);
-                let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
-                    _ => Value::Null,
-                };
-                self.stack.push(result);
-            }
-
-            x if x == Opcode::Multiply as u8 => {
-                let right = self.stack.pop().unwrap_or(Value::Null);
-                let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
-                    _ => Value::Null,
-                };
-                self.stack.push(result);
-            }
-
-            x if x == Opcode::Divide as u8 => {
-                let right = self.stack.pop().unwrap_or(Value::Null);
-                let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => {
-                        if b != 0 {
-                            Value::Int(a / b)
-                        } else {
-                            Value::Null
-                        }
-                    }
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
-                    _ => Value::Null,
-                };
-                self.stack.push(result);
-            }
-
-            x if x == Opcode::Greater as u8 => {
-                let right = self.stack.pop().unwrap_or(Value::Null);
-                let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Bool(a > b),
-                    (Value::Float(a), Value::Float(b)) => Value::Bool(a > b),
-                    (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) > b),
-                    (Value::Float(a), Value::Int(b)) => Value::Bool(a > (b as f64)),
-                    _ => Value::Bool(false),
-                };
-                self.stack.push(result);
-            }
-
-            x if x == Opcode::Less as u8 => {
-                let right = self.stack.pop().unwrap_or(Value::Null);
-                let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Bool(a < b),
-                    (Value::Float(a), Value::Float(b)) => Value::Bool(a < b),
-                    (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) < b),
-                    (Value::Float(a), Value::Int(b)) => Value::Bool(a < (b as f64)),
-                    _ => Value::Bool(false),
-                };
-                self.stack.push(result);
             }
 
             x if x == Opcode::Pop as u8 => {
