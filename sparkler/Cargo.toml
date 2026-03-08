@@ -6,3 +6,4 @@ description = "Virtual machine for Bengal language"
 
 [dependencies]
 bengal-std = { path = "../std" }
+libffi = "5.1.0"
