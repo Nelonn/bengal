@@ -85,6 +85,8 @@ async fn main() {
     }
 
     let mut executor = Executor::new();
+    bengal_std::register_all(&mut executor.vm);
+    
     if let Err(e) = executor.run_to_completion(bytecode).await {
         eprintln!("Runtime error: {}", e);
         std::process::exit(1);

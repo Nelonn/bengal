@@ -5,7 +5,9 @@ edition = "2021"
 description = "Standard library for Bengal language"
 
 [dependencies]
+sparkler = { path = "../sparkler" }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.11.27", features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+simd-json = "0.17.0"

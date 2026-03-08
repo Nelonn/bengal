@@ -38,6 +38,7 @@ pub struct FunctionDef {
     pub return_optional: bool,
     pub body: Block,
     pub is_async: bool,
+    pub is_native: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +65,7 @@ pub struct Method {
     pub body: Block,
     pub private: bool,
     pub is_async: bool,
+    pub is_native: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -190,14 +192,22 @@ impl Parser {
             self.parse_class()?
         } else if self.match_token(&Token::Enum) {
             self.parse_enum()?
-        } else if self.match_token(&Token::Async) {
+        } else if self.match_token(&Token::Native) {
+            let is_async = self.match_token(&Token::Async);
             if self.match_token(&Token::Fn) {
-                self.parse_async_function()?
+                self.parse_function_ext(false, is_async, true)?
+            } else {
+                return Err("Expected 'fn' after 'native'".to_string());
+            }
+        } else if self.match_token(&Token::Async) {
+            let is_native = self.match_token(&Token::Native);
+            if self.match_token(&Token::Fn) {
+                self.parse_function_ext(false, true, is_native)?
             } else {
                 return Err("Expected 'fn' after 'async'".to_string());
             }
         } else if self.match_token(&Token::Fn) {
-            self.parse_function()?
+            self.parse_function_ext(false, false, false)?
         } else if self.match_token(&Token::Let) {
             self.parse_let()?
         } else if self.match_token(&Token::Return) {
@@ -208,10 +218,6 @@ impl Parser {
             self.parse_for()?
         } else if self.match_token(&Token::While) {
             self.parse_while()?
-        } else if self.match_token(&Token::Fn) {
-            return Err("Unexpected 'fn' outside of class".to_string());
-        } else if self.match_token(&Token::Private) {
-            return Err("Unexpected 'private' keyword".to_string());
         } else {
             let expr = self.parse_expression()?;
 
@@ -242,15 +248,8 @@ impl Parser {
                 return Err("Expected identifier in import path".to_string());
             }
 
-            if self.match_token(&Token::Dot) {
+            if self.match_token(&Token::DoubleColon) {
                 continue;
-            } else if self.check(&Token::Colon) {
-                self.advance();
-                if self.match_token(&Token::Colon) {
-                    continue;
-                } else {
-                    return Err("Expected ':' after ':' in import path".to_string());
-                }
             } else {
                 break;
             }
@@ -272,7 +271,7 @@ impl Parser {
                 return Err("Expected identifier in module path".to_string());
             }
 
-            if self.match_token(&Token::Dot) {
+            if self.match_token(&Token::DoubleColon) {
                 continue;
             } else {
                 break;
@@ -301,11 +300,12 @@ impl Parser {
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             let is_private = self.match_token(&Token::Private);
+            let is_native = self.match_token(&Token::Native);
             let is_async = self.match_token(&Token::Async);
             self.skip_newlines();
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_method(is_private, is_async)?;
+                let method = self.parse_method(is_private, is_async, is_native)?;
                 methods.push(method);
             } else {
                 let field = self.parse_field(is_private)?;
@@ -360,7 +360,7 @@ impl Parser {
         Ok(Stmt::Enum(EnumDef { name, variants }))
     }
 
-    fn parse_function(&mut self) -> Result<Stmt, String> {
+    fn parse_function_ext(&mut self, _is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return Err("Expected function name".to_string()),
@@ -384,54 +384,42 @@ impl Parser {
             (None, false)
         };
 
-        if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' to start function body".to_string());
-        }
-
-        let body = self.parse_block()?;
-
-        if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close function".to_string());
-        }
-
-        Ok(Stmt::Function(FunctionDef { name, params, return_type, return_optional, body, is_async: false }))
-    }
-
-    fn parse_async_function(&mut self) -> Result<Stmt, String> {
-        let name = match self.advance() {
-            Token::Identifier(n) => n,
-            _ => return Err("Expected function name".to_string()),
-        };
-
-        if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after function name".to_string());
-        }
-
-        let params = self.parse_params()?;
-        self.skip_newlines();
-
-        if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after parameters".to_string());
-        }
-
-        let (return_type, return_optional) = if self.match_token(&Token::Colon) {
-            let (type_name, optional) = self.parse_type()?;
-            (Some(type_name), optional)
+        let body = if is_native {
+            if self.match_token(&Token::Semicolon) {
+                Vec::new()
+            } else if self.check(&Token::LBrace) {
+                self.advance();
+                let b = self.parse_block()?;
+                if !self.match_token(&Token::RBrace) {
+                    return Err("Expected '}' to close native function body".to_string());
+                }
+                b
+            } else {
+                // Also allow no semicolon if it's the end of a block/file
+                Vec::new()
+            }
         } else {
-            (None, false)
+            if !self.match_token(&Token::LBrace) {
+                return Err(format!("Expected '{{' to start function body for '{}'", name));
+            }
+
+            let body = self.parse_block()?;
+
+            if !self.match_token(&Token::RBrace) {
+                return Err("Expected '}' to close function".to_string());
+            }
+            body
         };
 
-        if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' to start function body".to_string());
-        }
-
-        let body = self.parse_block()?;
-
-        if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close function".to_string());
-        }
-
-        Ok(Stmt::Function(FunctionDef { name, params, return_type, return_optional, body, is_async: true }))
+        Ok(Stmt::Function(FunctionDef { 
+            name, 
+            params, 
+            return_type, 
+            return_optional, 
+            body, 
+            is_async, 
+            is_native 
+        }))
     }
 
     fn parse_field(&mut self, private: bool) -> Result<Field, String> {
@@ -462,7 +450,7 @@ impl Parser {
         Ok(Field { name, type_name, default, private })
     }
 
-    fn parse_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
+    fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return Err("Expected method name".to_string()),
@@ -486,17 +474,33 @@ impl Parser {
             (None, false)
         };
 
-        if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' to start method body".to_string());
-        }
+        let body = if is_native {
+            if self.match_token(&Token::Semicolon) {
+                Vec::new()
+            } else if self.check(&Token::LBrace) {
+                self.advance();
+                let b = self.parse_block()?;
+                if !self.match_token(&Token::RBrace) {
+                    return Err("Expected '}' to close native method body".to_string());
+                }
+                b
+            } else {
+                Vec::new()
+            }
+        } else {
+            if !self.match_token(&Token::LBrace) {
+                return Err("Expected '{' to start method body".to_string());
+            }
 
-        let body = self.parse_block()?;
+            let body = self.parse_block()?;
 
-        if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close method".to_string());
-        }
+            if !self.match_token(&Token::RBrace) {
+                return Err("Expected '}' to close method".to_string());
+            }
+            body
+        };
 
-        Ok(Method { name, params, return_type, return_optional, body, private, is_async })
+        Ok(Method { name, params, return_type, return_optional, body, private, is_async, is_native })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -963,49 +967,29 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.advance() {
-            Token::String(s) => {
-                if let Some(interp_pos) = s.find("${") {
-                    let before = &s[..interp_pos];
-                    let rest = &s[interp_pos + 2..];
-
-                    if let Some(end_pos) = rest.find('}') {
-                        let expr_str = &rest[..end_pos];
-                        let after = &rest[end_pos + 1..];
-
-                        let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim());
-                        let tokens = sub_lexer.tokenize()?;
-                        let mut sub_parser = Parser::new(tokens);
-                        let sub_stmts = sub_parser.parse()?;
-
-                        let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {
-                            e.clone()
-                        } else if let Some(Stmt::Assign { name, expr: _ }) = sub_stmts.first() {
-                            Expr::Variable(name.clone())
-                        } else {
-                            Expr::Variable(expr_str.trim().to_string())
-                        };
-
-                        let mut parts = vec![InterpPart::Text(before.to_string()), InterpPart::Expr(expr)];
-
-                        if !after.is_empty() {
-                            parts.push(InterpPart::Text(after.to_string()));
-                        }
-
-                        Ok(Expr::Interpolated { parts })
-                    } else {
-                        Err("Unclosed interpolation ${...}".to_string())
-                    }
-                } else {
-                    Ok(Expr::Literal(Literal::String(s)))
-                }
-            }
+            Token::String(s) => self.parse_interpolated_text(s),
             Token::Int(n) => Ok(Expr::Literal(Literal::Int(n))),
             Token::Float(n) => Ok(Expr::Literal(Literal::Float(n))),
             Token::TypeBool => Ok(Expr::Literal(Literal::Bool(true))),
-            Token::Identifier(name) if name == "true" => Ok(Expr::Literal(Literal::Bool(true))),
-            Token::Identifier(name) if name == "false" => Ok(Expr::Literal(Literal::Bool(false))),
-            Token::Null => Ok(Expr::Literal(Literal::Null)),
-            Token::Identifier(name) => Ok(Expr::Variable(name)),
+            Token::Identifier(name) => {
+                let mut full_name = name;
+                while self.match_token(&Token::DoubleColon) {
+                    full_name.push_str("::");
+                    if let Token::Identifier(part) = self.advance() {
+                        full_name.push_str(&part);
+                    } else {
+                        return Err("Expected identifier after ::".to_string());
+                    }
+                }
+                
+                if full_name == "true" {
+                    Ok(Expr::Literal(Literal::Bool(true)))
+                } else if full_name == "false" {
+                    Ok(Expr::Literal(Literal::Bool(false)))
+                } else {
+                    Ok(Expr::Variable(full_name))
+                }
+            },
             Token::Dollar => self.parse_interpolated_string(),
             token => Err(format!("Unexpected token: {:?}", token)),
         }
@@ -1025,5 +1009,50 @@ impl Parser {
         Ok(Expr::Interpolated {
             parts: vec![InterpPart::Expr(expr)]
         })
+    }
+
+    fn parse_interpolated_text(&mut self, s: String) -> Result<Expr, String> {
+        let mut parts = Vec::new();
+        let mut last_pos = 0;
+        
+        while let Some(interp_start) = s[last_pos..].find("${") {
+            let abs_start = last_pos + interp_start;
+            if abs_start > last_pos {
+                parts.push(InterpPart::Text(s[last_pos..abs_start].to_string()));
+            }
+            
+            let rest = &s[abs_start + 2..];
+            if let Some(interp_end) = rest.find('}') {
+                let expr_str = &rest[..interp_end];
+                
+                let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim());
+                let tokens = sub_lexer.tokenize()?;
+                let mut sub_parser = Parser::new(tokens);
+                let sub_stmts = sub_parser.parse()?;
+
+                let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {
+                    e.clone()
+                } else if let Some(Stmt::Assign { name, expr: _ }) = sub_stmts.first() {
+                    Expr::Variable(name.clone())
+                } else {
+                    Expr::Variable(expr_str.trim().to_string())
+                };
+
+                parts.push(InterpPart::Expr(expr));
+                last_pos = abs_start + 2 + interp_end + 1;
+            } else {
+                return Err("Unclosed interpolation ${...}".to_string());
+            }
+        }
+        
+        if last_pos < s.len() {
+            parts.push(InterpPart::Text(s[last_pos..].to_string()));
+        }
+        
+        if parts.iter().any(|p| matches!(p, InterpPart::Expr(_))) {
+            Ok(Expr::Interpolated { parts })
+        } else {
+            Ok(Expr::Literal(Literal::String(s)))
+        }
     }
 }

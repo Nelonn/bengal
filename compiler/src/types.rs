@@ -73,6 +73,7 @@ pub struct FunctionSignature {
     pub return_optional: bool,
     pub is_method: bool,
     pub is_async: bool,
+    pub is_native: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,7 @@ pub struct MethodSignature {
     pub return_optional: bool,
     pub private: bool,
     pub is_async: bool,
+    pub is_native: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +166,7 @@ impl TypeContext {
     }
 
     fn register_native_classes(&mut self) {
-        // Register std.io module functions
+        // Register std::io module functions
         let io_print = FunctionSignature {
             name: "print".to_string(),
             params: vec![ParamSignature {
@@ -175,6 +177,7 @@ impl TypeContext {
             return_optional: false,
             is_method: false,
             is_async: false,
+            is_native: true,
         };
 
         let io_println = FunctionSignature {
@@ -187,13 +190,90 @@ impl TypeContext {
             return_optional: false,
             is_method: false,
             is_async: false,
+            is_native: true,
         };
 
         self.functions.insert("print".to_string(), io_print);
         self.functions.insert("println".to_string(), io_println);
 
-        // Mark std.io as imported by default for native functions
-        self.imports.push("std.io".to_string());
+        // JSON
+        let json_stringify = FunctionSignature {
+            name: "std::json::stringify".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Str),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+        };
+
+        let json_parse = FunctionSignature {
+            name: "std::json::parse".to_string(),
+            params: vec![ParamSignature {
+                name: "json".to_string(),
+                type_name: Some(Type::Str),
+            }],
+            return_type: Some(Type::Unknown),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+        };
+
+        self.functions.insert("std::json::stringify".to_string(), json_stringify);
+        self.functions.insert("std::json::parse".to_string(), json_parse);
+        self.imports.push("std::json".to_string());
+
+        // Reflection
+        let reflect_typeof = FunctionSignature {
+            name: "std::reflect::type_of".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Str),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+        };
+
+        let reflect_class_name = FunctionSignature {
+            name: "std::reflect::class_name".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Str),
+            return_optional: true,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+        };
+
+        let reflect_fields = FunctionSignature {
+            name: "std::reflect::fields".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Unknown),
+            return_optional: true,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+        };
+
+        self.functions.insert("std::reflect::type_of".to_string(), reflect_typeof);
+        self.functions.insert("std::reflect::class_name".to_string(), reflect_class_name);
+        self.functions.insert("std::reflect::fields".to_string(), reflect_fields);
+        self.imports.push("std::reflect".to_string());
+
+        // Mark std::io as imported by default for native functions
+        self.imports.push("std::io".to_string());
     }
 
     pub fn add_class(&mut self, class: &ClassDef) {
@@ -219,7 +299,8 @@ impl TypeContext {
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
                 return_optional: method.return_optional,
                 private: method.private,
-                is_async: false, // Will be updated when parsing async methods
+                is_async: method.is_async,
+                is_native: method.is_native,
             });
         }
 
@@ -371,6 +452,7 @@ impl TypeChecker {
                         return_optional: func.return_optional,
                         is_method: false,
                         is_async: func.is_async,
+                        is_native: func.is_native,
                     });
                 }
                 Stmt::Import { path: _ } => {

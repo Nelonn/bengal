@@ -1,88 +1,99 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use sparkler::{VM, Value, PromiseState};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use simd_json;
 
-pub const NATIVE_BENGAL_PRINT: u8 = 0;
-pub const NATIVE_BENGAL_PRINTLN: u8 = 1;
-pub const NATIVE_HTTP_GET: u8 = 2;
-pub const NATIVE_HTTP_POST: u8 = 3;
-pub const NATIVE_HTTP_CLIENT_REQUEST: u8 = 4;
-pub const NATIVE_HTTP_CLIENT_GET: u8 = 5;
-pub const NATIVE_HTTP_CLIENT_POST: u8 = 6;
-pub const NATIVE_HTTP_CLIENT_GET_WITH_HEADERS: u8 = 7;
-pub const NATIVE_HTTP_CLIENT_POST_WITH_HEADERS: u8 = 8;
+pub fn register_all(vm: &mut VM) {
+    vm.register_native("print", native_print);
+    vm.register_native("println", native_println);
+    vm.register_native("http_get", native_http_get);
+    vm.register_native("http_post", native_http_post);
+    vm.register_native("std::io::print", native_print);
+    vm.register_native("std::io::println", native_println);
 
-pub fn get_native(name: &str) -> Option<NativeFn> {
-    match name {
-        "print" => Some(native_print),
-        _ => None,
-    }
+    // JSON
+    vm.register_native("std::json::stringify", native_json_stringify);
+    vm.register_native("std::json::parse", native_json_parse);
+
+    // Reflection
+    vm.register_native("std::reflect::type_of", native_reflect_typeof);
+    vm.register_native("std::reflect::class_name", native_reflect_class_name);
+    vm.register_native("std::reflect::fields", native_reflect_fields);
+
+    // Fallback function that throws an error
+
+    vm.register_fallback(|_args| {
+        Err("Native method not available or disabled by runtime".to_string())
+    });
 }
 
-pub type NativeFn = fn(&mut Vec<String>) -> Result<(), String>;
+fn native_print(args: &mut Vec<Value>) -> Result<Value, String> {
+    for arg in args {
+        print!("{}", arg.to_string());
+    }
+    Ok(Value::Null)
+}
 
-fn native_print(args: &mut Vec<String>) -> Result<(), String> {
+fn native_println(args: &mut Vec<Value>) -> Result<Value, String> {
+    for arg in args {
+        print!("{}", arg.to_string());
+    }
+    println!();
+    Ok(Value::Null)
+}
+
+fn native_http_get(args: &mut Vec<Value>) -> Result<Value, String> {
     if args.is_empty() {
-        return Err("print() requires at least 1 argument".to_string());
+        return Err("http_get requires URL argument".to_string());
     }
-
-    let s = args.remove(0);
-    print!("{}", s);
-    Ok(())
-}
-
-pub fn call_native_by_id(id: u8, args: &mut Vec<String>) -> Result<(), String> {
-    match id {
-        NATIVE_BENGAL_PRINT => native_bengal_print(args),
-        NATIVE_BENGAL_PRINTLN => native_bengal_println(args),
-        _ => Err(format!("Unknown native function ID: {}", id)),
-    }
-}
-
-fn native_bengal_print(args: &mut Vec<String>) -> Result<(), String> {
-    if args.is_empty() {
-        return Err("bengal_print() requires at least 1 argument".to_string());
-    }
-    let s = args.remove(0);
-    print!("{}", s);
-    Ok(())
-}
-
-fn native_bengal_println(args: &mut Vec<String>) -> Result<(), String> {
-    if args.is_empty() {
-        return Err("bengal_println() requires at least 1 argument".to_string());
-    }
-    let s = args.remove(0);
-    println!("{}", s);
-    Ok(())
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_print(s: *const c_char) {
-    unsafe {
-        if let Ok(c_str) = CStr::from_ptr(s).to_str() {
-            print!("{}", c_str);
+    let url = args[0].to_string();
+    
+    let promise = Arc::new(Mutex::new(PromiseState::Pending));
+    let p_clone = promise.clone();
+    
+    tokio::spawn(async move {
+        match http_get_async(&url).await {
+            Ok(response) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Resolved(Value::String(response));
+            }
+            Err(e) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Rejected(e);
+            }
         }
-    }
+    });
+    
+    Ok(Value::Promise(promise))
 }
 
-#[no_mangle]
-pub extern "C" fn bengal_println(s: *const c_char) {
-    unsafe {
-        if let Ok(c_str) = CStr::from_ptr(s).to_str() {
-            println!("{}", c_str);
+fn native_http_post(args: &mut Vec<Value>) -> Result<Value, String> {
+    if args.len() < 2 {
+        return Err("http_post requires URL and body arguments".to_string());
+    }
+    let url = args[0].to_string();
+    let body = args[1].to_string();
+    
+    let promise = Arc::new(Mutex::new(PromiseState::Pending));
+    let p_clone = promise.clone();
+    
+    tokio::spawn(async move {
+        match http_post_async(&url, &body).await {
+            Ok(response) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Resolved(Value::String(response));
+            }
+            Err(e) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Rejected(e);
+            }
         }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_init() -> i32 {
-    0
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_exit(code: i32) {
-    std::process::exit(code);
+    });
+    
+    Ok(Value::Promise(promise))
 }
 
 // Async HTTP functions
@@ -294,218 +305,80 @@ pub struct HttpResponse {
     pub url: String,
 }
 
-// Helper function to get async native function result
-pub async fn call_native_async_by_id(id: u8, args: &[String]) -> Result<String, String> {
-    match id {
-        NATIVE_HTTP_GET => {
-            let url = args.first().ok_or("http_get requires URL argument")?;
-            http_get_async(url).await
-        }
-        NATIVE_HTTP_POST => {
-            let url = args.first().ok_or("http_post requires URL argument")?;
-            let body = args.get(1).map(|s| s.as_str()).unwrap_or("");
-            http_post_async(url, body).await
-        }
-        NATIVE_HTTP_CLIENT_GET => {
-            let url = args.first().ok_or("http_client_get requires URL argument")?;
-            let config = HttpClientConfig::default();
-            match http_client_request_async(&config, "GET", url, "", None).await {
-                Ok(response) => Ok(response.body),
-                Err(e) => Err(e),
-            }
-        }
-        NATIVE_HTTP_CLIENT_POST => {
-            let url = args.first().ok_or("http_client_post requires URL argument")?;
-            let body = args.get(1).map(|s| s.as_str()).unwrap_or("");
-            let config = HttpClientConfig::default();
-            match http_client_request_async(&config, "POST", url, "", Some(body)).await {
-                Ok(response) => Ok(response.body),
-                Err(e) => Err(e),
-            }
-        }
-        NATIVE_HTTP_CLIENT_GET_WITH_HEADERS => {
-            let url = args.first().ok_or("http_client_get_with_headers requires URL argument")?;
-            let headers = args.get(1).map(|s| s.as_str()).unwrap_or("");
-            let config = HttpClientConfig::default();
-            match http_client_request_async(&config, "GET", url, headers, None).await {
-                Ok(response) => Ok(response.body),
-                Err(e) => Err(e),
-            }
-        }
-        NATIVE_HTTP_CLIENT_POST_WITH_HEADERS => {
-            let url = args.first().ok_or("http_client_post_with_headers requires URL argument")?;
-            let headers = args.get(1).map(|s| s.as_str()).unwrap_or("");
-            let body = args.get(2).map(|s| s.as_str()).unwrap_or("");
-            let config = HttpClientConfig::default();
-            match http_client_request_async(&config, "POST", url, headers, Some(body)).await {
-                Ok(response) => Ok(response.body),
-                Err(e) => Err(e),
-            }
-        }
-        _ => Err(format!("Unknown async native function ID: {}", id)),
+// JSON
+fn native_json_stringify(args: &mut Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() {
+        return Err("stringify requires at least one argument".to_string());
+    }
+    
+    match simd_json::to_string(&args[0]) {
+        Ok(s) => Ok(Value::String(s)),
+        Err(e) => Err(format!("Failed to serialize: {}", e)),
     }
 }
 
-// FFI Type Conversion Functions
-// These functions allow converting Bengal's i64/f64 to specific C types
-
-/// Convert i64 to u8 (wraps on overflow)
-pub fn ffi_to_u8(value: i64) -> u8 {
-    value as u8
+fn native_json_parse(args: &mut Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() {
+        return Err("parse requires at least one argument".to_string());
+    }
+    
+    let json_str = match &args[0] {
+        Value::String(s) => s.clone(),
+        _ => return Err("parse requires a string argument".to_string()),
+    };
+    
+    let mut bytes = json_str.into_bytes();
+    match simd_json::from_slice(&mut bytes) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(format!("Failed to parse JSON: {}", e)),
+    }
 }
 
-/// Convert i64 to i8 (wraps on overflow)
-pub fn ffi_to_i8(value: i64) -> i8 {
-    value as i8
+// Reflection
+fn native_reflect_typeof(args: &mut Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() {
+        return Err("typeof requires at least one argument".to_string());
+    }
+    
+    let type_name = match &args[0] {
+        Value::String(_) => "string",
+        Value::Int8(_) | Value::Int16(_) | Value::Int32(_) | Value::Int64(_) |
+        Value::UInt8(_) | Value::UInt16(_) | Value::UInt32(_) | Value::UInt64(_) => "int",
+        Value::Float32(_) | Value::Float64(_) => "float",
+        Value::Bool(_) => "bool",
+        Value::Null => "null",
+        Value::Instance(_) => "object",
+        Value::Promise(_) => "promise",
+    };
+    
+    Ok(Value::String(type_name.to_string()))
 }
 
-/// Convert i64 to u16 (wraps on overflow)
-pub fn ffi_to_u16(value: i64) -> u16 {
-    value as u16
+fn native_reflect_class_name(args: &mut Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() {
+        return Err("class_name requires at least one argument".to_string());
+    }
+    
+    match &args[0] {
+        Value::Instance(inst) => Ok(Value::String(inst.class.clone())),
+        _ => Ok(Value::Null),
+    }
 }
 
-/// Convert i64 to i16 (wraps on overflow)
-pub fn ffi_to_i16(value: i64) -> i16 {
-    value as i16
+fn native_reflect_fields(args: &mut Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() {
+        return Err("fields requires at least one argument".to_string());
+    }
+    
+    match &args[0] {
+        Value::Instance(inst) => {
+            use sparkler::vm::Instance;
+            Ok(Value::Instance(Instance {
+                class: "Object".to_string(),
+                fields: inst.fields.clone(),
+            }))
+        }
+        _ => Ok(Value::Null),
+    }
 }
 
-/// Convert i64 to u32 (wraps on overflow)
-pub fn ffi_to_u32(value: i64) -> u32 {
-    value as u32
-}
-
-/// Convert i64 to i32 (wraps on overflow)
-pub fn ffi_to_i32(value: i64) -> i32 {
-    value as i32
-}
-
-/// Convert i64 to u64 (wraps on overflow)
-pub fn ffi_to_u64(value: i64) -> u64 {
-    value as u64
-}
-
-/// Convert f64 to f32 (may lose precision)
-pub fn ffi_to_f32(value: f64) -> f32 {
-    value as f32
-}
-
-/// Convert u8 to i64
-pub fn ffi_from_u8(value: u8) -> i64 {
-    value as i64
-}
-
-/// Convert i8 to i64
-pub fn ffi_from_i8(value: i8) -> i64 {
-    value as i64
-}
-
-/// Convert u16 to i64
-pub fn ffi_from_u16(value: u16) -> i64 {
-    value as i64
-}
-
-/// Convert i16 to i64
-pub fn ffi_from_i16(value: i16) -> i64 {
-    value as i64
-}
-
-/// Convert u32 to i64
-pub fn ffi_from_u32(value: u32) -> i64 {
-    value as i64
-}
-
-/// Convert i32 to i64
-pub fn ffi_from_i32(value: i32) -> i64 {
-    value as i64
-}
-
-/// Convert u64 to i64 (wraps on overflow)
-pub fn ffi_from_u64(value: u64) -> i64 {
-    value as i64
-}
-
-/// Convert f32 to f64
-pub fn ffi_from_f32(value: f32) -> f64 {
-    value as f64
-}
-
-// C FFI exports for external use
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_u8(value: i64) -> u8 {
-    ffi_to_u8(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_i8(value: i64) -> i8 {
-    ffi_to_i8(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_u16(value: i64) -> u16 {
-    ffi_to_u16(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_i16(value: i64) -> i16 {
-    ffi_to_i16(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_u32(value: i64) -> u32 {
-    ffi_to_u32(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_i32(value: i64) -> i32 {
-    ffi_to_i32(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_u64(value: i64) -> u64 {
-    ffi_to_u64(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_to_f32(value: f64) -> f32 {
-    ffi_to_f32(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_u8(value: u8) -> i64 {
-    ffi_from_u8(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_i8(value: i8) -> i64 {
-    ffi_from_i8(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_u16(value: u16) -> i64 {
-    ffi_from_u16(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_i16(value: i16) -> i64 {
-    ffi_from_i16(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_u32(value: u32) -> i64 {
-    ffi_from_u32(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_i32(value: i32) -> i64 {
-    ffi_from_i32(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_u64(value: u64) -> i64 {
-    ffi_from_u64(value)
-}
-
-#[no_mangle]
-pub extern "C" fn bengal_ffi_from_f32(value: f32) -> f64 {
-    ffi_from_f32(value)
-}

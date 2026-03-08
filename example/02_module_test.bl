@@ -1,4 +1,4 @@
-module std.test
+module std::test
 
 import std::io
 

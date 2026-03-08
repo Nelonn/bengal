@@ -173,7 +173,7 @@ impl ModuleResolver {
             self.register_module_types(statements);
         }
 
-        // Register native functions from std.io
+        // Register native functions from std::io
         self.register_native_functions();
 
         // Now type check all loaded modules
@@ -230,6 +230,7 @@ impl ModuleResolver {
                         return_optional: func.return_optional,
                         is_method: false,
                         is_async: func.is_async,
+                        is_native: func.is_native,
                     });
                 }
                 _ => {}
@@ -238,7 +239,7 @@ impl ModuleResolver {
     }
 
     fn register_native_functions(&mut self) {
-        // std.io functions
+        // std::io functions
         self.type_context.functions.insert("print".to_string(), FunctionSignature {
             name: "print".to_string(),
             params: vec![ParamSignature {
@@ -249,6 +250,7 @@ impl ModuleResolver {
             return_optional: false,
             is_method: false,
             is_async: false,
+            is_native: true,
         });
 
         self.type_context.functions.insert("println".to_string(), FunctionSignature {
@@ -261,6 +263,7 @@ impl ModuleResolver {
             return_optional: false,
             is_method: false,
             is_async: false,
+            is_native: true,
         });
     }
 

@@ -2,6 +2,7 @@ use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, BinaryOp, UnaryOp, In
 use crate::lexer::Lexer;
 use crate::resolver::ModuleResolver;
 use crate::types::TypeContext;
+use sparkler::vm::{Class, Value, Opcode};
 
 pub type Bytecode = sparkler::executor::Bytecode;
 
@@ -76,7 +77,7 @@ impl Compiler {
         self.generate_code(&statements, type_context)
     }
 
-    fn generate_code(&self, statements: &[Stmt], _type_context: Option<TypeContext>) -> Result<Bytecode, String> {
+    fn generate_code(&self, statements: &[Stmt], type_context: Option<TypeContext>) -> Result<Bytecode, String> {
         let mut bytecode = Vec::new();
         let mut strings: Vec<String> = Vec::new();
         let mut classes: Vec<ClassDef> = Vec::new();
@@ -87,8 +88,34 @@ impl Compiler {
             }
         }
 
+        let mut vm_classes = Vec::new();
+        for c in &classes {
+            let mut fields = std::collections::HashMap::new();
+            for field in &c.fields {
+                let value = if let Some(default_expr) = &field.default {
+                    match default_expr {
+                        Expr::Literal(Literal::String(s)) => Value::String(s.clone()),
+                        Expr::Literal(Literal::Int(n)) => Value::Int64(*n),
+                        Expr::Literal(Literal::Float(f)) => Value::Float64(*f),
+                        Expr::Literal(Literal::Bool(b)) => Value::Bool(*b),
+                        Expr::Literal(Literal::Null) => Value::Null,
+                        _ => Value::Null,
+                    }
+                } else {
+                    Value::Null
+                };
+                fields.insert(field.name.clone(), value);
+            }
+
+            vm_classes.push(Class {
+                name: c.name.clone(),
+                fields,
+                methods: std::collections::HashMap::new(),
+            });
+        }
+
         for stmt in statements {
-            self.compile_stmt(stmt, &mut bytecode, &mut strings, &classes)?;
+            self.compile_stmt(stmt, &mut bytecode, &mut strings, &classes, type_context.as_ref())?;
         }
 
         bytecode.push(Opcode::Halt as u8);
@@ -96,10 +123,11 @@ impl Compiler {
         Ok(Bytecode {
             data: bytecode,
             strings,
+            classes: vm_classes,
         })
     }
 
-    fn compile_stmt(&self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef]) -> Result<(), String> {
+    fn compile_stmt(&self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
         match stmt {
             Stmt::Module { .. } => {
                 // Module declaration is currently a no-op for bytecode generation
@@ -120,14 +148,14 @@ impl Compiler {
                 // Runtime function calls are handled via the Call opcode
             }
             Stmt::Let { name, expr } => {
-                self.compile_expr(expr, bytecode, strings, classes)?;
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 let name_idx = strings.len();
                 strings.push(name.clone());
                 bytecode.push(Opcode::StoreLocal as u8);
                 bytecode.push(name_idx as u8);
             }
             Stmt::Assign { name, expr } => {
-                self.compile_expr(expr, bytecode, strings, classes)?;
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 let name_idx = strings.len();
                 strings.push(name.clone());
                 bytecode.push(Opcode::StoreLocal as u8);
@@ -135,18 +163,18 @@ impl Compiler {
             }
             Stmt::Return(expr) => {
                 if let Some(e) = expr {
-                    self.compile_expr(e, bytecode, strings, classes)?;
+                    self.compile_expr(e, bytecode, strings, classes, type_context)?;
                 } else {
                     bytecode.push(Opcode::PushNull as u8);
                 }
                 bytecode.push(Opcode::Return as u8);
             }
             Stmt::Expr(expr) => {
-                self.compile_expr(expr, bytecode, strings, classes)?;
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 bytecode.push(Opcode::Pop as u8);
             }
             Stmt::If { condition, then_branch, else_branch } => {
-                self.compile_expr(condition, bytecode, strings, classes)?;
+                self.compile_expr(condition, bytecode, strings, classes, type_context)?;
 
                 let mut else_jump = Vec::new();
                 if else_branch.is_some() {
@@ -160,7 +188,7 @@ impl Compiler {
                 }
 
                 for stmt in then_branch {
-                    self.compile_stmt(stmt, bytecode, strings, classes)?;
+                    self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
 
                 if let Some(else_b) = else_branch {
@@ -172,7 +200,7 @@ impl Compiler {
                     bytecode[else_jump[0]] = (else_target & 0xFF) as u8;
 
                     for stmt in else_b {
-                        self.compile_stmt(stmt, bytecode, strings, classes)?;
+                        self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                     }
 
                     let end_target = bytecode.len();
@@ -194,7 +222,7 @@ impl Compiler {
                     };
 
                     // Compile start value
-                    self.compile_expr(start, bytecode, strings, classes)?;
+                    self.compile_expr(start, bytecode, strings, classes, type_context)?;
 
                     // Store as iterator
                     let iter_idx = strings.len();
@@ -203,7 +231,7 @@ impl Compiler {
                     bytecode.push(iter_idx as u8);
 
                     // Compile end value
-                    self.compile_expr(end, bytecode, strings, classes)?;
+                    self.compile_expr(end, bytecode, strings, classes, type_context)?;
 
                     // Store end
                     let end_idx = strings.len();
@@ -244,7 +272,7 @@ impl Compiler {
 
                     // Compile body
                     for stmt in body {
-                        self.compile_stmt(stmt, bytecode, strings, classes)?;
+                        self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                     }
 
                     // Increment/decrement iterator
@@ -275,10 +303,10 @@ impl Compiler {
                 }
             }
             Stmt::While { condition, body } => {
-                let _loop_start = bytecode.len();
+                let loop_start = bytecode.len();
 
                 // Compile condition
-                self.compile_expr(condition, bytecode, strings, classes)?;
+                self.compile_expr(condition, bytecode, strings, classes, type_context)?;
 
                 bytecode.push(Opcode::JumpIfFalse as u8);
                 let exit_jump = bytecode.len();
@@ -286,24 +314,22 @@ impl Compiler {
 
                 // Compile body
                 for stmt in body {
-                    self.compile_stmt(stmt, bytecode, strings, classes)?;
+                    self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
 
                 // Jump back to start
                 bytecode.push(Opcode::Jump as u8);
-                let jump_back_pos = bytecode.len();
-                bytecode.push(0);
+                bytecode.push((loop_start & 0xFF) as u8);
 
                 // Exit position - fix up jumps
                 let exit_pos = bytecode.len();
                 bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
-                bytecode[jump_back_pos] = (exit_pos & 0xFF) as u8;
             }
         }
         Ok(())
     }
 
-    fn compile_expr(&self, expr: &Expr, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef]) -> Result<(), String> {
+    fn compile_expr(&self, expr: &Expr, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
         match expr {
             Expr::Literal(lit) => {
                 match lit {
@@ -337,8 +363,8 @@ impl Compiler {
                 bytecode.push(idx as u8);
             }
             Expr::Binary { left, op, right } => {
-                self.compile_expr(left, bytecode, strings, classes)?;
-                self.compile_expr(right, bytecode, strings, classes)?;
+                self.compile_expr(left, bytecode, strings, classes, type_context)?;
+                self.compile_expr(right, bytecode, strings, classes, type_context)?;
 
                 match op {
                     BinaryOp::Equal => bytecode.push(Opcode::Equal as u8),
@@ -357,31 +383,56 @@ impl Compiler {
                 }
             }
             Expr::Unary { op, expr } => {
-                self.compile_expr(expr, bytecode, strings, classes)?;
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 match op {
                     UnaryOp::Not => bytecode.push(Opcode::Not as u8),
                 }
             }
             Expr::Call { callee, args } => {
                 for arg in args {
-                    self.compile_expr(arg, bytecode, strings, classes)?;
+                    self.compile_expr(arg, bytecode, strings, classes, type_context)?;
                 }
 
                 if let Expr::Variable(func_name) = callee.as_ref() {
-                    if func_name.starts_with("C.") {
+                    let mut is_native = false;
+                    let mut is_async = false;
+                    
+                    if let Some(ctx) = type_context {
+                        if let Some(sig) = ctx.get_function(func_name) {
+                            is_native = sig.is_native;
+                            is_async = sig.is_async;
+                        }
+                    }
+
+                    if is_native {
+                        let idx = strings.len();
+                        strings.push(func_name.clone());
+                        if is_async {
+                            bytecode.push(Opcode::CallNativeAsync as u8);
+                        } else {
+                            bytecode.push(Opcode::CallNative as u8);
+                        }
+                        bytecode.push(idx as u8);
+                        bytecode.push(args.len() as u8);
+                    } else if func_name.starts_with("C.") {
                         let native_name = func_name.strip_prefix("C.").unwrap();
-                        let native_id = get_native_id(native_name);
+                        let idx = strings.len();
+                        strings.push(native_name.to_string());
+                        
                         // Check if it's an async native function
                         if native_name == "http_get" || native_name == "http_post" {
                             bytecode.push(Opcode::CallNativeAsync as u8);
                         } else {
                             bytecode.push(Opcode::CallNative as u8);
                         }
-                        bytecode.push(native_id);
+                        bytecode.push(idx as u8);
+                        bytecode.push(args.len() as u8);
                     } else if func_name == "println" || func_name == "print" {
-                        let native_id = get_native_id(func_name);
+                        let idx = strings.len();
+                        strings.push(func_name.clone());
                         bytecode.push(Opcode::CallNative as u8);
-                        bytecode.push(native_id);
+                        bytecode.push(idx as u8);
+                        bytecode.push(args.len() as u8);
                     } else {
                         let idx = strings.len();
                         strings.push(func_name.clone());
@@ -390,7 +441,15 @@ impl Compiler {
                         bytecode.push(args.len() as u8);
                     }
                 } else if let Expr::Get { object, name } = callee.as_ref() {
-                    self.compile_expr(object, bytecode, strings, classes)?;
+                    self.compile_expr(object, bytecode, strings, classes, type_context)?;
+
+                    let mut _is_native = false;
+                    let mut _is_async = false;
+                    
+                    if let Some(_ctx) = type_context {
+                        // We need a way to infer object type here, but for now we skip this
+                        // and assume native methods are handled via InvokeNative
+                    }
 
                     let method_idx = strings.len();
                     strings.push(name.clone());
@@ -400,15 +459,15 @@ impl Compiler {
                 }
             }
             Expr::Get { object, name } => {
-                self.compile_expr(object, bytecode, strings, classes)?;
+                self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let idx = strings.len();
                 strings.push(name.clone());
                 bytecode.push(Opcode::GetProperty as u8);
                 bytecode.push(idx as u8);
             }
             Expr::Set { object, name, value } => {
-                self.compile_expr(object, bytecode, strings, classes)?;
-                self.compile_expr(value, bytecode, strings, classes)?;
+                self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                self.compile_expr(value, bytecode, strings, classes, type_context)?;
                 let idx = strings.len();
                 strings.push(name.clone());
                 bytecode.push(Opcode::SetProperty as u8);
@@ -424,7 +483,7 @@ impl Compiler {
                             bytecode.push(idx as u8);
                         }
                         InterpPart::Expr(e) => {
-                            self.compile_expr(e, bytecode, strings, classes)?;
+                            self.compile_expr(e, bytecode, strings, classes, type_context)?;
                         }
                     }
                 }
@@ -437,7 +496,7 @@ impl Compiler {
                 return Err("Range expression outside of for loop".to_string());
             }
             Expr::Await { expr } => {
-                self.compile_expr(expr, bytecode, strings, classes)?;
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 bytecode.push(Opcode::Await as u8);
             }
         }
@@ -445,69 +504,3 @@ impl Compiler {
     }
 }
 
-fn get_native_id(name: &str) -> u8 {
-    match name {
-        "bengal_print" | "print" => 0,
-        "bengal_println" | "println" => 1,
-        "http_get" => 2,
-        "http_post" => 3,
-        "http_client_request" => 4,
-        "http_client_get" => 5,
-        "http_client_post" => 6,
-        "http_client_get_with_headers" => 7,
-        "http_client_post_with_headers" => 8,
-        _ => 255,
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-#[allow(dead_code)]
-pub enum Opcode {
-    Nop = 0x00,
-
-    PushString = 0x10,
-    PushInt = 0x11,
-    PushFloat = 0x12,
-    PushBool = 0x13,
-    PushNull = 0x14,
-
-    LoadLocal = 0x20,
-    StoreLocal = 0x21,
-
-    GetProperty = 0x30,
-    SetProperty = 0x31,
-
-    Call = 0x40,
-    CallNative = 0x41,
-    Invoke = 0x42,
-    Return = 0x43,
-    CallAsync = 0x44,
-    CallNativeAsync = 0x45,
-    InvokeAsync = 0x46,
-    Await = 0x47,
-    Spawn = 0x48,
-
-    Jump = 0x50,
-    JumpIfTrue = 0x51,
-    JumpIfFalse = 0x52,
-    JumpIfGreater = 0x53,
-    JumpIfLess = 0x54,
-
-    Equal = 0x60,
-    NotEqual = 0x61,
-    And = 0x62,
-    Or = 0x63,
-    Not = 0x64,
-    Concat = 0x65,
-    Greater = 0x66,
-    Less = 0x67,
-    Add = 0x68,
-    Subtract = 0x69,
-    Multiply = 0x70,
-    Divide = 0x71,
-
-    Pop = 0x72,
-
-    Halt = 0xFF,
-}

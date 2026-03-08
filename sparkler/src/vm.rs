@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use bengal_std;
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use serde::ser::SerializeMap;
+use serde::de::{MapAccess, Visitor};
+use std::fmt;
 
 pub type Bytecode = Vec<u8>;
 
@@ -257,7 +260,7 @@ pub struct Instance {
 #[derive(Clone)]
 pub struct Class {
     pub name: String,
-    pub fields: Vec<String>,
+    pub fields: HashMap<String, Value>,
     pub methods: HashMap<String, Method>,
 }
 
@@ -267,6 +270,8 @@ pub struct Method {
     pub bytecode: Vec<u8>,
 }
 
+pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, String>;
+
 pub struct VM {
     memory: Bytecode,
     stack: Vec<Value>,
@@ -274,11 +279,12 @@ pub struct VM {
     strings: Vec<String>,
     locals: HashMap<String, Value>,
     classes: HashMap<String, Class>,
+    pub native_functions: HashMap<String, NativeFn>,
+    pub fallback_native: Option<NativeFn>,
 }
 
 impl VM {
     pub fn new() -> Self {
-        println!("size_of(Value) = {}", std::mem::size_of::<Value>());
         Self {
             memory: Vec::new(),
             stack: Vec::new(),
@@ -286,12 +292,26 @@ impl VM {
             strings: Vec::new(),
             locals: HashMap::new(),
             classes: HashMap::new(),
+            native_functions: HashMap::new(),
+            fallback_native: None,
         }
     }
 
-    pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>) -> Result<(), String> {
+    pub fn register_native(&mut self, name: &str, f: NativeFn) {
+        self.native_functions.insert(name.to_string(), f);
+    }
+
+    pub fn register_fallback(&mut self, f: NativeFn) {
+        self.fallback_native = Some(f);
+    }
+
+    pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>) -> Result<(), String> {
         self.memory = bytecode.to_vec();
         self.strings = strings;
+        self.classes.clear();
+        for class in classes {
+            self.classes.insert(class.name.clone(), class);
+        }
         self.pc = 0;
         self.stack.clear();
         Ok(())
@@ -423,15 +443,35 @@ impl VM {
                 self.pc += 1;
                 let arg_count = self.memory[self.pc] as usize;
 
-                let _func_name = self.strings.get(func_idx)
+                let func_name = self.strings.get(func_idx)
                     .ok_or(format!("Invalid function index: {}", func_idx))?
                     .clone();
 
-                for _ in 0..arg_count {
-                    self.stack.pop();
+                if let Some(class) = self.classes.get(&func_name).cloned() {
+                    for _ in 0..arg_count {
+                        self.stack.pop();
+                    }
+                    let instance = Instance {
+                        class: func_name,
+                        fields: class.fields.clone(),
+                    };
+                    self.stack.push(Value::Instance(instance));
+                } else if let Some(native_f) = self.native_functions.get(&func_name) {
+                    let mut args = Vec::new();
+                    for _ in 0..arg_count {
+                        if let Some(val) = self.stack.pop() {
+                            args.push(val);
+                        }
+                    }
+                    args.reverse();
+                    let result = native_f(&mut args)?;
+                    self.stack.push(result);
+                } else {
+                    for _ in 0..arg_count {
+                        self.stack.pop();
+                    }
+                    self.stack.push(Value::Null);
                 }
-
-                self.stack.push(Value::Null);
             }
 
             x if x == Opcode::CallAsync as u8 => {
@@ -452,110 +492,37 @@ impl VM {
                 self.stack.push(Value::Promise(promise));
             }
 
-            x if x == Opcode::CallNative as u8 => {
+            x if x == Opcode::CallNative as u8 || x == Opcode::CallNativeAsync as u8 => {
                 self.pc += 1;
-                let native_id = self.memory[self.pc];
-
-                let mut args: Vec<String> = Vec::new();
-                if let Some(value) = self.stack.pop() {
-                    args.push(value.to_string());
-                }
-
-                bengal_std::call_native_by_id(native_id, &mut args)?;
-                self.stack.push(Value::Null);
-            }
-
-            x if x == Opcode::CallNativeAsync as u8 => {
+                let name_idx = self.memory[self.pc] as usize;
                 self.pc += 1;
-                let native_id = self.memory[self.pc];
+                let arg_count = self.memory[self.pc] as usize;
 
-                // Pop all arguments from stack
-                let mut args: Vec<String> = Vec::new();
-                while let Some(value) = self.stack.pop() {
-                    args.push(value.to_string());
+                let name = self.strings.get(name_idx)
+                    .ok_or(format!("Invalid native name index: {}", name_idx))?
+                    .clone();
+
+                let mut args = Vec::new();
+                for _ in 0..arg_count {
+                    if let Some(val) = self.stack.pop() {
+                        args.push(val);
+                    }
                 }
-                args.reverse(); // Arguments are pushed in reverse order
+                args.reverse();
 
-                // For async native calls, create a promise
-                let promise_state = match native_id {
-                    NATIVE_HTTP_GET => {
-                        let url = args.first().cloned().unwrap_or_default();
-                        match bengal_std::http_get_async(&url).await {
-                            Ok(response) => PromiseState::Resolved(Value::String(response)),
-                            Err(e) => PromiseState::Rejected(e),
-                        }
-                    }
-                    NATIVE_HTTP_POST => {
-                        let url = args.first().cloned().unwrap_or_default();
-                        let body = args.get(1).cloned().unwrap_or_default();
-                        match bengal_std::http_post_async(&url, &body).await {
-                            Ok(response) => PromiseState::Resolved(Value::String(response)),
-                            Err(e) => PromiseState::Rejected(e),
-                        }
-                    }
-                    NATIVE_HTTP_CLIENT_REQUEST => {
-                        // Arguments: client_config, method, url, headers, body
-                        let method = args.get(1).cloned().unwrap_or_else(|| "GET".to_string());
-                        let url = args.get(2).cloned().unwrap_or_default();
-                        let headers = args.get(3).cloned().unwrap_or_default();
-                        let body = args.get(4).cloned();
-
-                        let config = bengal_std::HttpClientConfig::default();
-                        match bengal_std::http_client_request_async(&config, &method, &url, &headers, body.as_deref()).await {
-                            Ok(response) => {
-                                let response_str = format!("{}|{}|{}|{}|{}",
-                                    response.status,
-                                    response.status_text,
-                                    response.headers,
-                                    response.body,
-                                    response.url
-                                );
-                                PromiseState::Resolved(Value::String(response_str))
+                let func = self.native_functions.get(&name);
+                let result = match func {
+                    Some(f) => f(&mut args)?,
+                    None => {
+                        match &self.fallback_native {
+                            Some(f) => f(&mut args)?,
+                            None => {
+                                return Err(format!("Native function not found: {}", name));
                             }
-                            Err(e) => PromiseState::Rejected(e),
                         }
                     }
-                    NATIVE_HTTP_CLIENT_GET => {
-                        let url = args.first().cloned().unwrap_or_default();
-                        let config = bengal_std::HttpClientConfig::default();
-                        match bengal_std::http_client_request_async(&config, "GET", &url, "", None).await {
-                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
-                            Err(e) => PromiseState::Rejected(e),
-                        }
-                    }
-                    NATIVE_HTTP_CLIENT_POST => {
-                        let url = args.first().cloned().unwrap_or_default();
-                        let body = args.get(1).cloned().unwrap_or_default();
-                        let config = bengal_std::HttpClientConfig::default();
-                        match bengal_std::http_client_request_async(&config, "POST", &url, "", Some(&body)).await {
-                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
-                            Err(e) => PromiseState::Rejected(e),
-                        }
-                    }
-                    NATIVE_HTTP_CLIENT_GET_WITH_HEADERS => {
-                        let url = args.first().cloned().unwrap_or_default();
-                        let headers = args.get(1).cloned().unwrap_or_default();
-                        let config = bengal_std::HttpClientConfig::default();
-                        match bengal_std::http_client_request_async(&config, "GET", &url, &headers, None).await {
-                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
-                            Err(e) => PromiseState::Rejected(e),
-                        }
-                    }
-                    NATIVE_HTTP_CLIENT_POST_WITH_HEADERS => {
-                        let url = args.first().cloned().unwrap_or_default();
-                        let headers = args.get(1).cloned().unwrap_or_default();
-                        let body = args.get(2).cloned().unwrap_or_default();
-                        let config = bengal_std::HttpClientConfig::default();
-                        match bengal_std::http_client_request_async(&config, "POST", &url, &headers, Some(&body)).await {
-                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
-                            Err(e) => PromiseState::Rejected(e),
-                        }
-                    }
-                    _ => PromiseState::Resolved(Value::Null),
                 };
-
-                let promise = Arc::new(Mutex::new(promise_state));
-                self.stack.push(Value::Promise(promise));
+                self.stack.push(result);
             }
 
             x if x == Opcode::Invoke as u8 => {
@@ -950,11 +917,124 @@ pub enum Opcode {
     Halt = 0xFF,
 }
 
-// Native function IDs for async operations
-pub const NATIVE_HTTP_GET: u8 = 2;
-pub const NATIVE_HTTP_POST: u8 = 3;
-pub const NATIVE_HTTP_CLIENT_REQUEST: u8 = 4;
-pub const NATIVE_HTTP_CLIENT_GET: u8 = 5;
-pub const NATIVE_HTTP_CLIENT_POST: u8 = 6;
-pub const NATIVE_HTTP_CLIENT_GET_WITH_HEADERS: u8 = 7;
-pub const NATIVE_HTTP_CLIENT_POST_WITH_HEADERS: u8 = 8;
+impl Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Value::String(s) => serializer.serialize_str(s),
+            Value::Int8(i) => serializer.serialize_i8(*i),
+            Value::Int16(i) => serializer.serialize_i16(*i),
+            Value::Int32(i) => serializer.serialize_i32(*i),
+            Value::Int64(i) => serializer.serialize_i64(*i),
+            Value::UInt8(i) => serializer.serialize_u8(*i),
+            Value::UInt16(i) => serializer.serialize_u16(*i),
+            Value::UInt32(i) => serializer.serialize_u32(*i),
+            Value::UInt64(i) => serializer.serialize_u64(*i),
+            Value::Float32(f) => serializer.serialize_f32(*f),
+            Value::Float64(f) => serializer.serialize_f64(*f),
+            Value::Bool(b) => serializer.serialize_bool(*b),
+            Value::Null => serializer.serialize_none(),
+            Value::Instance(inst) => {
+                let mut map = serializer.serialize_map(Some(inst.fields.len()))?;
+                for (k, v) in &inst.fields {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Value::Promise(_) => serializer.serialize_none(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Value {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ValueVisitor;
+
+        impl<'de> Visitor<'de> for ValueVisitor {
+            type Value = Value;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a valid Bengal value")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Bool(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Int64(value))
+            }
+            
+            fn visit_u64<E>(self, value: u64) -> Result<Value, E>
+            where E: serde::de::Error {
+                if value <= i64::MAX as u64 {
+                    Ok(Value::Int64(value as i64))
+                } else {
+                    Ok(Value::UInt64(value))
+                }
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Float64(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::String(value.to_string()))
+            }
+            
+            fn visit_string<E>(self, value: String) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::String(value))
+            }
+
+            fn visit_none<E>(self) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Null)
+            }
+            
+            fn visit_unit<E>(self) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Null)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
+            where A: serde::de::SeqAccess<'de> {
+                let mut fields = HashMap::new();
+                let mut idx = 0;
+                while let Some(value) = seq.next_element()? {
+                    fields.insert(idx.to_string(), value);
+                    idx += 1;
+                }
+                fields.insert("length".to_string(), Value::Int64(idx));
+                Ok(Value::Instance(Instance {
+                    class: "Array".to_string(),
+                    fields,
+                }))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
+            where A: MapAccess<'de> {
+                let mut fields = HashMap::new();
+                while let Some((key, value)) = map.next_entry()? {
+                    fields.insert(key, value);
+                }
+                Ok(Value::Instance(Instance {
+                    class: "Object".to_string(),
+                    fields,
+                }))
+            }
+        }
+
+        deserializer.deserialize_any(ValueVisitor)
+    }
+}
+
