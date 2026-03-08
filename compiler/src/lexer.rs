@@ -13,6 +13,9 @@ pub enum Token {
     Let,
     If,
     Else,
+    For,
+    While,
+    In,
     Return,
     Private,
     Null,
@@ -28,6 +31,7 @@ pub enum Token {
     Bang,
     BangEqual,
     Question,
+    Range,
 
     Plus,
     Minus,
@@ -148,7 +152,15 @@ impl Lexer {
             ':' => { self.advance(); Ok(Token::Colon) }
             ',' => { self.advance(); Ok(Token::Comma) }
             ';' => { self.advance(); Ok(Token::Semicolon) }
-            '.' => { self.advance(); Ok(Token::Dot) }
+            '.' => {
+                self.advance();
+                if self.peek() == Some('.') {
+                    self.advance();
+                    Ok(Token::Range)
+                } else {
+                    Ok(Token::Dot)
+                }
+            }
             '$' => { self.advance(); Ok(Token::Dollar) }
             '=' => {
                 self.advance();
@@ -226,6 +238,9 @@ impl Lexer {
             "let" => Token::Let,
             "if" => Token::If,
             "else" => Token::Else,
+            "for" => Token::For,
+            "while" => Token::While,
+            "in" => Token::In,
             "return" => Token::Return,
             "private" => Token::Private,
             "null" => Token::Null,
@@ -247,6 +262,10 @@ impl Lexer {
         while let Some(ch) = self.peek() {
             if ch == '.' {
                 if is_float {
+                    break;
+                }
+                // Check if this is a range operator (..)
+                if self.peek_next() == Some('.') {
                     break;
                 }
                 is_float = true;

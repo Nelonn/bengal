@@ -436,9 +436,15 @@ impl VM {
 
                 let mut args: Vec<String> = Vec::new();
                 if let Some(value) = self.stack.pop() {
-                    if let Value::String(s) = value {
-                        args.push(s);
-                    }
+                    let arg_str = match value {
+                        Value::String(s) => s,
+                        Value::Int64(n) => n.to_string(),
+                        Value::Float64(n) => n.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Null => "null".to_string(),
+                        Value::Instance(_) => "[instance]".to_string(),
+                    };
+                    args.push(arg_str);
                 }
 
                 bengal_std::call_native_by_id(native_id, &mut args)?;
@@ -631,6 +637,32 @@ impl VM {
                 let should_jump = match self.stack.last() {
                     Some(Value::Bool(false)) => true,
                     Some(Value::Null) => true,
+                    _ => false,
+                };
+                if should_jump {
+                    self.pc = target.saturating_sub(1);
+                }
+            }
+
+            x if x == Opcode::JumpIfGreater as u8 => {
+                self.pc += 1;
+                let target = self.memory[self.pc] as usize;
+                let should_jump = match (self.stack.pop(), self.stack.pop()) {
+                    (Some(Value::Int(right)), Some(Value::Int(left))) => left > right,
+                    (Some(Value::Float(right)), Some(Value::Float(left))) => left > right,
+                    _ => false,
+                };
+                if should_jump {
+                    self.pc = target.saturating_sub(1);
+                }
+            }
+
+            x if x == Opcode::JumpIfLess as u8 => {
+                self.pc += 1;
+                let target = self.memory[self.pc] as usize;
+                let should_jump = match (self.stack.pop(), self.stack.pop()) {
+                    (Some(Value::Int(right)), Some(Value::Int(left))) => left < right,
+                    (Some(Value::Float(right)), Some(Value::Float(left))) => left > right,
                     _ => false,
                 };
                 if should_jump {
@@ -836,6 +868,90 @@ impl VM {
                 self.stack.push(Value::String(result));
             }
 
+            x if x == Opcode::Add as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Subtract as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Multiply as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Divide as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => {
+                        if b != 0 {
+                            Value::Int(a / b)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Greater as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Bool(a > b),
+                    (Value::Float(a), Value::Float(b)) => Value::Bool(a > b),
+                    (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) > b),
+                    (Value::Float(a), Value::Int(b)) => Value::Bool(a > (b as f64)),
+                    _ => Value::Bool(false),
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Less as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Bool(a < b),
+                    (Value::Float(a), Value::Float(b)) => Value::Bool(a < b),
+                    (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) < b),
+                    (Value::Float(a), Value::Int(b)) => Value::Bool(a < (b as f64)),
+                    _ => Value::Bool(false),
+                };
+                self.stack.push(result);
+            }
+
             x if x == Opcode::Pop as u8 => {
                 self.stack.pop();
             }
@@ -892,6 +1008,8 @@ pub enum Opcode {
     Jump = 0x50,
     JumpIfTrue = 0x51,
     JumpIfFalse = 0x52,
+    JumpIfGreater = 0x53,
+    JumpIfLess = 0x54,
 
     Equal = 0x60,
     NotEqual = 0x61,
@@ -901,13 +1019,12 @@ pub enum Opcode {
     Concat = 0x65,
     Greater = 0x66,
     Less = 0x67,
-
     Add = 0x68,
     Subtract = 0x69,
-    Multiply = 0x6A,
-    Divide = 0x6B,
+    Multiply = 0x70,
+    Divide = 0x71,
 
-    Pop = 0x70,
+    Pop = 0x72,
 
     Halt = 0xFF,
 }

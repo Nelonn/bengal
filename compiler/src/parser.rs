@@ -12,6 +12,8 @@ pub enum Stmt {
     Return(Option<Expr>),
     Expr(Expr),
     If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
+    For { var_name: String, range: Box<Expr>, body: Block },
+    While { condition: Expr, body: Block },
 }
 
 pub type Block = Vec<Stmt>;
@@ -80,6 +82,7 @@ pub enum Expr {
     Get { object: Box<Expr>, name: String },
     Set { object: Box<Expr>, name: String, value: Box<Expr> },
     Interpolated { parts: Vec<InterpPart> },
+    Range { start: Box<Expr>, end: Box<Expr> },
     Await { expr: Box<Expr> },
 }
 
@@ -201,6 +204,12 @@ impl Parser {
             self.parse_return()?
         } else if self.match_token(&Token::If) {
             self.parse_if()?
+        } else if self.match_token(&Token::For) {
+            self.parse_for()?
+        } else if self.match_token(&Token::While) {
+            self.parse_while()?
+        } else if self.match_token(&Token::Fn) {
+            return Err("Unexpected 'fn' outside of class".to_string());
         } else if self.match_token(&Token::Private) {
             return Err("Unexpected 'private' keyword".to_string());
         } else {
@@ -647,6 +656,63 @@ impl Parser {
         Ok(Stmt::If { condition, then_branch, else_branch })
     }
 
+    fn parse_for(&mut self) -> Result<Stmt, String> {
+        if !self.match_token(&Token::LParen) {
+            return Err("Expected '(' after 'for'".to_string());
+        }
+
+        let var_name = match self.advance() {
+            Token::Identifier(name) => name,
+            _ => return Err("Expected variable name in for loop".to_string()),
+        };
+
+        if !self.match_token(&Token::In) {
+            return Err("Expected 'in' after loop variable".to_string());
+        }
+
+        let range = self.parse_range()?;
+
+        if !self.match_token(&Token::RParen) {
+            return Err("Expected ')' after range expression".to_string());
+        }
+
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' for loop body".to_string());
+        }
+
+        let body = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close loop body".to_string());
+        }
+
+        Ok(Stmt::For { var_name, range: Box::new(range), body })
+    }
+
+    fn parse_while(&mut self) -> Result<Stmt, String> {
+        if !self.match_token(&Token::LParen) {
+            return Err("Expected '(' after 'while'".to_string());
+        }
+
+        let condition = self.parse_expression()?;
+
+        if !self.match_token(&Token::RParen) {
+            return Err("Expected ')' after condition".to_string());
+        }
+
+        if !self.match_token(&Token::LBrace) {
+            return Err("Expected '{' for while body".to_string());
+        }
+
+        let body = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return Err("Expected '}' to close while body".to_string());
+        }
+
+        Ok(Stmt::While { condition, body })
+    }
+
     fn parse_block(&mut self) -> Result<Block, String> {
         let mut block = Vec::new();
         self.skip_newlines();
@@ -676,13 +742,27 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_equality()?;
+        let expr = self.parse_range()?;
 
         loop {
             break;
         }
 
         Ok(expr)
+    }
+
+    fn parse_range(&mut self) -> Result<Expr, String> {
+        let start = self.parse_equality()?;
+
+        if self.match_token(&Token::Range) {
+            let end = self.parse_equality()?;
+            return Ok(Expr::Range {
+                start: Box::new(start),
+                end: Box::new(end),
+            });
+        }
+
+        Ok(start)
     }
 
     fn parse_equality(&mut self) -> Result<Expr, String> {
@@ -809,7 +889,7 @@ impl Parser {
             } else if self.match_token(&Token::LBrace) {
                 // Class instantiation with {} - for now we just consume the braces
                 // Full field initialization support would go here
-                
+
                 // Check for empty braces first
                 if !self.check(&Token::RBrace) {
                     // Try to parse field initializers (name: value pairs)
