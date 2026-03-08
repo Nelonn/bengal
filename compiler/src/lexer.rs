@@ -6,7 +6,9 @@ pub enum Token {
     Float(f64),
 
     Import,
+    Module,
     Class,
+    Enum,
     Fn,
     Let,
     If,
@@ -17,6 +19,8 @@ pub enum Token {
     Return,
     Private,
     Null,
+    Async,
+    Await,
 
     TypeInt,
     TypeFloat,
@@ -28,6 +32,11 @@ pub enum Token {
     BangEqual,
     Question,
     Range,
+
+    Plus,
+    Minus,
+    Star,
+    Slash,
 
     LParen,
     RParen,
@@ -142,6 +151,19 @@ impl Lexer {
                 }
             }
             '?' => { self.advance(); Ok(Token::Question) }
+            '+' => { self.advance(); Ok(Token::Plus) }
+            '-' => { self.advance(); Ok(Token::Minus) }
+            '*' => { self.advance(); Ok(Token::Star) }
+            '/' => {
+                self.advance();
+                if self.peek() == Some('/') {
+                    // This is a comment, skip it
+                    self.skip_comment();
+                    self.next_token()
+                } else {
+                    Ok(Token::Slash)
+                }
+            }
             '"' => self.read_string(),
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
@@ -177,7 +199,9 @@ impl Lexer {
 
         let token = match s.as_str() {
             "import" => Token::Import,
+            "module" => Token::Module,
             "class" => Token::Class,
+            "enum" => Token::Enum,
             "fn" => Token::Fn,
             "let" => Token::Let,
             "if" => Token::If,
@@ -188,6 +212,8 @@ impl Lexer {
             "return" => Token::Return,
             "private" => Token::Private,
             "null" => Token::Null,
+            "async" => Token::Async,
+            "await" => Token::Await,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,

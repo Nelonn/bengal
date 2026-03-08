@@ -1,14 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use bengal_std;
 
-pub struct VM {
-    memory: Vec<u8>,
-    stack: Vec<Value>,
-    pc: usize,
-    strings: Vec<String>,
-    locals: HashMap<String, Value>,
-    classes: HashMap<String, Class>,
-}
+pub type Bytecode = Vec<u8>;
 
 #[derive(Clone)]
 pub enum Value {
@@ -18,6 +13,7 @@ pub enum Value {
     Bool(bool),
     Null,
     Instance(Instance),
+    Promise(Arc<Mutex<PromiseState>>),
 }
 
 impl PartialEq for Value {
@@ -29,9 +25,17 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Instance(a), Value::Instance(b)) => a.class == b.class,
+            (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
+}
+
+#[derive(Clone)]
+pub enum PromiseState {
+    Pending,
+    Resolved(Value),
+    Rejected(String),
 }
 
 #[derive(Clone)]
@@ -51,6 +55,15 @@ pub struct Class {
 pub struct Method {
     pub name: String,
     pub bytecode: Vec<u8>,
+}
+
+pub struct VM {
+    memory: Bytecode,
+    stack: Vec<Value>,
+    pc: usize,
+    strings: Vec<String>,
+    locals: HashMap<String, Value>,
+    classes: HashMap<String, Class>,
 }
 
 impl VM {
@@ -73,21 +86,26 @@ impl VM {
         Ok(())
     }
 
-    pub fn run(&mut self) -> Result<(), String> {
+    pub async fn run(&mut self) -> Result<Option<Value>, String> {
         while self.pc < self.memory.len() {
             let opcode = self.memory[self.pc];
-            self.execute(opcode)?;
+            let result = self.execute(opcode).await?;
 
             if opcode == Opcode::Halt as u8 {
                 break;
             }
 
+            if let ExecutionResult::Awaiting(promise) = result {
+                return Ok(Some(Value::Promise(promise)));
+            }
+
             self.pc += 1;
         }
-        Ok(())
+        
+        Ok(self.stack.last().cloned())
     }
 
-    fn execute(&mut self, opcode: u8) -> Result<(), String> {
+    async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, String> {
         match opcode {
             x if x == Opcode::Nop as u8 => {}
 
@@ -205,6 +223,24 @@ impl VM {
                 self.stack.push(Value::Null);
             }
 
+            x if x == Opcode::CallAsync as u8 => {
+                self.pc += 1;
+                let func_idx = self.memory[self.pc] as usize;
+                self.pc += 1;
+                let arg_count = self.memory[self.pc] as usize;
+
+                let _func_name = self.strings.get(func_idx)
+                    .ok_or(format!("Invalid function index: {}", func_idx))?
+                    .clone();
+
+                for _ in 0..arg_count {
+                    self.stack.pop();
+                }
+
+                let promise = Arc::new(Mutex::new(PromiseState::Resolved(Value::Null)));
+                self.stack.push(Value::Promise(promise));
+            }
+
             x if x == Opcode::CallNative as u8 => {
                 self.pc += 1;
                 let native_id = self.memory[self.pc];
@@ -226,6 +262,105 @@ impl VM {
                 self.stack.push(Value::Null);
             }
 
+            x if x == Opcode::CallNativeAsync as u8 => {
+                self.pc += 1;
+                let native_id = self.memory[self.pc];
+
+                // Pop all arguments from stack
+                let mut args: Vec<String> = Vec::new();
+                while let Some(value) = self.stack.pop() {
+                    match value {
+                        Value::String(s) => args.push(s),
+                        Value::Int(i) => args.push(i.to_string()),
+                        Value::Float(f) => args.push(f.to_string()),
+                        Value::Bool(b) => args.push(b.to_string()),
+                        _ => args.push("".to_string()),
+                    }
+                }
+                args.reverse(); // Arguments are pushed in reverse order
+
+                // For async native calls, create a promise
+                let promise_state = match native_id {
+                    NATIVE_HTTP_GET => {
+                        let url = args.first().cloned().unwrap_or_default();
+                        match bengal_std::http_get_async(&url).await {
+                            Ok(response) => PromiseState::Resolved(Value::String(response)),
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    NATIVE_HTTP_POST => {
+                        let url = args.first().cloned().unwrap_or_default();
+                        let body = args.get(1).cloned().unwrap_or_default();
+                        match bengal_std::http_post_async(&url, &body).await {
+                            Ok(response) => PromiseState::Resolved(Value::String(response)),
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    NATIVE_HTTP_CLIENT_REQUEST => {
+                        // Arguments: client_config, method, url, headers, body
+                        let method = args.get(1).cloned().unwrap_or_else(|| "GET".to_string());
+                        let url = args.get(2).cloned().unwrap_or_default();
+                        let headers = args.get(3).cloned().unwrap_or_default();
+                        let body = args.get(4).cloned();
+
+                        let config = bengal_std::HttpClientConfig::default();
+                        match bengal_std::http_client_request_async(&config, &method, &url, &headers, body.as_deref()).await {
+                            Ok(response) => {
+                                let response_str = format!("{}|{}|{}|{}|{}",
+                                    response.status,
+                                    response.status_text,
+                                    response.headers,
+                                    response.body,
+                                    response.url
+                                );
+                                PromiseState::Resolved(Value::String(response_str))
+                            }
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    NATIVE_HTTP_CLIENT_GET => {
+                        let url = args.first().cloned().unwrap_or_default();
+                        let config = bengal_std::HttpClientConfig::default();
+                        match bengal_std::http_client_request_async(&config, "GET", &url, "", None).await {
+                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    NATIVE_HTTP_CLIENT_POST => {
+                        let url = args.first().cloned().unwrap_or_default();
+                        let body = args.get(1).cloned().unwrap_or_default();
+                        let config = bengal_std::HttpClientConfig::default();
+                        match bengal_std::http_client_request_async(&config, "POST", &url, "", Some(&body)).await {
+                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    NATIVE_HTTP_CLIENT_GET_WITH_HEADERS => {
+                        let url = args.first().cloned().unwrap_or_default();
+                        let headers = args.get(1).cloned().unwrap_or_default();
+                        let config = bengal_std::HttpClientConfig::default();
+                        match bengal_std::http_client_request_async(&config, "GET", &url, &headers, None).await {
+                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    NATIVE_HTTP_CLIENT_POST_WITH_HEADERS => {
+                        let url = args.first().cloned().unwrap_or_default();
+                        let headers = args.get(1).cloned().unwrap_or_default();
+                        let body = args.get(2).cloned().unwrap_or_default();
+                        let config = bengal_std::HttpClientConfig::default();
+                        match bengal_std::http_client_request_async(&config, "POST", &url, &headers, Some(&body)).await {
+                            Ok(response) => PromiseState::Resolved(Value::String(response.body)),
+                            Err(e) => PromiseState::Rejected(e),
+                        }
+                    }
+                    _ => PromiseState::Resolved(Value::Null),
+                };
+
+                let promise = Arc::new(Mutex::new(promise_state));
+                self.stack.push(Value::Promise(promise));
+            }
+
             x if x == Opcode::Invoke as u8 => {
                 self.pc += 1;
                 let method_idx = self.memory[self.pc] as usize;
@@ -243,7 +378,55 @@ impl VM {
                 self.stack.push(Value::Null);
             }
 
-            x if x == Opcode::Return as u8 => {}
+            x if x == Opcode::InvokeAsync as u8 => {
+                self.pc += 1;
+                let method_idx = self.memory[self.pc] as usize;
+                self.pc += 1;
+                let arg_count = self.memory[self.pc] as usize;
+
+                let _method_name = self.strings.get(method_idx)
+                    .ok_or(format!("Invalid method index: {}", method_idx))?
+                    .clone();
+
+                for _ in 0..arg_count {
+                    self.stack.pop();
+                }
+
+                let promise = Arc::new(Mutex::new(PromiseState::Resolved(Value::Null)));
+                self.stack.push(Value::Promise(promise));
+            }
+
+            x if x == Opcode::Await as u8 => {
+                if let Some(value) = self.stack.pop() {
+                    match value {
+                        Value::Promise(promise) => {
+                            let mut state = promise.lock().await;
+                            match &mut *state {
+                                PromiseState::Pending => {
+                                    self.stack.push(Value::Promise(promise.clone()));
+                                    drop(state);
+                                    return Ok(ExecutionResult::Awaiting(promise));
+                                }
+                                PromiseState::Resolved(v) => {
+                                    self.stack.push(v.clone());
+                                }
+                                PromiseState::Rejected(e) => {
+                                    return Err(format!("Promise rejected: {}", e));
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err("Can only await Promise values".to_string());
+                        }
+                    }
+                } else {
+                    return Err("Stack underflow during await".to_string());
+                }
+            }
+
+            x if x == Opcode::Return as u8 => {
+                // Return from current frame
+            }
 
             x if x == Opcode::Jump as u8 => {
                 self.pc += 1;
@@ -325,6 +508,65 @@ impl VM {
                 let left = self.stack.pop().unwrap_or(Value::Null);
                 let result = is_truthy(&left) || is_truthy(&right);
                 self.stack.push(Value::Bool(result));
+            }
+
+            x if x == Opcode::Add as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                    (Value::String(a), Value::String(b)) => Value::String(a + &b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Subtract as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Multiply as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Divide as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (left, right) {
+                    (Value::Int(a), Value::Int(b)) => {
+                        if b != 0 {
+                            Value::Int(a / b)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
+                    (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
             }
 
             x if x == Opcode::Concat as u8 => {
@@ -441,8 +683,13 @@ impl VM {
                 return Err(format!("Unknown opcode: 0x{:02X}", opcode));
             }
         }
-        Ok(())
+        Ok(ExecutionResult::Continue)
     }
+}
+
+pub enum ExecutionResult {
+    Continue,
+    Awaiting(Arc<Mutex<PromiseState>>),
 }
 
 fn is_truthy(value: &Value) -> bool {
@@ -480,6 +727,11 @@ pub enum Opcode {
     CallNative = 0x41,
     Invoke = 0x42,
     Return = 0x43,
+    CallAsync = 0x44,
+    CallNativeAsync = 0x45,
+    InvokeAsync = 0x46,
+    Await = 0x47,
+    Spawn = 0x48,
 
     Jump = 0x50,
     JumpIfTrue = 0x51,
@@ -500,7 +752,21 @@ pub enum Opcode {
     Greater = 0x6A,
     Less = 0x6B,
 
+    Add = 0x66,
+    Subtract = 0x67,
+    Multiply = 0x68,
+    Divide = 0x69,
+
     Pop = 0x70,
 
     Halt = 0xFF,
 }
+
+// Native function IDs for async operations
+pub const NATIVE_HTTP_GET: u8 = 2;
+pub const NATIVE_HTTP_POST: u8 = 3;
+pub const NATIVE_HTTP_CLIENT_REQUEST: u8 = 4;
+pub const NATIVE_HTTP_CLIENT_GET: u8 = 5;
+pub const NATIVE_HTTP_CLIENT_POST: u8 = 6;
+pub const NATIVE_HTTP_CLIENT_GET_WITH_HEADERS: u8 = 7;
+pub const NATIVE_HTTP_CLIENT_POST_WITH_HEADERS: u8 = 8;

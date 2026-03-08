@@ -1,4 +1,4 @@
-package std.io
+module std.io
 
 fn print(text: str) {
   C.bengal_print(text)
@@ -6,4 +6,14 @@ fn print(text: str) {
 
 fn println(line: str) {
   C.bengal_println(line)
+}
+
+// Async sleep - returns Promise<null>
+async fn sleep(ms: int): null {
+  C.sleep(ms)
+}
+
+// Async read line from stdin - returns Promise<str>
+async fn read_line(): str {
+  return C.read_line()
 }

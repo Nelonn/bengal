@@ -1,0 +1,111 @@
+module std.http
+
+// HTTP Method enum
+enum HttpMethod {
+  GET = 0;
+  POST = 1;
+  PUT = 2;
+  DELETE = 3;
+  PATCH = 4;
+  HEAD = 5;
+  OPTIONS = 6
+}
+
+// Redirect Policy enum
+enum RedirectPolicy {
+  Follow = 0;
+  Limited = 1;
+  None = 2
+}
+
+// HTTP Client class with full features
+class HttpClient {
+  _internal: int;
+  
+  // Create a new HttpClient with default configuration
+  fn new(): HttpClient {
+    return HttpClient {}
+  }
+  
+  // Set base URL
+  fn set_base_url(self, url: str) {
+    C.http_client_set_base_url(self, url)
+  }
+  
+  // Set timeout in milliseconds
+  fn set_timeout(self, ms: int) {
+    C.http_client_set_timeout(self, ms)
+  }
+  
+  // Set redirect policy (0=Follow, 1=Limited, 2=None)
+  fn set_redirect_policy(self, policy: int) {
+    C.http_client_set_redirect_policy(self, policy)
+  }
+  
+  // Set max redirects
+  fn set_max_redirects(self, max: int) {
+    C.http_client_set_max_redirects(self, max)
+  }
+  
+  // Set proxy
+  fn set_proxy(self, host: str, port: int) {
+    C.http_client_set_proxy(self, host, port)
+  }
+  
+  // Set SSL verification
+  fn set_verify_ssl(self, verify: bool) {
+    C.http_client_set_verify_ssl(self, verify)
+  }
+  
+  // Add default header
+  fn add_header(self, key: str, value: str) {
+    C.http_client_add_header(self, key, value)
+  }
+  
+  // GET request - async
+  async fn get(self, url: str): str {
+    return C.http_client_get(url)
+  }
+  
+  // POST request - async
+  async fn post(self, url: str, body: str): str {
+    return C.http_client_post(url, body)
+  }
+  
+  // GET with headers - async
+  async fn get_with_headers(self, url: str, extra_headers: str): str {
+    return C.http_client_get_with_headers(url, extra_headers)
+  }
+  
+  // POST with custom headers - async
+  async fn post_with_headers(self, url: str, extra_headers: str, body: str): str {
+    return C.http_client_post_with_headers(url, extra_headers, body)
+  }
+}
+
+// Convenience functions using default client
+
+// Simple GET request
+async fn get(url: str): str {
+  return C.http_client_get(url)
+}
+
+// Simple POST request
+async fn post(url: str, body: str): str {
+  return C.http_client_post(url, body)
+}
+
+// GET with headers
+async fn get_with_headers(url: str, headers: str): str {
+  return C.http_client_get_with_headers(url, headers)
+}
+
+// POST with headers
+async fn post_with_headers(url: str, headers: str, body: str): str {
+  return C.http_client_post_with_headers(url, headers, body)
+}
+
+// Create a new client
+fn new_client(): HttpClient {
+  return HttpClient.new()
+}
