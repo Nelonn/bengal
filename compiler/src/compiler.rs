@@ -231,6 +231,8 @@ impl Compiler {
                     }
                     BinaryOp::And => bytecode.push(Opcode::And as u8),
                     BinaryOp::Or => bytecode.push(Opcode::Or as u8),
+                    BinaryOp::Greater => bytecode.push(Opcode::Greater as u8),
+                    BinaryOp::Less => bytecode.push(Opcode::Less as u8),
                     BinaryOp::Add => bytecode.push(Opcode::Add as u8),
                     BinaryOp::Subtract => bytecode.push(Opcode::Subtract as u8),
                     BinaryOp::Multiply => bytecode.push(Opcode::Multiply as u8),
@@ -378,11 +380,13 @@ pub enum Opcode {
     Or = 0x63,
     Not = 0x64,
     Concat = 0x65,
+    Greater = 0x66,
+    Less = 0x67,
 
-    Add = 0x66,
-    Subtract = 0x67,
-    Multiply = 0x68,
-    Divide = 0x69,
+    Add = 0x68,
+    Subtract = 0x69,
+    Multiply = 0x6A,
+    Divide = 0x6B,
 
     Pop = 0x70,
 

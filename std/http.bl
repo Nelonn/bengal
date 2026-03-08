@@ -2,25 +2,25 @@ module std.http
 
 // HTTP Method enum
 enum HttpMethod {
-  GET = 0;
-  POST = 1;
-  PUT = 2;
-  DELETE = 3;
-  PATCH = 4;
-  HEAD = 5;
+  GET = 0
+  POST = 1
+  PUT = 2
+  DELETE = 3
+  PATCH = 4
+  HEAD = 5
   OPTIONS = 6
 }
 
 // Redirect Policy enum
 enum RedirectPolicy {
-  Follow = 0;
-  Limited = 1;
+  Follow = 0
+  Limited = 1
   None = 2
 }
 
 // HTTP Client class with full features
 class HttpClient {
-  _internal: int;
+  private _internal: int
   
   // Create a new HttpClient with default configuration
   fn new(): HttpClient {

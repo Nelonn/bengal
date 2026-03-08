@@ -34,6 +34,9 @@ pub enum Token {
     Star,
     Slash,
 
+    Greater,
+    Less,
+
     LParen,
     RParen,
     LBrace,
@@ -86,12 +89,39 @@ impl Lexer {
     }
 
     fn skip_comment(&mut self) {
+        // Line comment: //
         if self.peek() == Some('/') && self.peek_next() == Some('/') {
+            self.advance(); // skip first /
+            self.advance(); // skip second /
             while let Some(ch) = self.peek() {
                 if ch == '\n' {
                     break;
                 }
                 self.advance();
+            }
+        }
+        // Block comment: /* */
+        else if self.peek() == Some('/') && self.peek_next() == Some('*') {
+            self.advance(); // skip /
+            self.advance(); // skip *
+            let mut depth = 1;
+            while let Some(ch) = self.peek() {
+                if ch == '/' && self.peek_next() == Some('*') {
+                    // Nested block comment
+                    self.advance();
+                    self.advance();
+                    depth += 1;
+                } else if ch == '*' && self.peek_next() == Some('/') {
+                    // End of block comment
+                    self.advance();
+                    self.advance();
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    self.advance();
+                }
             }
         }
     }
@@ -153,6 +183,8 @@ impl Lexer {
                 }
             }
             '"' => self.read_string(),
+            '>' => { self.advance(); Ok(Token::Greater) }
+            '<' => { self.advance(); Ok(Token::Less) }
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
             _ => Err(format!("Unexpected character: '{}'", ch)),

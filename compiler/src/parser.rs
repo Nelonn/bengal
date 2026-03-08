@@ -102,6 +102,8 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    Greater,
+    Less,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -231,12 +233,14 @@ impl Parser {
                 return Err("Expected identifier in import path".to_string());
             }
 
-            if self.check(&Token::Colon) {
+            if self.match_token(&Token::Dot) {
+                continue;
+            } else if self.check(&Token::Colon) {
                 self.advance();
-                if self.check(&Token::Colon) {
-                    self.advance();
+                if self.match_token(&Token::Colon) {
+                    continue;
                 } else {
-                    break;
+                    return Err("Expected ':' after ':' in import path".to_string());
                 }
             } else {
                 break;
@@ -358,6 +362,7 @@ impl Parser {
         }
 
         let params = self.parse_params()?;
+        self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
             return Err("Expected ')' after parameters".to_string());
@@ -394,6 +399,7 @@ impl Parser {
         }
 
         let params = self.parse_params()?;
+        self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
             return Err("Expected ')' after parameters".to_string());
@@ -429,17 +435,10 @@ impl Parser {
             return Err(format!("Expected ':' after field name, got {:?}", self.peek()));
         }
 
-        let mut type_name = match self.advance() {
-            Token::TypeInt => "int".to_string(),
-            Token::TypeFloat => "float".to_string(),
-            Token::TypeStr => "str".to_string(),
-            Token::TypeBool => "bool".to_string(),
-            Token::Identifier(t) => t,
-            t => return Err(format!("Expected type name, got {:?}", t)),
-        };
+        let (mut type_name, optional) = self.parse_type()?;
 
         // Handle optional type marker (?)
-        if self.match_token(&Token::Question) {
+        if optional {
             type_name = type_name + "?";
         }
 
@@ -465,6 +464,7 @@ impl Parser {
         }
 
         let params = self.parse_params()?;
+        self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
             return Err("Expected ')' after parameters".to_string());
@@ -492,6 +492,7 @@ impl Parser {
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
         let mut params = Vec::new();
+        self.skip_newlines();
 
         if self.check(&Token::RParen) {
             return Ok(params);
@@ -500,6 +501,7 @@ impl Parser {
         let mut current_type: Option<String> = None;
 
         loop {
+            self.skip_newlines();
             if self.check(&Token::RParen) {
                 break;
             }
@@ -514,21 +516,20 @@ impl Parser {
                matches!(self.peek_next(), Token::Identifier(_));
 
             if is_type_start || is_class_type {
-                let type_token = self.advance();
-                let potential_type = match &type_token {
-                    Token::TypeInt => Some("int".to_string()),
-                    Token::TypeFloat => Some("float".to_string()),
-                    Token::TypeStr => Some("str".to_string()),
-                    Token::TypeBool => Some("bool".to_string()),
-                    Token::Identifier(t) => Some(t.clone()),
-                    _ => None,
-                };
+                let (mut type_name, optional) = self.parse_type()?;
+                if optional {
+                    type_name = type_name + "?";
+                }
+                let potential_type = Some(type_name);
 
                 if potential_type.is_some() && matches!(self.peek(), Token::Identifier(_)) {
                     param_type = potential_type;
                     current_type = param_type.clone();
                 } else {
-                    if let Token::Identifier(name) = type_token {
+                    // This was actually a name if we can't find another identifier
+                    // But with our grammar (type name), this should be the name
+                    // and we use the current_type
+                    if let Some(name) = potential_type {
                         param_type = current_type.clone();
                         params.push(Param { name, type_name: param_type });
 
@@ -546,14 +547,11 @@ impl Parser {
             };
 
             let type_name = if self.match_token(&Token::Colon) {
-                match self.advance() {
-                    Token::TypeInt => Some("int".to_string()),
-                    Token::TypeFloat => Some("float".to_string()),
-                    Token::TypeStr => Some("str".to_string()),
-                    Token::TypeBool => Some("bool".to_string()),
-                    Token::Identifier(t) => Some(t),
-                    t => return Err(format!("Expected parameter type, got {:?}", t)),
+                let (mut t_name, optional) = self.parse_type()?;
+                if optional {
+                    t_name = t_name + "?";
                 }
+                Some(t_name)
             } else {
                 param_type.or_else(|| current_type.clone())
             };
@@ -569,13 +567,16 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<(String, bool), String> {
-        let type_name = match self.advance() {
+        self.skip_newlines();
+        let token = self.advance();
+        let type_name = match &token {
             Token::TypeInt => "int".to_string(),
             Token::TypeFloat => "float".to_string(),
             Token::TypeStr => "str".to_string(),
             Token::TypeBool => "bool".to_string(),
-            Token::Identifier(t) => t,
-            _ => return Err("Expected type name".to_string()),
+            Token::Null => "null".to_string(),
+            Token::Identifier(t) => t.clone(),
+            _ => return Err(format!("Expected type name, got {:?}", token)),
         };
 
         let optional = self.match_token(&Token::Question);
@@ -601,7 +602,7 @@ impl Parser {
     }
 
     fn parse_return(&mut self) -> Result<Stmt, String> {
-        let expr = if self.check(&Token::Semicolon) || self.check(&Token::RBrace) || self.check(&Token::Eof) {
+        let expr = if self.check(&Token::Semicolon) || self.check(&Token::Newline) || self.check(&Token::RBrace) || self.check(&Token::Eof) {
             None
         } else {
             Some(self.parse_expression()?)
@@ -618,6 +619,7 @@ impl Parser {
         }
 
         let condition = self.parse_expression()?;
+        self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
             return Err("Expected ')' after condition".to_string());
@@ -684,13 +686,37 @@ impl Parser {
     }
 
     fn parse_equality(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_additive()?;
+        let mut expr = self.parse_comparison()?;
 
         loop {
             if self.match_token(&Token::BangEqual) {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::NotEqual,
+                    right: Box::new(self.parse_comparison()?),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_additive()?;
+
+        loop {
+            if self.match_token(&Token::Greater) {
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Greater,
+                    right: Box::new(self.parse_additive()?),
+                };
+            } else if self.match_token(&Token::Less) {
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Less,
                     right: Box::new(self.parse_additive()?),
                 };
             } else {
@@ -772,6 +798,7 @@ impl Parser {
         loop {
             if self.match_token(&Token::LParen) {
                 let args = self.parse_arguments()?;
+                self.skip_newlines();
                 if !self.match_token(&Token::RParen) {
                     return Err("Expected ')' after arguments".to_string());
                 }
@@ -787,6 +814,7 @@ impl Parser {
                 if !self.check(&Token::RBrace) {
                     // Try to parse field initializers (name: value pairs)
                     loop {
+                        self.skip_newlines();
                         if self.check(&Token::RBrace) {
                             break;
                         }
@@ -806,6 +834,7 @@ impl Parser {
                         }
                     }
                 }
+                self.skip_newlines();
                 if !self.match_token(&Token::RBrace) {
                     return Err("Expected '}' to close class instantiation".to_string());
                 }
@@ -833,9 +862,14 @@ impl Parser {
 
     fn parse_arguments(&mut self) -> Result<Vec<Expr>, String> {
         let mut args = Vec::new();
+        self.skip_newlines();
 
         if !self.check(&Token::RParen) {
             loop {
+                self.skip_newlines();
+                if self.check(&Token::RParen) {
+                    break;
+                }
                 args.push(self.parse_expression()?);
 
                 if !self.match_token(&Token::Comma) {

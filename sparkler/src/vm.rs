@@ -5,11 +5,38 @@ use bengal_std;
 
 pub type Bytecode = Vec<u8>;
 
+/// All supported numeric types for VM and FFI
+#[derive(Clone, Copy, Debug)]
+pub enum IntValue {
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    U64(u64),
+    I64(i64),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum FloatValue {
+    F32(f32),
+    F64(f64),
+}
+
 #[derive(Clone)]
 pub enum Value {
     String(String),
-    Int(i64),
-    Float(f64),
+    Int8(i8), // FFI types
+    Int16(i16), // FFI types
+    Int32(i32),
+    Int64(i64),
+    UInt8(u8), // FFI types
+    UInt16(u16), // FFI types
+    UInt32(u32),
+    UInt64(u64),
+    Float32(f32),
+    Float64(f64),
     Bool(bool),
     Null,
     Instance(Instance),
@@ -20,13 +47,175 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::String(a), Value::String(b)) => a == b,
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Instance(a), Value::Instance(b)) => a.class == b.class,
             (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
+            // Compare all integer types by converting to i64
+            (Value::Int64(a), Value::Int64(b)) => a == b,
+            (Value::Int64(a), Value::Int8(b)) => *a == *b as i64,
+            (Value::Int64(a), Value::Int16(b)) => *a == *b as i64,
+            (Value::Int64(a), Value::Int32(b)) => *a == *b as i64,
+            (Value::Int64(a), Value::UInt8(b)) => *a == *b as i64,
+            (Value::Int64(a), Value::UInt16(b)) => *a == *b as i64,
+            (Value::Int64(a), Value::UInt32(b)) => *a == *b as i64,
+            (Value::Int64(a), Value::UInt64(b)) => *a == *b as i64,
+            (Value::Int8(a), Value::Int64(b)) => *a as i64 == *b,
+            (Value::Int8(a), Value::Int8(b)) => a == b,
+            (Value::Int16(a), Value::Int16(b)) => a == b,
+            (Value::Int32(a), Value::Int32(b)) => a == b,
+            (Value::UInt8(a), Value::UInt8(b)) => a == b,
+            (Value::UInt16(a), Value::UInt16(b)) => a == b,
+            (Value::UInt32(a), Value::UInt32(b)) => a == b,
+            (Value::UInt64(a), Value::UInt64(b)) => a == b,
+            // Compare all float types by converting to f64
+            (Value::Float64(a), Value::Float64(b)) => a == b,
+            (Value::Float64(a), Value::Float32(b)) => *a == *b as f64,
+            (Value::Float32(a), Value::Float64(b)) => *a as f64 == *b,
+            (Value::Float32(a), Value::Float32(b)) => a == b,
+            // Cross-type numeric comparison (int vs float)
+            (Value::Int64(a), Value::Float64(b)) => (*a as f64) == *b,
+            (Value::Float64(a), Value::Int64(b)) => *a == (*b as f64),
             _ => false,
+        }
+    }
+}
+
+impl Value {
+    /// Convert any integer value to i64 (primary Bengal integer type)
+    pub fn to_i64(&self) -> Option<i64> {
+        match self {
+            Value::Int64(n) => Some(*n),
+            Value::Int8(n) => Some(*n as i64),
+            Value::Int16(n) => Some(*n as i64),
+            Value::Int32(n) => Some(*n as i64),
+            Value::UInt8(n) => Some(*n as i64),
+            Value::UInt16(n) => Some(*n as i64),
+            Value::UInt32(n) => Some(*n as i64),
+            Value::UInt64(n) => Some(*n as i64),
+            _ => None,
+        }
+    }
+
+    /// Convert any float value to f64
+    pub fn to_f64(&self) -> Option<f64> {
+        match self {
+            Value::Float64(n) => Some(*n),
+            Value::Float32(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// Check if value is an integer type >= 32 bits (suitable for arithmetic)
+    pub fn is_arithmetic_int(&self) -> bool {
+        matches!(self, Value::Int64(_) | Value::Int32(_) | Value::UInt32(_) | Value::UInt64(_))
+    }
+
+    /// Check if value is a float type (suitable for arithmetic)
+    pub fn is_arithmetic_float(&self) -> bool {
+        matches!(self, Value::Float64(_) | Value::Float32(_))
+    }
+
+    /// Convert arithmetic integer value to i64 (only 32-bit and larger types)
+    pub fn to_arithmetic_int(&self) -> Option<i64> {
+        match self {
+            Value::Int64(n) => Some(*n),
+            Value::Int32(n) => Some(*n as i64),
+            Value::UInt32(n) => Some(*n as i64),
+            Value::UInt64(n) => Some(*n as i64),
+            _ => None,
+        }
+    }
+
+    /// Convert any numeric value to i64, truncating floats (for FFI - all types)
+    pub fn to_int(&self) -> Option<i64> {
+        match self {
+            Value::Int64(n) => Some(*n),
+            Value::Int8(n) => Some(*n as i64),
+            Value::Int16(n) => Some(*n as i64),
+            Value::Int32(n) => Some(*n as i64),
+            Value::UInt8(n) => Some(*n as i64),
+            Value::UInt16(n) => Some(*n as i64),
+            Value::UInt32(n) => Some(*n as i64),
+            Value::UInt64(n) => Some(*n as i64),
+            Value::Float64(n) => Some(*n as i64),
+            Value::Float32(n) => Some(*n as i64),
+            _ => None,
+        }
+    }
+
+    /// Convert any numeric value to f64 (for FFI - all types)
+    pub fn to_float(&self) -> Option<f64> {
+        match self {
+            Value::Int64(n) => Some(*n as f64),
+            Value::Int8(n) => Some(*n as f64),
+            Value::Int16(n) => Some(*n as f64),
+            Value::Int32(n) => Some(*n as f64),
+            Value::UInt8(n) => Some(*n as f64),
+            Value::UInt16(n) => Some(*n as f64),
+            Value::UInt32(n) => Some(*n as f64),
+            Value::UInt64(n) => Some(*n as f64),
+            Value::Float64(n) => Some(*n),
+            Value::Float32(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// Convert to u8 for FFI
+    pub fn to_u8(&self) -> Option<u8> {
+        self.to_int().map(|n| n as u8)
+    }
+
+    /// Convert to i8 for FFI
+    pub fn to_i8(&self) -> Option<i8> {
+        self.to_int().map(|n| n as i8)
+    }
+
+    /// Convert to u16 for FFI
+    pub fn to_u16(&self) -> Option<u16> {
+        self.to_int().map(|n| n as u16)
+    }
+
+    /// Convert to i16 for FFI
+    pub fn to_i16(&self) -> Option<i16> {
+        self.to_int().map(|n| n as i16)
+    }
+
+    /// Convert to u32 for FFI
+    pub fn to_u32(&self) -> Option<u32> {
+        self.to_int().map(|n| n as u32)
+    }
+
+    /// Convert to i32 for FFI
+    pub fn to_i32(&self) -> Option<i32> {
+        self.to_int().map(|n| n as i32)
+    }
+
+    /// Convert to u64 for FFI
+    pub fn to_u64(&self) -> Option<u64> {
+        self.to_int().map(|n| n as u64)
+    }
+
+    /// Convert to f32 for FFI
+    pub fn to_f32(&self) -> Option<f32> {
+        self.to_float().map(|n| n as f32)
+    }
+
+    /// Check if value is truthy
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Bool(false) | Value::Null => false,
+            Value::Int64(0) => false,
+            Value::Int8(0) => false,
+            Value::Int16(0) => false,
+            Value::Int32(0) => false,
+            Value::UInt8(0) => false,
+            Value::UInt16(0) => false,
+            Value::UInt32(0) => false,
+            Value::UInt64(0) => false,
+            Value::Float64(0.0) => false,
+            Value::Float32(0.0) => false,
+            _ => true,
         }
     }
 }
@@ -124,7 +313,7 @@ impl VM {
                     .try_into()
                     .map_err(|_| "Invalid int encoding")?;
                 let n = i64::from_le_bytes(bytes);
-                self.stack.push(Value::Int(n));
+                self.stack.push(Value::Int64(n));
                 self.pc += 7;
             }
 
@@ -134,7 +323,7 @@ impl VM {
                     .try_into()
                     .map_err(|_| "Invalid float encoding")?;
                 let n = f64::from_le_bytes(bytes);
-                self.stack.push(Value::Float(n));
+                self.stack.push(Value::Float64(n));
                 self.pc += 7;
             }
 
@@ -265,8 +454,8 @@ impl VM {
                 while let Some(value) = self.stack.pop() {
                     match value {
                         Value::String(s) => args.push(s),
-                        Value::Int(i) => args.push(i.to_string()),
-                        Value::Float(f) => args.push(f.to_string()),
+                        Value::Int64(i) => args.push(i.to_string()),
+                        Value::Float64(f) => args.push(f.to_string()),
                         Value::Bool(b) => args.push(b.to_string()),
                         _ => args.push("".to_string()),
                     }
@@ -467,26 +656,68 @@ impl VM {
             x if x == Opcode::And as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = is_truthy(&left) && is_truthy(&right);
+                let result = left.is_truthy() && right.is_truthy();
                 self.stack.push(Value::Bool(result));
             }
 
             x if x == Opcode::Or as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = is_truthy(&left) || is_truthy(&right);
+                let result = left.is_truthy() || right.is_truthy();
                 self.stack.push(Value::Bool(result));
+            }
+
+            x if x == Opcode::Greater as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (&left, &right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Bool(left.to_arithmetic_int().unwrap() > right.to_arithmetic_int().unwrap())
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Bool(left.to_float().unwrap() > right.to_float().unwrap())
+                    }
+                    _ => Value::Bool(false),
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Less as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (&left, &right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Bool(left.to_arithmetic_int().unwrap() < right.to_arithmetic_int().unwrap())
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Bool(left.to_float().unwrap() < right.to_float().unwrap())
+                    }
+                    _ => Value::Bool(false),
+                };
+                self.stack.push(result);
             }
 
             x if x == Opcode::Add as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
-                    (Value::String(a), Value::String(b)) => Value::String(a + &b),
+                let result = match (&left, &right) {
+                    // String concatenation
+                    (Value::String(a), Value::String(b)) => Value::String(a.clone() + b),
+                    // Both integers >= 32 bits - result is i64
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Int64(left.to_arithmetic_int().unwrap() + right.to_arithmetic_int().unwrap())
+                    }
+                    // Both floats - result is f64
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
+                    }
+                    // Mixed int/float - promote to f64
+                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                        let left_f = left.to_float().unwrap();
+                        let right_f = right.to_float().unwrap();
+                        Value::Float64(left_f + right_f)
+                    }
                     _ => Value::Null,
                 };
                 self.stack.push(result);
@@ -495,11 +726,22 @@ impl VM {
             x if x == Opcode::Subtract as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+                let result = match (&left, &right) {
+                    // Both integers >= 32 bits - result is i64
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Int64(left.to_arithmetic_int().unwrap() - right.to_arithmetic_int().unwrap())
+                    }
+                    // Both floats - result is f64
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
+                    }
+                    // Mixed int/float - promote to f64
+                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                        let left_f = left.to_float().unwrap();
+                        let right_f = right.to_float().unwrap();
+                        Value::Float64(left_f - right_f)
+                    }
                     _ => Value::Null,
                 };
                 self.stack.push(result);
@@ -508,11 +750,22 @@ impl VM {
             x if x == Opcode::Multiply as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+                let result = match (&left, &right) {
+                    // Both integers >= 32 bits - result is i64
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Int64(left.to_arithmetic_int().unwrap() * right.to_arithmetic_int().unwrap())
+                    }
+                    // Both floats - result is f64
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
+                    }
+                    // Mixed int/float - promote to f64
+                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                        let left_f = left.to_float().unwrap();
+                        let right_f = right.to_float().unwrap();
+                        Value::Float64(left_f * right_f)
+                    }
                     _ => Value::Null,
                 };
                 self.stack.push(result);
@@ -521,17 +774,35 @@ impl VM {
             x if x == Opcode::Divide as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
-                let result = match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => {
-                        if b != 0 {
-                            Value::Int(a / b)
+                let result = match (&left, &right) {
+                    // Both integers >= 32 bits - integer division, result is i64
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        let r = right.to_arithmetic_int().unwrap();
+                        if r != 0 {
+                            Value::Int64(left.to_arithmetic_int().unwrap() / r)
                         } else {
                             Value::Null
                         }
                     }
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a / b as f64),
-                    (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+                    // Both floats - float division, result is f64
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        let r = right.to_float().unwrap();
+                        if r != 0.0 {
+                            Value::Float64(left.to_float().unwrap() / r)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    // Mixed int/float - promote to f64
+                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                        let r = right.to_float().unwrap();
+                        if r != 0.0 {
+                            Value::Float64(left.to_float().unwrap() / r)
+                        } else {
+                            Value::Null
+                        }
+                    }
                     _ => Value::Null,
                 };
                 self.stack.push(result);
@@ -546,8 +817,16 @@ impl VM {
                     if let Some(value) = self.stack.pop() {
                         match value {
                             Value::String(s) => result = s + &result,
-                            Value::Int(n) => result = n.to_string() + &result,
-                            Value::Float(n) => result = n.to_string() + &result,
+                            Value::Int8(n) => result = n.to_string() + &result,
+                            Value::Int16(n) => result = n.to_string() + &result,
+                            Value::Int32(n) => result = n.to_string() + &result,
+                            Value::Int64(n) => result = n.to_string() + &result,
+                            Value::UInt8(n) => result = n.to_string() + &result,
+                            Value::UInt16(n) => result = n.to_string() + &result,
+                            Value::UInt32(n) => result = n.to_string() + &result,
+                            Value::UInt64(n) => result = n.to_string() + &result,
+                            Value::Float32(n) => result = n.to_string() + &result,
+                            Value::Float64(n) => result = n.to_string() + &result,
                             Value::Bool(b) => result = b.to_string() + &result,
                             Value::Null => result = "null".to_string() + &result,
                             _ => {}
@@ -574,13 +853,6 @@ impl VM {
 pub enum ExecutionResult {
     Continue,
     Awaiting(Arc<Mutex<PromiseState>>),
-}
-
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Bool(false) | Value::Null => false,
-        _ => true,
-    }
 }
 
 impl Default for VM {
@@ -627,11 +899,13 @@ pub enum Opcode {
     Or = 0x63,
     Not = 0x64,
     Concat = 0x65,
+    Greater = 0x66,
+    Less = 0x67,
 
-    Add = 0x66,
-    Subtract = 0x67,
-    Multiply = 0x68,
-    Divide = 0x69,
+    Add = 0x68,
+    Subtract = 0x69,
+    Multiply = 0x6A,
+    Divide = 0x6B,
 
     Pop = 0x70,
 

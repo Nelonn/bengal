@@ -325,7 +325,7 @@ impl TypeChecker {
         Self { context }
     }
 
-    pub fn check(&mut self, statements: &[Stmt]) -> Result<&TypeContext, &[TypeError]> {
+    pub fn check(&mut self, statements: &[Stmt]) -> Result<&TypeContext, Vec<TypeError>> {
         // First pass: collect all class and function definitions
         self.collect_definitions(statements);
 
@@ -335,7 +335,7 @@ impl TypeChecker {
         }
 
         if self.context.has_errors() {
-            Err(self.context.get_errors())
+            Err(self.context.errors.clone())
         } else {
             Ok(&self.context)
         }
@@ -668,6 +668,22 @@ impl TypeChecker {
                             Type::Int
                         }
                     }
+                    crate::parser::BinaryOp::Greater | crate::parser::BinaryOp::Less => {
+                        // Comparison operations require numeric types and return bool
+                        if !is_numeric_type(&left_type) && left_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for comparison, got {}", left_type.to_str()),
+                                0
+                            );
+                        }
+                        if !is_numeric_type(&right_type) && right_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for comparison, got {}", right_type.to_str()),
+                                0
+                            );
+                        }
+                        Type::Bool
+                    }
                 }
             }
             Expr::Unary { op, expr } => {
@@ -712,6 +728,22 @@ impl TypeChecker {
                             .and_then(|c| c.methods.get(name).cloned());
 
                         if let Some(ref sig) = method_sig {
+                            // Check visibility
+                            let mut visibility_error = None;
+                            if sig.private {
+                                if let Some(current) = &self.context.current_class {
+                                    if current != &class_name {
+                                        visibility_error = Some(format!("Method '{}' on class '{}' is private and cannot be called from class '{}'", name, class_name, current));
+                                    }
+                                } else {
+                                    visibility_error = Some(format!("Method '{}' on class '{}' is private and cannot be called from global scope", name, class_name));
+                                }
+                            }
+
+                            if let Some(err) = visibility_error {
+                                self.context.add_error(err, 0);
+                            }
+
                             self.check_method_call(sig, args, name, &class_name);
                             let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
                             // If calling an async method, return type is Promise<T>
@@ -743,7 +775,25 @@ impl TypeChecker {
                 if let Type::Class(class_name) = object_type {
                     if let Some(class_info) = self.context.get_class(&class_name) {
                         if let Some(field_info) = class_info.fields.get(name) {
-                            field_info.type_name.clone()
+                            // Check visibility
+                            let mut visibility_error = None;
+                            if field_info.private {
+                                if let Some(current) = &self.context.current_class {
+                                    if current != &class_name {
+                                        visibility_error = Some(format!("Field '{}' on class '{}' is private and cannot be accessed from class '{}'", name, class_name, current));
+                                    }
+                                } else {
+                                    visibility_error = Some(format!("Field '{}' on class '{}' is private and cannot be accessed from global scope", name, class_name));
+                                }
+                            }
+                            
+                            let type_name = field_info.type_name.clone();
+                            
+                            if let Some(err) = visibility_error {
+                                self.context.add_error(err, 0);
+                            }
+                            
+                            type_name
                         } else {
                             self.context.add_error(
                                 format!("Field '{}' not found on class '{}'", name, class_name),
@@ -782,6 +832,22 @@ impl TypeChecker {
                         .and_then(|c| c.fields.get(name).cloned());
                     
                     if let Some(ref field) = field_info {
+                        // Check visibility
+                        let mut visibility_error = None;
+                        if field.private {
+                            if let Some(current) = &self.context.current_class {
+                                if current != &class_name {
+                                    visibility_error = Some(format!("Field '{}' on class '{}' is private and cannot be modified from class '{}'", name, class_name, current));
+                                }
+                            } else {
+                                visibility_error = Some(format!("Field '{}' on class '{}' is private and cannot be modified from global scope", name, class_name));
+                            }
+                        }
+
+                        if let Some(err) = visibility_error {
+                            self.context.add_error(err, 0);
+                        }
+
                         if !value_type.is_assignable_to(&field.type_name) {
                             self.context.add_error(
                                 format!(

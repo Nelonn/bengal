@@ -180,13 +180,16 @@ impl ModuleResolver {
         for (module_name, statements) in &module_statements {
             let ctx = self.type_context.clone();
             let mut type_checker = TypeChecker::with_context(ctx);
-            if let Err(errors) = type_checker.check(statements) {
-                // Log errors but continue
-                for error in errors {
+            let _ = type_checker.check(statements);
+            
+            // Log errors but continue
+            if type_checker.get_context().has_errors() {
+                for error in type_checker.get_context().get_errors() {
                     eprintln!("Type error in module '{}': {}", module_name, error.message);
                 }
             }
-            // Merge the context back
+            
+            // Merge the context back (including errors)
             self.type_context = type_checker.get_context().clone();
         }
 

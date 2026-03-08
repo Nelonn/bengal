@@ -346,3 +346,167 @@ pub async fn call_native_async_by_id(id: u8, args: &[String]) -> Result<String, 
         _ => Err(format!("Unknown async native function ID: {}", id)),
     }
 }
+
+// FFI Type Conversion Functions
+// These functions allow converting Bengal's i64/f64 to specific C types
+
+/// Convert i64 to u8 (wraps on overflow)
+pub fn ffi_to_u8(value: i64) -> u8 {
+    value as u8
+}
+
+/// Convert i64 to i8 (wraps on overflow)
+pub fn ffi_to_i8(value: i64) -> i8 {
+    value as i8
+}
+
+/// Convert i64 to u16 (wraps on overflow)
+pub fn ffi_to_u16(value: i64) -> u16 {
+    value as u16
+}
+
+/// Convert i64 to i16 (wraps on overflow)
+pub fn ffi_to_i16(value: i64) -> i16 {
+    value as i16
+}
+
+/// Convert i64 to u32 (wraps on overflow)
+pub fn ffi_to_u32(value: i64) -> u32 {
+    value as u32
+}
+
+/// Convert i64 to i32 (wraps on overflow)
+pub fn ffi_to_i32(value: i64) -> i32 {
+    value as i32
+}
+
+/// Convert i64 to u64 (wraps on overflow)
+pub fn ffi_to_u64(value: i64) -> u64 {
+    value as u64
+}
+
+/// Convert f64 to f32 (may lose precision)
+pub fn ffi_to_f32(value: f64) -> f32 {
+    value as f32
+}
+
+/// Convert u8 to i64
+pub fn ffi_from_u8(value: u8) -> i64 {
+    value as i64
+}
+
+/// Convert i8 to i64
+pub fn ffi_from_i8(value: i8) -> i64 {
+    value as i64
+}
+
+/// Convert u16 to i64
+pub fn ffi_from_u16(value: u16) -> i64 {
+    value as i64
+}
+
+/// Convert i16 to i64
+pub fn ffi_from_i16(value: i16) -> i64 {
+    value as i64
+}
+
+/// Convert u32 to i64
+pub fn ffi_from_u32(value: u32) -> i64 {
+    value as i64
+}
+
+/// Convert i32 to i64
+pub fn ffi_from_i32(value: i32) -> i64 {
+    value as i64
+}
+
+/// Convert u64 to i64 (wraps on overflow)
+pub fn ffi_from_u64(value: u64) -> i64 {
+    value as i64
+}
+
+/// Convert f32 to f64
+pub fn ffi_from_f32(value: f32) -> f64 {
+    value as f64
+}
+
+// C FFI exports for external use
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_u8(value: i64) -> u8 {
+    ffi_to_u8(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_i8(value: i64) -> i8 {
+    ffi_to_i8(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_u16(value: i64) -> u16 {
+    ffi_to_u16(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_i16(value: i64) -> i16 {
+    ffi_to_i16(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_u32(value: i64) -> u32 {
+    ffi_to_u32(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_i32(value: i64) -> i32 {
+    ffi_to_i32(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_u64(value: i64) -> u64 {
+    ffi_to_u64(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_to_f32(value: f64) -> f32 {
+    ffi_to_f32(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_u8(value: u8) -> i64 {
+    ffi_from_u8(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_i8(value: i8) -> i64 {
+    ffi_from_i8(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_u16(value: u16) -> i64 {
+    ffi_from_u16(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_i16(value: i16) -> i64 {
+    ffi_from_i16(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_u32(value: u32) -> i64 {
+    ffi_from_u32(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_i32(value: i32) -> i64 {
+    ffi_from_i32(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_u64(value: u64) -> i64 {
+    ffi_from_u64(value)
+}
+
+#[no_mangle]
+pub extern "C" fn bengal_ffi_from_f32(value: f32) -> f64 {
+    ffi_from_f32(value)
+}
