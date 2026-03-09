@@ -977,6 +977,86 @@ impl VM {
                 }
             }
 
+            x if x == Opcode::Cast as u8 => {
+                self.pc += 1;
+                let cast_type = self.memory[self.pc];
+                
+                let value = self.stack.pop().unwrap_or(Value::Null);
+                let result = match cast_type {
+                    0x01 => { // Cast to int
+                        match &value {
+                            Value::Int64(n) => Value::Int64(*n),
+                            Value::Int8(n) => Value::Int64(*n as i64),
+                            Value::Int16(n) => Value::Int64(*n as i64),
+                            Value::Int32(n) => Value::Int64(*n as i64),
+                            Value::UInt8(n) => Value::Int64(*n as i64),
+                            Value::UInt16(n) => Value::Int64(*n as i64),
+                            Value::UInt32(n) => Value::Int64(*n as i64),
+                            Value::UInt64(n) => Value::Int64(*n as i64),
+                            Value::Float64(f) => Value::Int64(*f as i64),
+                            Value::Float32(f) => Value::Int64(*f as i64),
+                            Value::Bool(b) => Value::Int64(if *b { 1 } else { 0 }),
+                            Value::String(s) => {
+                                if let Ok(n) = s.parse::<i64>() {
+                                    Value::Int64(n)
+                                } else if let Ok(f) = s.parse::<f64>() {
+                                    Value::Int64(f as i64)
+                                } else {
+                                    Value::Int64(0)
+                                }
+                            }
+                            _ => Value::Int64(0),
+                        }
+                    }
+                    0x02 => { // Cast to float
+                        match &value {
+                            Value::Int64(n) => Value::Float64(*n as f64),
+                            Value::Int8(n) => Value::Float64(*n as f64),
+                            Value::Int16(n) => Value::Float64(*n as f64),
+                            Value::Int32(n) => Value::Float64(*n as f64),
+                            Value::UInt8(n) => Value::Float64(*n as f64),
+                            Value::UInt16(n) => Value::Float64(*n as f64),
+                            Value::UInt32(n) => Value::Float64(*n as f64),
+                            Value::UInt64(n) => Value::Float64(*n as f64),
+                            Value::Float64(f) => Value::Float64(*f),
+                            Value::Float32(f) => Value::Float64(*f as f64),
+                            Value::Bool(b) => Value::Float64(if *b { 1.0 } else { 0.0 }),
+                            Value::String(s) => {
+                                if let Ok(n) = s.parse::<f64>() {
+                                    Value::Float64(n)
+                                } else {
+                                    Value::Float64(0.0)
+                                }
+                            }
+                            _ => Value::Float64(0.0),
+                        }
+                    }
+                    0x03 => { // Cast to str
+                        Value::String(value.to_string())
+                    }
+                    0x04 => { // Cast to bool
+                        let is_truthy = match &value {
+                            Value::Bool(b) => *b,
+                            Value::Int64(n) => *n != 0,
+                            Value::Int8(n) => *n != 0,
+                            Value::Int16(n) => *n != 0,
+                            Value::Int32(n) => *n != 0,
+                            Value::UInt8(n) => *n != 0,
+                            Value::UInt16(n) => *n != 0,
+                            Value::UInt32(n) => *n != 0,
+                            Value::UInt64(n) => *n != 0,
+                            Value::Float64(f) => *f != 0.0,
+                            Value::Float32(f) => *f != 0.0,
+                            Value::String(s) => !s.is_empty(),
+                            _ => false,
+                        };
+                        Value::Bool(is_truthy)
+                    }
+                    _ => value,
+                };
+                self.stack.push(result);
+            }
+
             x if x == Opcode::And as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
@@ -1244,6 +1324,8 @@ pub enum Opcode {
     Divide = 0x71,
 
     Pop = 0x72,
+
+    Cast = 0x74,
 
     Line = 0x73,
 

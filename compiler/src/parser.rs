@@ -100,6 +100,15 @@ pub enum Expr {
     Interpolated { parts: Vec<InterpPart>, span: Span },
     Range { start: Box<Expr>, end: Box<Expr>, span: Span },
     Await { expr: Box<Expr>, span: Span },
+    Cast { expr: Box<Expr>, target_type: CastType, span: Span },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CastType {
+    Int,
+    Float,
+    Str,
+    Bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1001,6 +1010,28 @@ impl Parser {
                 if !self.match_token(&Token::RParen) {
                     return Err("Expected ')' after arguments".to_string());
                 }
+                
+                // Check if this is a cast expression (str(x), int(x), float(x), bool(x))
+                if args.len() == 1 {
+                    if let Expr::Variable { name, .. } = &expr {
+                        let cast_type = match name.as_str() {
+                            "str" => Some(CastType::Str),
+                            "int" => Some(CastType::Int),
+                            "float" => Some(CastType::Float),
+                            "bool" => Some(CastType::Bool),
+                            _ => None,
+                        };
+                        if let Some(target_type) = cast_type {
+                            expr = Expr::Cast {
+                                expr: Box::new(args.into_iter().next().unwrap()),
+                                target_type,
+                                span,
+                            };
+                            continue;
+                        }
+                    }
+                }
+                
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
@@ -1118,6 +1149,23 @@ impl Parser {
                     let span = self.compute_span(token_pos);
                     Ok(Expr::Variable { name: full_name, span })
                 }
+            },
+            // Handle type keywords as potential cast functions
+            Token::TypeInt => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "int".to_string(), span })
+            },
+            Token::TypeFloat => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "float".to_string(), span })
+            },
+            Token::TypeStr => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "str".to_string(), span })
+            },
+            Token::TypeBool => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "bool".to_string(), span })
             },
             Token::Dollar => self.parse_interpolated_string(),
             token => Err(format!("Unexpected token: {:?}", token)),

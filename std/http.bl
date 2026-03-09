@@ -31,11 +31,11 @@ class HttpClient {
 
   native fn add_header(key: str, value: str)
 
-  async native fn get(url: str): str
+  async native fn get(url: str): str?
 
-  async native fn post(url: str, body: str): str
+  async native fn post(url: str, body: str): str?
 
-  async native fn get_with_headers(url: str, extra_headers: str): str
+  async native fn get_with_headers(url: str, extra_headers: str): str?
 
-  async native fn post_with_headers(url: str, extra_headers: str, body: str): str
+  async native fn post_with_headers(url: str, extra_headers: str, body: str): str?
 }

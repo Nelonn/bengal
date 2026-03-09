@@ -18,5 +18,5 @@ try {
     check_result(result)
 } catch (e) {
     println("Caught exception:")
-    println(e)
+    println(str(e))
 }

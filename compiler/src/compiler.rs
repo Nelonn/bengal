@@ -1,4 +1,4 @@
-use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, FunctionDef, BinaryOp, UnaryOp, InterpPart};
+use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, FunctionDef, BinaryOp, UnaryOp, InterpPart, CastType};
 use crate::lexer::Lexer;
 use crate::resolver::ModuleResolver;
 use crate::types::TypeContext;
@@ -712,6 +712,19 @@ impl Compiler {
             Expr::Await { expr, .. } => {
                 self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 bytecode.push(Opcode::Await as u8);
+            }
+            Expr::Cast { expr, target_type, .. } => {
+                // Compile the inner expression
+                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                
+                // Emit Cast opcode with target type
+                bytecode.push(Opcode::Cast as u8);
+                match target_type {
+                    CastType::Int => bytecode.push(0x01),
+                    CastType::Float => bytecode.push(0x02),
+                    CastType::Str => bytecode.push(0x03),
+                    CastType::Bool => bytecode.push(0x04),
+                }
             }
         }
         Ok(())

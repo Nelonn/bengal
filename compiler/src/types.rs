@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::parser::{ClassDef, Method, Expr, Literal, Stmt};
+use crate::parser::{ClassDef, Method, Expr, Literal, Stmt, CastType};
 
 fn is_numeric_type(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Float)
@@ -1143,6 +1143,64 @@ impl TypeChecker {
                         );
                         Type::Unknown
                     }
+                }
+            }
+            Expr::Cast { expr, target_type, .. } => {
+                // Type check the inner expression
+                let inner_type = self.infer_expr(expr);
+                
+                // Validate cast is reasonable (allow most casts, warn about nonsensical ones)
+                match target_type {
+                    CastType::Int => {
+                        // int() can accept: float, str, bool, int
+                        if inner_type != Type::Float && 
+                           inner_type != Type::Str && 
+                           inner_type != Type::Bool && 
+                           inner_type != Type::Int &&
+                           inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Cannot cast {} to int", inner_type.to_str()),
+                                0
+                            );
+                        }
+                    }
+                    CastType::Float => {
+                        // float() can accept: int, str, bool, float
+                        if inner_type != Type::Int && 
+                           inner_type != Type::Str && 
+                           inner_type != Type::Bool &&
+                           inner_type != Type::Float &&
+                           inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Cannot cast {} to float", inner_type.to_str()),
+                                0
+                            );
+                        }
+                    }
+                    CastType::Str => {
+                        // str() can accept any type
+                    }
+                    CastType::Bool => {
+                        // bool() can accept: int, float, str, bool
+                        if inner_type != Type::Int && 
+                           inner_type != Type::Float && 
+                           inner_type != Type::Str &&
+                           inner_type != Type::Bool &&
+                           inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Cannot cast {} to bool", inner_type.to_str()),
+                                0
+                            );
+                        }
+                    }
+                }
+                
+                // Return the target type
+                match target_type {
+                    CastType::Int => Type::Int,
+                    CastType::Float => Type::Float,
+                    CastType::Str => Type::Str,
+                    CastType::Bool => Type::Bool,
                 }
             }
         }

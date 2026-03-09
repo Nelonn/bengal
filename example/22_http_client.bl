@@ -1,21 +1,10 @@
-// Full-featured HTTP Client example for Bengal
-// Demonstrates enums and HttpClient
-
 import std::http
-
-// Using HttpMethod enum
-let method = HttpMethod.GET
-
-// Using RedirectPolicy enum  
-let policy = RedirectPolicy.Follow
 
 // Print enum values (they are integers)
 println("HTTP Client example loaded!")
-println("HttpMethod.GET value: ${method}")
-println("RedirectPolicy.Follow value: ${policy}")
 
 // Create HTTP client
-let client = HttpClient.new()
+let client = HttpClient()
 client.set_timeout(5000)
 client.set_verify_ssl(true)
 
@@ -25,3 +14,6 @@ client.add_header("Accept", "application/json")
 
 println("HttpClient created and configured!")
 println("Ready to make HTTP requests!")
+
+let result = client.get("https://jsonplaceholder.typicode.com/posts")
+println(str(result))
