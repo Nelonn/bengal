@@ -6,6 +6,7 @@ use serde::ser::SerializeMap;
 use serde::de::{MapAccess, Visitor};
 use std::fmt;
 use async_recursion::async_recursion;
+use std::any::Any;
 
 pub type Bytecode = Vec<u8>;
 
@@ -314,6 +315,8 @@ pub enum PromiseState {
 pub struct Instance {
     pub class: String,
     pub fields: HashMap<String, Value>,
+    /// Native data storage - inaccessible from VM opcodes, for native code only
+    pub native_data: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
 }
 
 #[derive(Clone)]
@@ -727,6 +730,7 @@ impl VM {
                     let instance = Instance {
                         class: func_name,
                         fields: class.fields.clone(),
+                        native_data: Arc::new(Mutex::new(None)),
                     };
                     self.stack.push(Value::Instance(Arc::new(Mutex::new(instance))));
                 } else if let Some(native_f) = self.native_functions.get(&func_name) {
@@ -1487,6 +1491,7 @@ impl<'de> Deserialize<'de> for Value {
                 Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                     class: "Array".to_string(),
                     fields,
+                    native_data: Arc::new(Mutex::new(None)),
                 }))))
             }
 
@@ -1499,6 +1504,7 @@ impl<'de> Deserialize<'de> for Value {
                 Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                     class: "Object".to_string(),
                     fields,
+                    native_data: Arc::new(Mutex::new(None)),
                 }))))
             }
         }

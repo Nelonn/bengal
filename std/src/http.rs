@@ -1,30 +1,19 @@
+use sparkler::{PromiseState, Value};
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex as TokioMutex;
-use sparkler::{Value, PromiseState};
 use std::sync::Mutex;
-use std::sync::OnceLock;
-
-// Global registry for HttpClient states, keyed by instance pointer
-static HTTP_CLIENT_STATES: OnceLock<Mutex<HashMap<usize, Arc<Mutex<HttpClientState>>>>> = OnceLock::new();
-
-fn get_states_registry() -> &'static Mutex<HashMap<usize, Arc<Mutex<HttpClientState>>>> {
-    HTTP_CLIENT_STATES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn get_instance_id(instance: &sparkler::vm::Instance) -> usize {
-    instance as *const _ as usize
-}
+use tokio::sync::Mutex as TokioMutex;
 
 pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(Value::String("http_get requires URL argument".to_string()));
     }
     let url = args[0].to_string();
-    
+
     let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
     let p_clone = promise.clone();
-    
+
     tokio::spawn(async move {
         match http_get_async(&url).await {
             Ok(response) => {
@@ -37,20 +26,22 @@ pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
             }
         }
     });
-    
+
     Ok(Value::Promise(promise))
 }
 
 pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     if args.len() < 2 {
-        return Err(Value::String("http_post requires URL and body arguments".to_string()));
+        return Err(Value::String(
+            "http_post requires URL and body arguments".to_string(),
+        ));
     }
     let url = args[0].to_string();
     let body = args[1].to_string();
-    
+
     let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
     let p_clone = promise.clone();
-    
+
     tokio::spawn(async move {
         match http_post_async(&url, &body).await {
             Ok(response) => {
@@ -63,40 +54,37 @@ pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
             }
         }
     });
-    
+
     Ok(Value::Promise(promise))
 }
 
 // Async HTTP functions
 pub async fn http_get_async(url: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    
+
     match client.get(url).send().await {
-        Ok(response) => {
-            match response.text().await {
-                Ok(text) => Ok(text),
-                Err(e) => Err(format!("Failed to read response: {}", e)),
-            }
-        }
+        Ok(response) => match response.text().await {
+            Ok(text) => Ok(text),
+            Err(e) => Err(format!("Failed to read response: {}", e)),
+        },
         Err(e) => Err(format!("Request failed: {}", e)),
     }
 }
 
 pub async fn http_post_async(url: &str, body: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    
-    match client.post(url)
+
+    match client
+        .post(url)
         .header("Content-Type", "application/json")
         .body(body.to_string())
         .send()
-        .await 
+        .await
     {
-        Ok(response) => {
-            match response.text().await {
-                Ok(text) => Ok(text),
-                Err(e) => Err(format!("Failed to read response: {}", e)),
-            }
-        }
+        Ok(response) => match response.text().await {
+            Ok(text) => Ok(text),
+            Err(e) => Err(format!("Failed to read response: {}", e)),
+        },
         Err(e) => Err(format!("Request failed: {}", e)),
     }
 }
@@ -146,10 +134,12 @@ pub fn build_client(config: &HttpClientConfig) -> Result<reqwest::Client, String
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(config.timeout))
         .danger_accept_invalid_certs(!config.verify_ssl);
-    
+
     match config.redirect_policy {
         RedirectPolicy::Follow => {
-            builder = builder.redirect(reqwest::redirect::Policy::limited(config.max_redirects as usize));
+            builder = builder.redirect(reqwest::redirect::Policy::limited(
+                config.max_redirects as usize,
+            ));
         }
         RedirectPolicy::Limited(n) => {
             builder = builder.redirect(reqwest::redirect::Policy::limited(n as usize));
@@ -158,20 +148,26 @@ pub fn build_client(config: &HttpClientConfig) -> Result<reqwest::Client, String
             builder = builder.redirect(reqwest::redirect::Policy::none());
         }
     }
-    
+
     if let Some(proxy_config) = &config.proxy {
-        let proxy_url = if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
-            format!("http://{}:{}@{}:{}", username, password, proxy_config.host, proxy_config.port)
+        let proxy_url = if let (Some(username), Some(password)) =
+            (&proxy_config.username, &proxy_config.password)
+        {
+            format!(
+                "http://{}:{}@{}:{}",
+                username, password, proxy_config.host, proxy_config.port
+            )
         } else {
             format!("http://{}:{}", proxy_config.host, proxy_config.port)
         };
-        
+
         let proxy = reqwest::Proxy::http(&proxy_url)
             .map_err(|e| format!("Failed to create proxy: {}", e))?;
         builder = builder.proxy(proxy);
     }
-    
-    builder.build()
+
+    builder
+        .build()
         .map_err(|e| format!("Failed to build client: {}", e))
 }
 
@@ -206,7 +202,7 @@ pub async fn http_client_request_async(
     body: Option<&str>,
 ) -> Result<HttpResponse, String> {
     let client = build_client(config)?;
-    
+
     let full_url = if let Some(base) = &config.base_url {
         if url.starts_with("http://") || url.starts_with("https://") {
             url.to_string()
@@ -216,28 +212,34 @@ pub async fn http_client_request_async(
     } else {
         url.to_string()
     };
-    
+
     let req_method = parse_method(method);
     let mut req_builder = client.request(req_method, &full_url);
-    
+
     for (key, value) in &config.default_headers {
         req_builder = req_builder.header(key, value);
     }
-    
+
     let request_headers = parse_headers(headers_str);
     for (key, value) in request_headers {
         req_builder = req_builder.header(&key, &value);
     }
-    
+
     if let Some(body_content) = body {
         req_builder = req_builder.body(body_content.to_string());
     }
-    
-    let response = req_builder.send().await
+
+    let response = req_builder
+        .send()
+        .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
+
     let status = response.status().as_u16();
-    let status_text = response.status().canonical_reason().unwrap_or("Unknown").to_string();
+    let status_text = response
+        .status()
+        .canonical_reason()
+        .unwrap_or("Unknown")
+        .to_string();
     let final_url = response.url().to_string();
 
     let mut response_headers = String::new();
@@ -245,7 +247,9 @@ pub async fn http_client_request_async(
         response_headers.push_str(&format!("{}: {}\n", name, value.to_str().unwrap_or("")));
     }
 
-    let response_body = response.text().await
+    let response_body = response
+        .text()
+        .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     Ok(HttpResponse {
@@ -302,7 +306,7 @@ impl From<HttpClientState> for HttpClientConfig {
             "None" => RedirectPolicy::None,
             _ => RedirectPolicy::Limited(state.max_redirects),
         };
-        
+
         HttpClientConfig {
             base_url: state.base_url,
             timeout: state.timeout,
@@ -320,24 +324,42 @@ impl From<HttpClientState> for HttpClientConfig {
     }
 }
 
+/// Helper function to get or create HttpClientState from instance's native_data
 fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientState>>, Value> {
     if args.is_empty() {
-        return Err(Value::String("HttpClient method requires instance".to_string()));
+        return Err(Value::String(
+            "HttpClient method requires instance".to_string(),
+        ));
     }
 
     if let Value::Instance(instance) = &args[0] {
-        let instance_id = get_instance_id(&instance.lock().unwrap());
-        let registry = get_states_registry();
-        let mut states = registry.lock().unwrap();
-        
-        // Check if state already exists
-        if let Some(state) = states.get(&instance_id) {
-            return Ok(state.clone());
+        let instance_lock = instance.lock().unwrap();
+        let native_data = instance_lock.native_data.clone();
+        drop(instance_lock);
+
+        // Try to get existing state
+        let existing = {
+            let data = native_data.lock().unwrap();
+            if let Some(boxed) = data.as_ref() {
+                if let Some(state) = boxed.downcast_ref::<Arc<Mutex<HttpClientState>>>() {
+                    Some(state.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(state) = existing {
+            return Ok(state);
         }
 
         // Create new state if not exists
         let state = Arc::new(Mutex::new(HttpClientState::default()));
-        states.insert(instance_id, state.clone());
+        let mut data = native_data.lock().unwrap();
+        // Store the state in native_data by boxing and casting to dyn Any
+        *data = Some(Box::new(state.clone()) as Box<dyn Any + Send + Sync>);
         return Ok(state);
     }
 
@@ -347,15 +369,17 @@ fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientSt
 pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> Result<Value, Value> {
     let state = get_http_client_state(args)?;
     if args.len() < 2 {
-        return Err(Value::String("set_timeout requires timeout argument".to_string()));
+        return Err(Value::String(
+            "set_timeout requires timeout argument".to_string(),
+        ));
     }
-    
+
     let timeout = match &args[1] {
         Value::Int64(n) => *n as u64,
         Value::UInt64(n) => *n as u64,
         _ => return Err(Value::String("timeout must be an integer".to_string())),
     };
-    
+
     let mut state = state.lock().unwrap();
     state.timeout = timeout;
     Ok(Value::Null)
@@ -364,9 +388,11 @@ pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> Result<Value, Va
 pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> Result<Value, Value> {
     let state = get_http_client_state(args)?;
     if args.len() < 2 {
-        return Err(Value::String("set_base_url requires url argument".to_string()));
+        return Err(Value::String(
+            "set_base_url requires url argument".to_string(),
+        ));
     }
-    
+
     let url = args[1].to_string();
     let mut state = state.lock().unwrap();
     state.base_url = Some(url);
@@ -376,12 +402,14 @@ pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> Result<Value, V
 pub fn native_http_client_add_header(args: &mut Vec<Value>) -> Result<Value, Value> {
     let state = get_http_client_state(args)?;
     if args.len() < 3 {
-        return Err(Value::String("add_header requires key and value arguments".to_string()));
+        return Err(Value::String(
+            "add_header requires key and value arguments".to_string(),
+        ));
     }
-    
+
     let key = args[1].to_string();
     let value = args[2].to_string();
-    
+
     let mut state = state.lock().unwrap();
     state.headers.insert(key, value);
     Ok(Value::Null)
@@ -400,13 +428,7 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     let p_clone = promise.clone();
 
     tokio::spawn(async move {
-        let result = http_client_request_async(
-            &state_clone.into(),
-            "GET",
-            &url,
-            "",
-            None,
-        ).await;
+        let result = http_client_request_async(&state_clone.into(), "GET", &url, "", None).await;
 
         let mut state = p_clone.lock().await;
         match result {
@@ -421,32 +443,28 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> Result<Value, Value> {
 pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     let state = get_http_client_state(args)?;
     if args.len() < 3 {
-        return Err(Value::String("post requires URL and body arguments".to_string()));
+        return Err(Value::String(
+            "post requires URL and body arguments".to_string(),
+        ));
     }
-    
+
     let url = args[1].to_string();
     let body = args[2].to_string();
     let state_clone = state.lock().unwrap().clone();
-    
+
     let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
     let p_clone = promise.clone();
-    
+
     tokio::spawn(async move {
-        let result = http_client_request_async(
-            &state_clone.into(),
-            "POST",
-            &url,
-            "",
-            Some(&body),
-        ).await;
-        
+        let result =
+            http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body)).await;
+
         let mut state = p_clone.lock().await;
         match result {
             Ok(response) => *state = PromiseState::Resolved(Value::String(response.body)),
             Err(e) => *state = PromiseState::Rejected(e),
         }
     });
-    
+
     Ok(Value::Promise(promise))
 }
-

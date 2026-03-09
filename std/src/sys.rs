@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use sparkler::vm::Instance;
 use sparkler::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
     if !args.is_empty() {
@@ -13,7 +13,9 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
         } else if let Value::Null = &args[0] {
             // Fall through to returning all env vars
         } else {
-            return Err(Value::String("env requires a string argument or null".to_string()));
+            return Err(Value::String(
+                "env requires a string argument or null".to_string(),
+            ));
         }
     }
 
@@ -25,5 +27,6 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
     Ok(Value::Instance(Arc::new(Mutex::new(Instance {
         class: "Object".to_string(),
         fields: env_map,
+        native_data: Arc::new(Mutex::new(None)),
     }))))
 }

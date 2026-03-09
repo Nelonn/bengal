@@ -1,12 +1,12 @@
-pub mod io;
+pub mod ffi;
+pub mod fs;
 pub mod http;
+pub mod io;
 pub mod json;
 pub mod reflect;
 pub mod sys;
-pub mod fs;
-pub mod ffi;
 
-use sparkler::{VM, NativeModule, Value};
+use sparkler::{NativeModule, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
     vm.native("print", io::native_print)
@@ -24,9 +24,21 @@ pub fn register_all(vm: &mut VM) {
     NativeModule::new("std::http")
         .function("get", http::native_http_get)
         .function("post", http::native_http_post)
-        .class_method("HttpClient", "set_timeout", http::native_http_client_set_timeout)
-        .class_method("HttpClient", "set_base_url", http::native_http_client_set_base_url)
-        .class_method("HttpClient", "add_header", http::native_http_client_add_header)
+        .class_method(
+            "HttpClient",
+            "set_timeout",
+            http::native_http_client_set_timeout,
+        )
+        .class_method(
+            "HttpClient",
+            "set_base_url",
+            http::native_http_client_set_base_url,
+        )
+        .class_method(
+            "HttpClient",
+            "add_header",
+            http::native_http_client_add_header,
+        )
         .class_method("HttpClient", "get", http::native_http_client_get)
         .class_method("HttpClient", "post", http::native_http_client_post)
         .register(vm);
@@ -71,6 +83,8 @@ pub fn register_all(vm: &mut VM) {
 
     // Fallback function that throws an error
     vm.register_fallback(|_args| {
-        Err(Value::String("Native method not available or disabled by runtime".to_string()))
+        Err(Value::String(
+            "Native method not available or disabled by runtime".to_string(),
+        ))
     });
 }
