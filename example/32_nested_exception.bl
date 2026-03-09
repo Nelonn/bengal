@@ -1,0 +1,20 @@
+// Test stack traces in exceptions - nested try-catch
+
+try {
+    let x = 10
+    try {
+        let y = 20
+        let result = x + y
+        if (result > 25) {
+            throw "Inner error: result too large"
+        }
+    } catch (inner_e) {
+        println("Inner catch:")
+        println(inner_e)
+        // Re-throw with different message
+        throw "Outer error: inner operation failed"
+    }
+} catch (outer_e) {
+    println("Outer catch:")
+    println(outer_e)
+}

@@ -6,3 +6,11 @@ class Process {
 
 native fn exit(code: int)
 native fn env(key: str): str?
+
+fn just_throw_internal() {
+    throw "Some exception"
+}
+
+fn just_throw() {
+    just_throw_internal()
+}

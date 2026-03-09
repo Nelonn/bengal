@@ -1,0 +1,20 @@
+// Test nested stack traces
+
+fn inner() {
+    throw "Error from inner"
+}
+
+fn middle() {
+    inner()
+}
+
+fn outer() {
+    middle()
+}
+
+try {
+    outer()
+} catch (e) {
+    println("Caught exception:")
+    println(e)
+}

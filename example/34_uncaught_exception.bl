@@ -1,0 +1,9 @@
+// Test uncaught exception
+
+let x = 10
+let y = 20
+let result = x + y
+if (result > 25) {
+    throw "Uncaught error: result too large"
+}
+println("This won't print")

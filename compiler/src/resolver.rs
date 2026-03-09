@@ -18,6 +18,7 @@ pub struct ModuleInfo {
     pub statements: Vec<Stmt>,
     pub classes: Vec<String>,
     pub functions: Vec<String>,
+    pub source: String,
 }
 
 impl ModuleResolver {
@@ -96,6 +97,7 @@ impl ModuleResolver {
             statements,
             classes,
             functions,
+            source: source.clone(),
         };
         
         self.loaded_modules.insert(module_name, module_info);
@@ -176,19 +178,19 @@ impl ModuleResolver {
         // Register native functions from std::io
         self.register_native_functions();
 
-        // Now type check all loaded modules
+        // Now type check all loaded modules (skip function registration since they're already registered with qualified names)
         for (module_name, statements) in &module_statements {
             let ctx = self.type_context.clone();
             let mut type_checker = TypeChecker::with_context(ctx);
-            let _ = type_checker.check(statements);
-            
+            let _ = type_checker.check_with_options(statements, true);
+
             // Log errors but continue
             if type_checker.get_context().has_errors() {
                 for error in type_checker.get_context().get_errors() {
                     eprintln!("Type error in module '{}': {}", module_name, error.message);
                 }
             }
-            
+
             // Merge the context back (including errors)
             self.type_context = type_checker.get_context().clone();
         }
@@ -196,6 +198,7 @@ impl ModuleResolver {
         // Type check main statements
         let ctx = self.type_context.clone();
         let mut type_checker = TypeChecker::with_context(ctx);
+
         match type_checker.check(main_statements) {
             Ok(ctx) => Ok(ctx.clone()),
             Err(errors) => {

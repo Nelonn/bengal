@@ -9,6 +9,61 @@ use async_recursion::async_recursion;
 
 pub type Bytecode = Vec<u8>;
 
+/// Represents a single frame in the call stack
+#[derive(Clone, Debug)]
+pub struct StackFrame {
+    pub function_name: String,
+    pub source_file: Option<String>,
+    pub line_number: Option<usize>,
+}
+
+impl fmt::Display for StackFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "  at {}", self.function_name)?;
+        if let Some(file) = &self.source_file {
+            write!(f, " ({})", file)?;
+            if let Some(line) = self.line_number {
+                write!(f, ":{}", line)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Exception with stack trace information
+#[derive(Clone, Debug)]
+pub struct Exception {
+    pub message: String,
+    pub stack_trace: Vec<StackFrame>,
+}
+
+impl fmt::Display for Exception {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Exception: {}", self.message)?;
+        if !self.stack_trace.is_empty() {
+            writeln!(f, "Stack trace:")?;
+            // Print in reverse order (most recent call first)
+            for frame in self.stack_trace.iter().rev() {
+                writeln!(f, "{}", frame)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Exception {
+    pub fn new(message: String, stack_trace: Vec<StackFrame>) -> Self {
+        Self { message, stack_trace }
+    }
+
+    pub fn with_message(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            stack_trace: Vec::new(),
+        }
+    }
+}
+
 /// All supported numeric types for VM and FFI
 #[derive(Clone, Copy, Debug)]
 pub enum IntValue {
@@ -45,6 +100,7 @@ pub enum Value {
     Null,
     Instance(Arc<Mutex<Instance>>),
     Promise(Arc<TokioMutex<PromiseState>>),
+    Exception(Exception),
 }
 
 impl PartialEq for Value {
@@ -55,6 +111,7 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Instance(a), Value::Instance(b)) => Arc::ptr_eq(a, b),
             (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
+            (Value::Exception(a), Value::Exception(b)) => a.message == b.message,
             // Compare all integer types by converting to i64
             (Value::Int64(a), Value::Int64(b)) => a == b,
             (Value::Int64(a), Value::Int8(b)) => *a == *b as i64,
@@ -241,6 +298,7 @@ impl Value {
             Value::Null => "null".to_string(),
             Value::Instance(_) => "[instance]".to_string(),
             Value::Promise(_) => "[promise]".to_string(),
+            Value::Exception(e) => e.to_string(),
         }
     }
 }
@@ -271,6 +329,14 @@ pub struct Method {
     pub bytecode: Vec<u8>,
 }
 
+#[derive(Clone)]
+pub struct Function {
+    pub name: String,
+    pub bytecode: Vec<u8>,
+    pub param_count: usize,
+    pub source_file: Option<String>,
+}
+
 pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, Value>;
 
 pub struct VM {
@@ -280,15 +346,20 @@ pub struct VM {
     strings: Vec<String>,
     locals: HashMap<String, Value>,
     classes: HashMap<String, Class>,
+    functions: HashMap<String, Function>,
     pub native_functions: HashMap<String, NativeFn>,
     pub fallback_native: Option<NativeFn>,
     exception_handlers: Vec<ExceptionHandler>,
+    call_stack: Vec<StackFrame>,
+    source_file: Option<String>,
+    current_line: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ExceptionHandler {
     catch_pc: usize,
     stack_depth: usize,
+    call_stack_depth: usize,
 }
 
 impl VM {
@@ -300,9 +371,13 @@ impl VM {
             strings: Vec::new(),
             locals: HashMap::new(),
             classes: HashMap::new(),
+            functions: HashMap::new(),
             native_functions: HashMap::new(),
             fallback_native: None,
             exception_handlers: Vec::new(),
+            call_stack: Vec::new(),
+            source_file: None,
+            current_line: 1,
         }
     }
 
@@ -314,32 +389,63 @@ impl VM {
         self.fallback_native = Some(f);
     }
 
-    pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>) -> Result<(), String> {
+    pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>) -> Result<(), String> {
         self.memory = bytecode.to_vec();
         self.strings = strings;
         self.classes.clear();
         for class in classes {
             self.classes.insert(class.name.clone(), class);
         }
+        self.functions.clear();
+        for function in functions {
+            self.functions.insert(function.name.clone(), function);
+        }
         self.pc = 0;
         self.stack.clear();
+        // Initialize call stack with a main frame
+        self.call_stack = vec![StackFrame {
+            function_name: "<main>".to_string(),
+            source_file: self.source_file.clone(),
+            line_number: Some(1),
+        }];
+        self.current_line = 1;
         Ok(())
     }
 
+    pub fn set_call_stack(&mut self, call_stack: Vec<StackFrame>) {
+        self.call_stack = call_stack;
+    }
+
+    pub fn set_source_file(&mut self, file: &str) {
+        self.source_file = Some(file.to_string());
+        // Don't update the main frame's source file - it should always point to the original entry point
+    }
+
+    pub fn set_line(&mut self, line: usize) {
+        self.current_line = line;
+    }
+
     #[async_recursion]
-    pub async fn run(&mut self) -> Result<Option<Value>, String> {
+    pub async fn run(&mut self) -> Result<Option<Value>, Value> {
         while self.pc < self.memory.len() {
             let opcode = self.memory[self.pc];
             let result = match self.execute(opcode).await {
                 Ok(res) => res,
                 Err(e) => {
+                    // Build stack trace for the exception
+                    let exception = match &e {
+                        Value::Exception(existing) => existing.clone(),
+                        _ => self.build_exception(&e),
+                    };
+
                     if let Some(handler) = self.exception_handlers.pop() {
                         self.pc = handler.catch_pc;
                         self.stack.truncate(handler.stack_depth);
-                        self.stack.push(e);
+                        // Push exception object with stack trace
+                        self.stack.push(Value::Exception(exception));
                         continue;
                     } else {
-                        return Err(e.to_string());
+                        return Err(Value::Exception(exception));
                     }
                 }
             };
@@ -354,8 +460,28 @@ impl VM {
 
             self.pc += 1;
         }
-        
+
         Ok(self.stack.last().cloned())
+    }
+
+    fn build_exception(&self, value: &Value) -> Exception {
+        let message = match value {
+            Value::String(s) => s.clone(),
+            Value::Exception(e) => e.message.clone(),
+            _ => value.to_string(),
+        };
+
+        // Clone current call stack for the exception
+        let mut stack_trace = self.call_stack.clone();
+
+        // Update the topmost frame with current line (where exception occurred)
+        if let Some(last_frame) = stack_trace.last_mut() {
+            let mut updated_frame = last_frame.clone();
+            updated_frame.line_number = Some(self.current_line);
+            *last_frame = updated_frame;
+        }
+
+        Exception::new(message, stack_trace)
     }
 
     #[async_recursion]
@@ -473,6 +599,7 @@ impl VM {
                     .clone();
 
                 if let Some(class) = self.classes.get(&func_name).cloned() {
+                    // Class constructor call
                     for _ in 0..arg_count {
                         self.stack.pop();
                     }
@@ -482,6 +609,7 @@ impl VM {
                     };
                     self.stack.push(Value::Instance(Arc::new(Mutex::new(instance))));
                 } else if let Some(native_f) = self.native_functions.get(&func_name) {
+                    // Native function call
                     let mut args = Vec::new();
                     for _ in 0..arg_count {
                         if let Some(val) = self.stack.pop() {
@@ -491,6 +619,53 @@ impl VM {
                     args.reverse();
                     let result = native_f(&mut args)?;
                     self.stack.push(result);
+                } else if let Some(function) = self.functions.get(&func_name).cloned() {
+                    // User-defined function call
+                    let mut args = Vec::new();
+                    for _ in 0..arg_count {
+                        args.push(self.stack.pop().ok_or(Value::String("Stack underflow during function call".to_string()))?);
+                    }
+                    args.reverse();
+
+                    // Save caller's location BEFORE changing source file
+                    let caller_file = self.source_file.clone();
+                    let caller_line = self.current_line;
+
+                    // Create a sub-VM to execute the function
+                    let mut vm = VM::new();
+                    vm.load(&function.bytecode, self.strings.clone(), self.classes.values().cloned().collect(), Vec::new()).map_err(|e| Value::String(e))?;
+                    vm.native_functions = self.native_functions.clone();
+                    vm.functions = self.functions.clone();
+
+                    // Pass call stack and push current function frame
+                    let mut new_call_stack = self.call_stack.clone();
+                    // Update the caller's frame with the call site location
+                    if let Some(last_frame) = new_call_stack.last_mut() {
+                        last_frame.source_file = caller_file.clone();
+                        last_frame.line_number = Some(caller_line);
+                    }
+                    new_call_stack.push(StackFrame {
+                        function_name: func_name.clone(),
+                        source_file: caller_file.clone(),
+                        line_number: Some(caller_line),
+                    });
+                    vm.set_call_stack(new_call_stack);
+                    vm.set_source_file(&function.source_file.as_deref().unwrap_or_else(|| self.source_file.as_deref().unwrap_or("<unknown>")));
+
+                    // Set up locals (parameters) - compiler uses (pos + 1).to_string() for parameters
+                    for (i, arg) in args.iter().enumerate() {
+                        vm.locals.insert((i + 1).to_string(), arg.clone());
+                    }
+
+                    // Run the function
+                    let result = vm.run().await;
+                    match result {
+                        Ok(val) => self.stack.push(val.unwrap_or(Value::Null)),
+                        Err(e) => {
+                            // Propagate the exception value directly
+                            return Err(e);
+                        }
+                    }
                 } else {
                     return Err(Value::String(format!("Function not found: {}", func_name)));
                 }
@@ -568,13 +743,16 @@ impl VM {
                     if let Some(class) = self.classes.get(&class_name).cloned() {
                         if let Some(method) = class.methods.get(&name) {
                             let mut vm = VM::new();
-                            vm.load(&method.bytecode, self.strings.clone(), self.classes.values().cloned().collect()).map_err(|e| Value::String(e))?;
+                            vm.load(&method.bytecode, self.strings.clone(), self.classes.values().cloned().collect(), Vec::new()).map_err(|e| Value::String(e))?;
                             vm.native_functions = self.native_functions.clone();
                             for (i, arg) in args.iter().enumerate() {
                                 vm.locals.insert(i.to_string(), arg.clone());
                             }
-                            let result = vm.run().await.map_err(|e| Value::String(e))?;
-                            self.stack.push(result.unwrap_or(Value::Null));
+                            let result = vm.run().await;
+                            match result {
+                                Ok(val) => self.stack.push(val.unwrap_or(Value::Null)),
+                                Err(e) => return Err(e),
+                            }
                         } else {
                             return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
                         }
@@ -878,12 +1056,19 @@ impl VM {
                 self.stack.pop();
             }
 
+            x if x == Opcode::Line as u8 => {
+                self.pc += 1;
+                let line = self.memory[self.pc] as usize;
+                self.current_line = line;
+            }
+
             x if x == Opcode::TryStart as u8 => {
                 self.pc += 1;
                 let catch_pc = self.memory[self.pc] as usize;
                 self.exception_handlers.push(ExceptionHandler {
                     catch_pc,
                     stack_depth: self.stack.len(),
+                    call_stack_depth: self.call_stack.len(),
                 });
             }
 
@@ -892,13 +1077,19 @@ impl VM {
             }
 
             x if x == Opcode::Throw as u8 => {
-                let exception = self.stack.pop().unwrap_or(Value::Null);
+                let exception_value = self.stack.pop().unwrap_or(Value::Null);
+                
+                // Build exception with stack trace
+                let exception = self.build_exception(&exception_value);
+                
                 if let Some(handler) = self.exception_handlers.pop() {
                     self.pc = handler.catch_pc.saturating_sub(1);
                     self.stack.truncate(handler.stack_depth);
-                    self.stack.push(exception);
+                    // Restore call stack to handler depth
+                    self.call_stack.truncate(handler.call_stack_depth);
+                    self.stack.push(Value::Exception(exception));
                 } else {
-                    return Err(Value::String(format!("Uncaught exception: {}", exception.to_string())));
+                    return Err(Value::Exception(exception));
                 }
             }
 
@@ -972,6 +1163,8 @@ pub enum Opcode {
 
     Pop = 0x72,
 
+    Line = 0x73,
+
     TryStart = 0x80,
     TryEnd = 0x81,
     Throw = 0x82,
@@ -1007,6 +1200,7 @@ impl Serialize for Value {
                 map.end()
             }
             Value::Promise(_) => serializer.serialize_none(),
+            Value::Exception(e) => serializer.serialize_str(&e.message),
         }
     }
 }

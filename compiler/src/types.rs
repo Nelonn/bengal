@@ -377,6 +377,25 @@ impl TypeContext {
         self.functions.get(name)
     }
 
+    /// Try to resolve a function name, including searching for unqualified names
+    /// in qualified functions (e.g., "foo" matches "std::sys::foo")
+    pub fn resolve_function(&self, name: &str) -> Option<&FunctionSignature> {
+        // First try exact match
+        if let Some(sig) = self.functions.get(name) {
+            return Some(sig);
+        }
+
+        // Try to find a function that ends with ::<name>
+        // Prefer exact module match if we're in a module context
+        for (func_name, sig) in &self.functions {
+            if func_name.ends_with(&format!("::{}", name)) {
+                return Some(sig);
+            }
+        }
+
+        None
+    }
+
     pub fn get_method(&self, class_name: &str, method_name: &str) -> Option<&MethodSignature> {
         self.classes.get(class_name).and_then(|c| c.methods.get(method_name))
     }
@@ -410,8 +429,14 @@ impl TypeChecker {
     }
 
     pub fn check(&mut self, statements: &[Stmt]) -> Result<&TypeContext, Vec<TypeError>> {
+        self.check_with_options(statements, false)
+    }
+
+    /// Type check statements, optionally skipping function registration
+    /// (for imported modules where functions are already registered with qualified names)
+    pub fn check_with_options(&mut self, statements: &[Stmt], skip_functions: bool) -> Result<&TypeContext, Vec<TypeError>> {
         // First pass: collect all class and function definitions
-        self.collect_definitions(statements);
+        self.collect_definitions(statements, skip_functions);
 
         // Second pass: type check all statements
         for stmt in statements {
@@ -433,7 +458,7 @@ impl TypeChecker {
         &mut self.context
     }
 
-    fn collect_definitions(&mut self, statements: &[Stmt]) {
+    fn collect_definitions(&mut self, statements: &[Stmt], skip_functions: bool) {
         for stmt in statements {
             match stmt {
                 Stmt::Class(class) => {
@@ -443,20 +468,22 @@ impl TypeChecker {
                     self.context.add_enum(enum_def);
                 }
                 Stmt::Function(func) => {
-                    let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
-                        name: p.name.clone(),
-                        type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
-                    }).collect();
+                    if !skip_functions {
+                        let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
+                            name: p.name.clone(),
+                            type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
+                        }).collect();
 
-                    self.context.add_function(&func.name, FunctionSignature {
-                        name: func.name.clone(),
-                        params,
-                        return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
-                        return_optional: func.return_optional,
-                        is_method: false,
-                        is_async: func.is_async,
-                        is_native: func.is_native,
-                    });
+                        self.context.add_function(&func.name, FunctionSignature {
+                            name: func.name.clone(),
+                            params,
+                            return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
+                            return_optional: func.return_optional,
+                            is_method: false,
+                            is_async: func.is_async,
+                            is_native: func.is_native,
+                        });
+                    }
                 }
                 Stmt::Import { path: _ } => {
                     // Import handled during module resolution

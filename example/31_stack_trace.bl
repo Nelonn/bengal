@@ -1,0 +1,22 @@
+// Test stack traces in exceptions
+
+import std::sys
+
+fn check_result(number: int) {
+    if (number > 25) {
+        throw "Error: result too large"
+    }
+}
+
+// Simple throw and catch test
+try {
+    // Simulate nested calls with inline code
+    let x = 10
+    let y = 20
+    let result = x + y
+    std::sys::just_throw()
+    check_result(result)
+} catch (e) {
+    println("Caught exception:")
+    println(e)
+}
