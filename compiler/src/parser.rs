@@ -144,69 +144,11 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>, source: &str) -> Self {
-        // Compute token positions by scanning through source
-        let mut token_positions = Vec::new();
-        let mut current_pos = 0;
-        let source_str = source;
-        let source_chars: Vec<char> = source.chars().collect();
-        let source_len = source_chars.len();
-        
-        for token in &tokens {
-            // Skip whitespace and comments to find the token
-            loop {
-                if current_pos >= source_len {
-                    break;
-                }
-                let ch = source_chars[current_pos];
-                if ch.is_whitespace() {
-                    current_pos += 1;
-                } else if ch == '/' && current_pos + 1 < source_len {
-                    // Skip comments
-                    let next_ch = source_chars[current_pos + 1];
-                    if next_ch == '/' {
-                        // Line comment - skip to end of line
-                        while current_pos < source_len && source_chars[current_pos] != '\n' {
-                            current_pos += 1;
-                        }
-                    } else if next_ch == '*' {
-                        // Block comment - skip to */
-                        current_pos += 2;
-                        while current_pos + 1 < source_len {
-                            if source_chars[current_pos] == '*' && source_chars[current_pos + 1] == '/' {
-                                current_pos += 2;
-                                break;
-                            }
-                            current_pos += 1;
-                        }
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-            
-            token_positions.push(current_pos);
-            
-            // Advance past this token's content
-            match token {
-                Token::Identifier(s) => {
-                    current_pos += s.len();
-                },
-                Token::String(s) => {
-                    current_pos += s.len() + 2;  // Account for quotes
-                },
-                Token::Int(n) => current_pos += n.to_string().len(),
-                Token::Float(n) => current_pos += n.to_string().len(),
-                _ => current_pos += 1,  // Single-char tokens
-            }
-        }
-        
-        Self { 
-            tokens, 
+    pub fn new(tokens: Vec<Token>, source: &str, token_positions: Vec<usize>) -> Self {
+        Self {
+            tokens,
             pos: 0,
-            source: source_str.to_string(),
+            source: source.to_string(),
             token_positions,
         }
     }
@@ -215,11 +157,11 @@ impl Parser {
         let pos = self.token_positions.get(token_idx).copied().unwrap_or(0);
         let source_up_to_pos = &self.source[..pos.min(self.source.len())];
         let line = source_up_to_pos.matches('\n').count() + 1;
-        
+
         // Find column (position after last newline)
         let last_newline = source_up_to_pos.rfind('\n').map(|p| p + 1).unwrap_or(0);
         let column = pos - last_newline + 1;
-        
+
         Span { line, column }
     }
 
@@ -1216,8 +1158,8 @@ impl Parser {
                 let expr_str = &rest[..interp_end];
 
                 let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim());
-                let tokens = sub_lexer.tokenize()?;
-                let mut sub_parser = Parser::new(tokens, expr_str.trim());
+                let (tokens, token_positions) = sub_lexer.tokenize()?;
+                let mut sub_parser = Parser::new(tokens, expr_str.trim(), token_positions);
                 let sub_stmts = sub_parser.parse()?;
 
                 let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {

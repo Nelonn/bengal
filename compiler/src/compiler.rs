@@ -49,9 +49,9 @@ impl Compiler {
 
     pub fn compile_with_options(&self, options: &CompilerOptions) -> Result<Bytecode, String> {
         let mut lexer = Lexer::new(&self.source);
-        let tokens = lexer.tokenize()?;
+        let (tokens, token_positions) = lexer.tokenize()?;
 
-        let mut parser = Parser::new(tokens, &self.source);
+        let mut parser = Parser::new(tokens, &self.source, token_positions);
         let statements = parser.parse()?;
 
         let mut resolver = None;

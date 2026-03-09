@@ -376,16 +376,20 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize(&mut self) -> Result<Vec<Token>, String> {
+    pub fn tokenize(&mut self) -> Result<(Vec<Token>, Vec<usize>), String> {
         let mut tokens = Vec::new();
+        let mut token_positions = Vec::new();
         loop {
+            let token_pos = self.pos;  // Record position before creating token
             let token = self.next_token()?;
             if token == Token::Eof {
                 tokens.push(token);
+                token_positions.push(token_pos);
                 break;
             }
             tokens.push(token);
+            token_positions.push(token_pos);
         }
-        Ok(tokens)
+        Ok((tokens, token_positions))
     }
 }

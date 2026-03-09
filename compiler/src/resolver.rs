@@ -73,9 +73,9 @@ impl ModuleResolver {
             .map_err(|e| format!("Failed to read module '{}': {}", module_file.display(), e))?;
 
         let mut lexer = Lexer::new(&source);
-        let tokens = lexer.tokenize()?;
+        let (tokens, token_positions) = lexer.tokenize()?;
 
-        let mut parser = Parser::new(tokens, &source);
+        let mut parser = Parser::new(tokens, &source, token_positions);
         let statements = parser.parse()?;
         
         // Create module info
