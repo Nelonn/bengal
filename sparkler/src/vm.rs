@@ -339,6 +339,73 @@ pub struct Function {
 
 pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, Value>;
 
+/// Builder for registering native functions with optional metadata
+pub struct NativeFunctionBuilder {
+    name: String,
+    func: NativeFn,
+    param_count: Option<usize>,
+    return_type: Option<String>,
+    description: Option<String>,
+}
+
+impl NativeFunctionBuilder {
+    pub fn new(name: &str, func: NativeFn) -> Self {
+        Self {
+            name: name.to_string(),
+            func,
+            param_count: None,
+            return_type: None,
+            description: None,
+        }
+    }
+
+    pub fn params(mut self, count: usize) -> Self {
+        self.param_count = Some(count);
+        self
+    }
+
+    pub fn returns(mut self, type_name: &str) -> Self {
+        self.return_type = Some(type_name.to_string());
+        self
+    }
+
+    pub fn description(mut self, desc: &str) -> Self {
+        self.description = Some(desc.to_string());
+        self
+    }
+
+    pub fn register(self, vm: &mut VM) {
+        vm.register_native(&self.name, self.func);
+    }
+}
+
+/// Helper struct for building a module's native functions
+pub struct NativeModule {
+    name: String,
+    functions: Vec<(String, NativeFn)>,
+}
+
+impl NativeModule {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            functions: Vec::new(),
+        }
+    }
+
+    pub fn function(mut self, name: &str, func: NativeFn) -> Self {
+        self.functions.push((name.to_string(), func));
+        self
+    }
+
+    pub fn register(self, vm: &mut VM) {
+        for (name, func) in self.functions {
+            let full_name = format!("{}::{}", self.name, name);
+            vm.register_native(&full_name, func);
+        }
+    }
+}
+
 pub struct VM {
     memory: Bytecode,
     stack: Vec<Value>,
@@ -383,6 +450,21 @@ impl VM {
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
         self.native_functions.insert(name.to_string(), f);
+    }
+
+    /// Register a native function using the builder pattern
+    pub fn native(&mut self, name: &str, func: NativeFn) -> NativeFunctionBuilder {
+        NativeFunctionBuilder::new(name, func)
+    }
+
+    /// Create a new native module builder
+    pub fn module(&mut self, name: &str) -> NativeModule {
+        NativeModule::new(name)
+    }
+
+    /// Register all functions from a NativeModule
+    pub fn register_module(&mut self, module: NativeModule) {
+        module.register(self);
     }
 
     pub fn register_fallback(&mut self, f: NativeFn) {

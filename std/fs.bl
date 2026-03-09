@@ -1,3 +1,123 @@
 module std::fs
 
+// File metadata class
+class FsMetadata {
+  is_file: bool = false
+  is_dir: bool = false
+  size: int = 0
+  modified: int = 0
+  accessed: int = 0
+  created: int = 0
+  
+  fn isFile(): bool {
+    return self.is_file
+  }
+  
+  fn isDir(): bool {
+    return self.is_dir
+  }
+  
+  fn size(): int {
+    return self.size
+  }
+}
 
+// Read entire file as bytes (returns array of Int8)
+native fn read(str path): Array?;
+
+// Read entire file as string
+native fn read_string(str path): str?;
+
+// Write bytes to file
+native fn write(str path, Array data): null;
+
+// Write string to file
+native fn write_string(str path, str content): null;
+
+// Append bytes to file
+native fn append(str path, Array data): null;
+
+// Append string to file
+native fn append_string(str path, str content): null;
+
+// Remove file or directory
+native fn remove(str path): null;
+
+// Remove file
+native fn remove_file(str path): null;
+
+// Remove empty directory
+native fn remove_dir(str path): null;
+
+// Remove directory and all contents
+native fn remove_dir_all(str path): null;
+
+// Check if path exists
+native fn exists(str path): bool;
+
+// Check if path is a file
+native fn is_file(str path): bool;
+
+// Check if path is a directory
+native fn is_dir(str path): bool;
+
+// Create directory
+native fn create_dir(str path): null;
+
+// Create directory and all parent directories
+native fn create_dir_all(str path): null;
+
+// Read directory contents (returns array of paths)
+native fn read_dir(str path): Array?;
+
+// Copy file
+native fn copy(str from, str to): null;
+
+// Rename/move file or directory
+native fn rename(str from, str to): null;
+
+// Get file/directory metadata
+native fn metadata(str path): FsMetadata?;
+
+// Get canonical absolute path
+native fn canonicalize(str path): str?;
+
+// Convenience functions
+
+// Read file content as string (alias for read_string)
+fn read_text(str path): str? {
+  return read_string(path)
+}
+
+// Write text to file (alias for write_string)
+fn write_text(str path, str content): null {
+  write_string(path, content)
+}
+
+// Append text to file (alias for append_string)
+fn append_text(str path, str content): null {
+  append_string(path, content)
+}
+
+// Check if file exists
+fn file_exists(str path): bool {
+  if (!exists(path)) {
+    return false
+  }
+  return is_file(path)
+}
+
+// Check if directory exists
+fn dir_exists(str path): bool {
+  if (!exists(path)) {
+    return false
+  }
+  return is_dir(path)
+}
+
+// Ensure directory exists (create if not)
+fn ensure_dir(str path): null {
+  if (!dir_exists(path)) {
+    create_dir_all(path)
+  }
+}
