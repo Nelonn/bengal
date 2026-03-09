@@ -533,9 +533,9 @@ impl TypeChecker {
                 let expr_type = self.infer_expr(expr);
                 self.context.add_variable(name, expr_type);
             }
-            Stmt::Assign { name, expr } => {
+            Stmt::Assign { name, expr, span } => {
                 let expr_type = self.infer_expr(expr);
-                
+
                 if let Some(var_info) = self.context.get_variable(name) {
                     if !expr_type.is_assignable_to(&var_info.type_name) {
                         self.context.add_error(
@@ -548,6 +548,26 @@ impl TypeChecker {
                             0
                         );
                     }
+                } else if let Some(current_class) = &self.context.current_class {
+                    // Check if assigning to a class field without self
+                    if let Some(class_info) = self.context.get_class(current_class) {
+                        if class_info.fields.contains_key(name) {
+                            // Error: assigning to class member without self
+                            self.context.add_error_with_location(
+                                format!(
+                                    "Cannot assign to class member '{}' without 'self' keyword. Use 'self.{}' instead.",
+                                    name, name
+                                ),
+                                span.line,
+                                span.column,
+                                None,
+                                None,
+                            );
+                            return;
+                        }
+                    }
+                    // Variable not declared with let, create it
+                    self.context.add_variable(name, expr_type);
                 } else {
                     // Variable not declared with let, create it
                     self.context.add_variable(name, expr_type);

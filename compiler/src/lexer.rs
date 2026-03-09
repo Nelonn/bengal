@@ -135,11 +135,7 @@ impl Lexer {
         }
     }
 
-    pub fn next_token(&mut self) -> Result<Token, String> {
-        self.skip_whitespace();
-        self.skip_comment();
-        self.skip_whitespace();
-
+    fn next_token_inner(&mut self) -> Result<Token, String> {
         let ch = match self.peek() {
             Some(c) => c,
             None => return Ok(Token::Eof),
@@ -202,7 +198,7 @@ impl Lexer {
                 if self.peek() == Some('/') {
                     // This is a comment, skip it
                     self.skip_comment();
-                    self.next_token()
+                    self.next_token_inner()
                 } else {
                     Ok(Token::Slash)
                 }
@@ -380,8 +376,11 @@ impl Lexer {
         let mut tokens = Vec::new();
         let mut token_positions = Vec::new();
         loop {
-            let token_pos = self.pos;  // Record position before creating token
-            let token = self.next_token()?;
+            self.skip_whitespace();
+            self.skip_comment();
+            self.skip_whitespace();
+            let token_pos = self.pos;  // Record position after skipping whitespace
+            let token = self.next_token_inner()?;
             if token == Token::Eof {
                 tokens.push(token);
                 token_positions.push(token_pos);

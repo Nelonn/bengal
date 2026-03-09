@@ -241,7 +241,7 @@ impl Compiler {
                 bytecode.push(Opcode::StoreLocal as u8);
                 bytecode.push(name_idx as u8);
             }
-            Stmt::Assign { name, expr } => {
+            Stmt::Assign { name, expr, .. } => {
                 let mut handled = false;
                 if let Some(ctx) = type_context {
                     // Check if it's a parameter

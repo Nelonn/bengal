@@ -20,7 +20,7 @@ pub enum Stmt {
     Enum(EnumDef),
     Function(FunctionDef),
     Let { name: String, expr: Expr },
-    Assign { name: String, expr: Expr },
+    Assign { name: String, expr: Expr, span: Span },
     Return(Option<Expr>),
     Expr(Expr),
     If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
@@ -254,10 +254,10 @@ impl Parser {
             let expr = self.parse_expression()?;
 
             if self.match_token(&Token::Equal) {
-                if let Expr::Variable { name, .. } = expr {
+                if let Expr::Variable { name, span } = expr {
                     let value = self.parse_expression()?;
                     if self.match_token(&Token::Semicolon) {}
-                    Stmt::Assign { name, expr: value }
+                    Stmt::Assign { name, expr: value, span }
                 } else if let Expr::Get { object, name, span } = expr {
                     let value = self.parse_expression()?;
                     if self.match_token(&Token::Semicolon) {}
@@ -1164,7 +1164,7 @@ impl Parser {
 
                 let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {
                     e.clone()
-                } else if let Some(Stmt::Assign { name, expr: _ }) = sub_stmts.first() {
+                } else if let Some(Stmt::Assign { name, .. }) = sub_stmts.first() {
                     let span = Span::unknown();
                     Expr::Variable { name: name.clone(), span }
                 } else {

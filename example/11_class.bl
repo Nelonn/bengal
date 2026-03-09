@@ -12,6 +12,7 @@ class SomeObject {
       some_private = true
       return null
     }
+    some_undefined = true
     return some_string
   }
 }
