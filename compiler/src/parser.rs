@@ -27,6 +27,7 @@ pub enum Stmt {
     For { var_name: String, range: Box<Expr>, body: Block },
     While { condition: Expr, body: Block },
     Break,
+    Continue,
     TryCatch { try_block: Block, catch_var: String, catch_block: Block },
     Throw(Expr),
 }
@@ -131,6 +132,7 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
     Greater,
     GreaterEqual,
     Less,
@@ -265,6 +267,8 @@ impl Parser {
             self.parse_while()?
         } else if self.match_token(&Token::Break) {
             self.parse_break()?
+        } else if self.match_token(&Token::Continue) {
+            self.parse_continue()?
         } else if self.match_token(&Token::Try) {
             self.parse_try_catch()?
         } else if self.match_token(&Token::Throw) {
@@ -784,6 +788,11 @@ impl Parser {
         Ok(Stmt::Break)
     }
 
+    fn parse_continue(&mut self) -> Result<Stmt, String> {
+        if self.match_token(&Token::Semicolon) {}
+        Ok(Stmt::Continue)
+    }
+
     fn parse_try_catch(&mut self) -> Result<Stmt, String> {
         if !self.match_token(&Token::LBrace) {
             return Err("Expected '{' for try body".to_string());
@@ -1006,6 +1015,14 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Divide,
+                    right: Box::new(self.parse_unary()?),
+                    span,
+                };
+            } else if self.match_token(&Token::Percent) {
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Modulo,
                     right: Box::new(self.parse_unary()?),
                     span,
                 };

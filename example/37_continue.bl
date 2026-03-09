@@ -1,0 +1,19 @@
+import std::io
+
+println("Continue in for loop (skip 3):")
+for (i in 1..5) {
+    if (i == 3) {
+        continue
+    }
+    println(str(i))
+}
+
+println("\nContinue in while loop (skip even):")
+let j = 0
+while (j < 6) {
+    j++
+    if (j % 2 == 0) {
+        continue
+    }
+    println(str(j))
+}

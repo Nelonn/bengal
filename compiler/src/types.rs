@@ -703,6 +703,9 @@ impl TypeChecker {
             Stmt::Break => {
                 // Break statement - no type checking needed
             }
+            Stmt::Continue => {
+                // Continue statement - no type checking needed
+            }
         }
     }
 
@@ -909,7 +912,8 @@ impl TypeChecker {
                         Type::Bool
                     }
                     crate::parser::BinaryOp::Add | crate::parser::BinaryOp::Subtract |
-                    crate::parser::BinaryOp::Multiply | crate::parser::BinaryOp::Divide => {
+                    crate::parser::BinaryOp::Multiply | crate::parser::BinaryOp::Divide |
+                    crate::parser::BinaryOp::Modulo => {
                         if op == &crate::parser::BinaryOp::Add && (left_type == Type::Str || right_type == Type::Str) {
                             return Type::Str;
                         }

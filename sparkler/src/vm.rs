@@ -1273,9 +1273,45 @@ impl VM {
                     }
                     _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
                          (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                        let left_f = left.to_float().unwrap();
+                        let right_f = right.to_float().unwrap();
+                        if right_f != 0.0 {
+                            Value::Float64(left_f / right_f)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    _ => Value::Null,
+                };
+                self.stack.push(result);
+            }
+
+            x if x == Opcode::Modulo as u8 => {
+                let right = self.stack.pop().unwrap_or(Value::Null);
+                let left = self.stack.pop().unwrap_or(Value::Null);
+                let result = match (&left, &right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        let r = right.to_arithmetic_int().unwrap();
+                        if r != 0 {
+                            Value::Int64(left.to_arithmetic_int().unwrap() % r)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         let r = right.to_float().unwrap();
                         if r != 0.0 {
-                            Value::Float64(left.to_float().unwrap() / r)
+                            Value::Float64(left.to_float().unwrap() % r)
+                        } else {
+                            Value::Null
+                        }
+                    }
+                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                        let left_f = left.to_float().unwrap();
+                        let right_f = right.to_float().unwrap();
+                        if right_f != 0.0 {
+                            Value::Float64(left_f % right_f)
                         } else {
                             Value::Null
                         }
@@ -1410,6 +1446,7 @@ pub enum Opcode {
     Subtract = 0x69,
     Multiply = 0x70,
     Divide = 0x71,
+    Modulo = 0x75,
 
     Pop = 0x72,
 

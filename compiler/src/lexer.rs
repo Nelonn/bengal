@@ -26,6 +26,7 @@ pub enum Token {
     Catch,
     Throw,
     Break,
+    Continue,
 
     TypeInt,
     TypeFloat,
@@ -45,6 +46,7 @@ pub enum Token {
     MinusMinus,
     Star,
     Slash,
+    Percent,
 
     Greater,
     GreaterEqual,
@@ -215,6 +217,7 @@ impl Lexer {
                 }
             }
             '*' => { self.advance(); Ok(Token::Star) }
+            '%' => { self.advance(); Ok(Token::Percent) }
             '/' => {
                 self.advance();
                 if self.peek() == Some('/') {
@@ -395,6 +398,7 @@ impl Lexer {
             "catch" => Token::Catch,
             "throw" => Token::Throw,
             "break" => Token::Break,
+            "continue" => Token::Continue,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,

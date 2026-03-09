@@ -12,6 +12,8 @@ pub struct Compiler {
     _type_context: Option<TypeContext>,
     break_targets: Vec<usize>,  // Stack of exit positions for innermost loops
     break_jumps: Vec<Vec<usize>>,  // Stack of lists of jump locations to fix up for each loop level
+    continue_targets: Vec<usize>, // Stack of continue positions for innermost loops
+    continue_jumps: Vec<Vec<usize>>, // Stack of lists of continue jump locations to fix up
 }
 
 pub struct CompilerOptions {
@@ -36,6 +38,8 @@ impl Compiler {
             _type_context: None,
             break_targets: Vec::new(),
             break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            continue_jumps: Vec::new(),
         }
     }
 
@@ -46,6 +50,8 @@ impl Compiler {
             _type_context: None,
             break_targets: Vec::new(),
             break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            continue_jumps: Vec::new(),
         }
     }
 
@@ -421,10 +427,23 @@ impl Compiler {
                     // Push break target and jump list for this loop
                     self.break_targets.push(0);  // placeholder for exit position
                     self.break_jumps.push(Vec::new());
+                    self.continue_targets.push(0); // placeholder for continue position
+                    self.continue_jumps.push(Vec::new());
 
                     // Compile body
                     for stmt in body {
                         self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
+                    }
+
+                    let continue_pos = bytecode.len();
+                    self.continue_targets.pop();
+                    self.continue_targets.push(continue_pos);
+                    
+                    // Fix up continue jumps
+                    if let Some(jumps) = self.continue_jumps.pop() {
+                        for jump_pos in jumps {
+                            self.patch_jump(jump_pos, continue_pos, bytecode);
+                        }
                     }
 
                     // Increment/decrement iterator
@@ -458,6 +477,7 @@ impl Compiler {
                         }
                     }
                     self.break_targets.pop();
+                    self.continue_targets.pop();
                 }
             }
             Stmt::While { condition, body } => {
@@ -468,6 +488,9 @@ impl Compiler {
 
                 let loop_start = bytecode.len() - 2;
                 // println!("While loop_start: {}, Line: {}", loop_start, line);
+
+                self.continue_targets.push(loop_start);
+                self.continue_jumps.push(Vec::new());
 
                 // Compile condition
                 self.compile_expr(condition, bytecode, strings, classes, type_context)?;
@@ -502,6 +525,8 @@ impl Compiler {
                     }
                 }
                 self.break_targets.pop();
+                self.continue_targets.pop();
+                self.continue_jumps.pop();
             }
             Stmt::Break => {
                 // Record break jump location to fix up later
@@ -512,6 +537,23 @@ impl Compiler {
                     }
                 } else {
                     return Err("break statement outside of loop".to_string());
+                }
+            }
+            Stmt::Continue => {
+                // If continue target is already known (like in while loops), jump to it immediately.
+                // Otherwise (like in for loops), record jump location to fix up later.
+                if let Some(&target) = self.continue_targets.last() {
+                    if target != 0 {
+                        let jump_pos = self.emit_jump(Opcode::Jump, bytecode);
+                        self.patch_jump(jump_pos, target, bytecode);
+                    } else {
+                        let jump_pos = self.emit_jump(Opcode::Jump, bytecode);
+                        if let Some(jumps) = self.continue_jumps.last_mut() {
+                            jumps.push(jump_pos);
+                        }
+                    }
+                } else {
+                    return Err("continue statement outside of loop".to_string());
                 }
             }
             Stmt::TryCatch { try_block, catch_var, catch_block } => {
@@ -657,6 +699,7 @@ impl Compiler {
                     BinaryOp::Subtract => bytecode.push(Opcode::Subtract as u8),
                     BinaryOp::Multiply => bytecode.push(Opcode::Multiply as u8),
                     BinaryOp::Divide => bytecode.push(Opcode::Divide as u8),
+                    BinaryOp::Modulo => bytecode.push(Opcode::Modulo as u8),
                 }
             }
             Expr::Unary { op, expr, .. } => {
