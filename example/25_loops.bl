@@ -1,21 +1,26 @@
 import std::io
 
+println("Test 1")
+
 for (i in 1..5) {
     println(str(i))
 }
+
+println("Test 2")
 
 for (i in 10..5) {
     println(str(i))
 }
 
+println("Test 3")
+
 // Simple break test
-let counter = 3
-while (counter > 0) {
-    if (counter == 2) {
+let count = 3
+while (true) {
+    if (--count == 0) {
         break
     }
-    println(str(counter))
-    counter = counter - 1
+    println(str(count))
 }
 
 println("Done!")

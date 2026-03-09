@@ -1,0 +1,29 @@
+import std::io
+
+println("Postfix test:")
+let a = 5
+println("a is: " + str(a))
+println("a++ is: " + str(a++))
+println("a is now: " + str(a))
+println("a-- is: " + str(a--))
+println("a is now: " + str(a))
+
+println("\nPrefix test:")
+let b = 10
+println("b is: " + str(b))
+println("++b is: " + str(++b))
+println("b is now: " + str(b))
+println("--b is: " + str(--b))
+println("b is now: " + str(b))
+
+println("\nLoop test with prefix:")
+let i = 0
+while (++i <= 3) {
+    println("loop i: " + str(i))
+}
+
+println("\nLoop test with postfix:")
+let j = 0
+while (j++ < 3) {
+    println("loop j: " + str(j))
+}

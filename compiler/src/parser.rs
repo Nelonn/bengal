@@ -132,13 +132,19 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Greater,
+    GreaterEqual,
     Less,
+    LessEqual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Not,
-    Decrement,
+    PrefixIncrement,
+    PrefixDecrement,
+    PostfixIncrement,
+    PostfixDecrement,
+    Decrement, // Keep for backward compatibility if used elsewhere, but we'll use PostfixDecrement for x--
 }
 
 #[derive(Debug, Clone)]
@@ -923,11 +929,27 @@ impl Parser {
                     right: Box::new(self.parse_additive()?),
                     span,
                 };
+            } else if self.match_token(&Token::GreaterEqual) {
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::GreaterEqual,
+                    right: Box::new(self.parse_additive()?),
+                    span,
+                };
             } else if self.match_token(&Token::Less) {
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Less,
+                    right: Box::new(self.parse_additive()?),
+                    span,
+                };
+            } else if self.match_token(&Token::LessEqual) {
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::LessEqual,
                     right: Box::new(self.parse_additive()?),
                     span,
                 };
@@ -1003,6 +1025,34 @@ impl Parser {
                 expr: Box::new(self.parse_unary()?),
                 span,
             });
+        }
+
+        if self.match_token(&Token::PlusPlus) {
+            let span = self.compute_span(self.pos - 1);
+            let expr = self.parse_unary()?;
+            if let Expr::Variable { .. } = &expr {
+                return Ok(Expr::Unary {
+                    op: UnaryOp::PrefixIncrement,
+                    expr: Box::new(expr),
+                    span,
+                });
+            } else {
+                return Err("Prefix increment operator requires a variable".to_string());
+            }
+        }
+
+        if self.match_token(&Token::MinusMinus) {
+            let span = self.compute_span(self.pos - 1);
+            let expr = self.parse_unary()?;
+            if let Expr::Variable { .. } = &expr {
+                return Ok(Expr::Unary {
+                    op: UnaryOp::PrefixDecrement,
+                    expr: Box::new(expr),
+                    span,
+                });
+            } else {
+                return Err("Prefix decrement operator requires a variable".to_string());
+            }
         }
 
         if self.match_token(&Token::Await) {
@@ -1104,15 +1154,24 @@ impl Parser {
                     name,
                     span,
                 };
+            } else if self.match_token(&Token::PlusPlus) {
+                // Postfix increment: var++
+                let span = self.compute_span(self.pos - 1);
+                if let Expr::Variable { name, span: var_span } = &expr {
+                    expr = Expr::Unary {
+                        op: UnaryOp::PostfixIncrement,
+                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                        span,
+                    };
+                } else {
+                    return Err("Increment operator requires a variable".to_string());
+                }
             } else if self.match_token(&Token::MinusMinus) {
                 // Postfix decrement: var--
                 let span = self.compute_span(self.pos - 1);
                 if let Expr::Variable { name, span: var_span } = &expr {
-                    // var-- is equivalent to: let temp = var; var = var - 1; temp
-                    // But for simplicity, we'll just create a binary subtract expression
-                    // and an assignment. The result is the OLD value (before decrement).
                     expr = Expr::Unary {
-                        op: UnaryOp::Decrement,
+                        op: UnaryOp::PostfixDecrement,
                         expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
                         span,
                     };

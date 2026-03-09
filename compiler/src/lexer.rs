@@ -47,7 +47,9 @@ pub enum Token {
     Slash,
 
     Greater,
+    GreaterEqual,
     Less,
+    LessEqual,
 
     LParen,
     RParen,
@@ -224,8 +226,24 @@ impl Lexer {
                 }
             }
             '"' => self.read_string(),
-            '>' => { self.advance(); Ok(Token::Greater) }
-            '<' => { self.advance(); Ok(Token::Less) }
+            '>' => {
+                self.advance();
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::GreaterEqual)
+                } else {
+                    Ok(Token::Greater)
+                }
+            }
+            '<' => {
+                self.advance();
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::LessEqual)
+                } else {
+                    Ok(Token::Less)
+                }
+            }
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
             _ => Err(format!("Unexpected character: '{}'", ch)),
@@ -247,8 +265,22 @@ impl Lexer {
                 self.advance();
                 return Ok(Token::String(s));
             }
-            s.push(ch);
-            self.advance();
+            if ch == '\\' {
+                self.advance();
+                match self.peek() {
+                    Some('n') => s.push('\n'),
+                    Some('r') => s.push('\r'),
+                    Some('t') => s.push('\t'),
+                    Some('\\') => s.push('\\'),
+                    Some('"') => s.push('"'),
+                    Some(c) => s.push(c),
+                    None => return Err("Unterminated string escape".to_string()),
+                }
+                self.advance();
+            } else {
+                s.push(ch);
+                self.advance();
+            }
         }
         Err("Unterminated string".to_string())
     }
@@ -264,8 +296,22 @@ impl Lexer {
                 let processed = self.process_multiline_string(&s);
                 return Ok(Token::String(processed));
             }
-            s.push(ch);
-            self.advance();
+            if ch == '\\' {
+                self.advance();
+                match self.peek() {
+                    Some('n') => s.push('\n'),
+                    Some('r') => s.push('\r'),
+                    Some('t') => s.push('\t'),
+                    Some('\\') => s.push('\\'),
+                    Some('"') => s.push('"'),
+                    Some(c) => s.push(c),
+                    None => return Err("Unterminated multiline string escape".to_string()),
+                }
+                self.advance();
+            } else {
+                s.push(ch);
+                self.advance();
+            }
         }
         Err("Unterminated multiline string".to_string())
     }

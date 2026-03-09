@@ -934,7 +934,8 @@ impl TypeChecker {
                             Type::Int
                         }
                     }
-                    crate::parser::BinaryOp::Greater | crate::parser::BinaryOp::Less => {
+                    crate::parser::BinaryOp::Greater | crate::parser::BinaryOp::Less |
+                    crate::parser::BinaryOp::GreaterEqual | crate::parser::BinaryOp::LessEqual => {
                         // Comparison operations require numeric types and return bool
                         if !is_numeric_type(&left_type) && left_type != Type::Unknown {
                             self.context.add_error(
@@ -964,7 +965,17 @@ impl TypeChecker {
                         }
                         Type::Bool
                     }
-                    crate::parser::UnaryOp::Decrement => {
+                    crate::parser::UnaryOp::PrefixIncrement | crate::parser::UnaryOp::PostfixIncrement => {
+                        // Increment operator works on numeric types and returns the original type
+                        if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for ++ operator, got {}", inner_type.to_str()),
+                                0
+                            );
+                        }
+                        inner_type
+                    }
+                    crate::parser::UnaryOp::PrefixDecrement | crate::parser::UnaryOp::PostfixDecrement | crate::parser::UnaryOp::Decrement => {
                         // Decrement operator works on numeric types and returns the original type
                         if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
                             self.context.add_error(

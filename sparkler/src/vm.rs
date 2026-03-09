@@ -1014,6 +1014,38 @@ impl VM {
                 }
             }
 
+            x if x == Opcode::Jump2 as u8 => {
+                self.pc += 1;
+                let target = u16::from_le_bytes([self.memory[self.pc], self.memory[self.pc + 1]]) as usize;
+                self.pc = target.saturating_sub(1);
+                // No need to increment PC here since it's unconditional jump
+            }
+
+            x if x == Opcode::JumpIfTrue2 as u8 => {
+                self.pc += 1;
+                let target = u16::from_le_bytes([self.memory[self.pc], self.memory[self.pc + 1]]) as usize;
+                if let Some(Value::Bool(true)) = self.stack.last() {
+                    self.pc = target.saturating_sub(1);
+                }
+                self.pc += 1; // Advance past second byte of target
+            }
+
+            x if x == Opcode::JumpIfFalse2 as u8 => {
+                self.pc += 1;
+                let target = u16::from_le_bytes([self.memory[self.pc], self.memory[self.pc + 1]]) as usize;
+                let condition = self.stack.pop().unwrap_or(Value::Null);
+                let should_jump = match condition {
+                    Value::Bool(false) => true,
+                    Value::Null => true,
+                    _ => false,
+                };
+                if should_jump {
+                    self.pc = target.saturating_sub(1);
+                } else {
+                    self.pc += 1; // Advance past second byte of target
+                }
+            }
+
             x if x == Opcode::Equal as u8 => {
                 let right = self.stack.pop().unwrap_or(Value::Null);
                 let left = self.stack.pop().unwrap_or(Value::Null);
@@ -1278,12 +1310,13 @@ impl VM {
 
             x if x == Opcode::TryStart as u8 => {
                 self.pc += 1;
-                let catch_pc = self.memory[self.pc] as usize;
+                let catch_pc = u16::from_le_bytes([self.memory[self.pc], self.memory[self.pc + 1]]) as usize;
                 self.exception_handlers.push(ExceptionHandler {
                     catch_pc,
                     stack_depth: self.stack.len(),
                     call_stack_depth: self.call_stack.len(),
                 });
+                self.pc += 1; // Advance past second byte
             }
 
             x if x == Opcode::TryEnd as u8 => {
@@ -1361,6 +1394,9 @@ pub enum Opcode {
     JumpIfFalse = 0x52,
     JumpIfGreater = 0x53,
     JumpIfLess = 0x54,
+    Jump2 = 0x55,
+    JumpIfTrue2 = 0x56,
+    JumpIfFalse2 = 0x57,
 
     Equal = 0x60,
     NotEqual = 0x61,

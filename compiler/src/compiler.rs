@@ -222,6 +222,26 @@ impl Compiler {
         })
     }
 
+    fn emit_jump(&self, opcode: Opcode, bytecode: &mut Vec<u8>) -> usize {
+        let op = match opcode {
+            Opcode::Jump => Opcode::Jump2,
+            Opcode::JumpIfTrue => Opcode::JumpIfTrue2,
+            Opcode::JumpIfFalse => Opcode::JumpIfFalse2,
+            _ => opcode,
+        };
+        bytecode.push(op as u8);
+        let pos = bytecode.len();
+        bytecode.push(0);
+        bytecode.push(0);
+        pos
+    }
+
+    fn patch_jump(&self, pos: usize, target: usize, bytecode: &mut Vec<u8>) {
+        let bytes = (target as u16).to_le_bytes();
+        bytecode[pos] = bytes[0];
+        bytecode[pos + 1] = bytes[1];
+    }
+
     fn compile_stmt(&mut self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
         // Emit line number at the start of each statement
         let line = self.get_statement_line(stmt);
@@ -314,13 +334,9 @@ impl Compiler {
 
                 let mut else_jump = Vec::new();
                 if else_branch.is_some() {
-                    bytecode.push(Opcode::JumpIfFalse as u8);
-                    else_jump.push(bytecode.len());
-                    bytecode.push(0);
+                    else_jump.push(self.emit_jump(Opcode::JumpIfFalse, bytecode));
                 } else {
-                    bytecode.push(Opcode::JumpIfFalse as u8);
-                    else_jump.push(bytecode.len());
-                    bytecode.push(0);
+                    else_jump.push(self.emit_jump(Opcode::JumpIfFalse, bytecode));
                 }
 
                 for stmt in then_branch {
@@ -328,22 +344,20 @@ impl Compiler {
                 }
 
                 if let Some(else_b) = else_branch {
-                    bytecode.push(Opcode::Jump as u8);
-                    let end_jump_pos = bytecode.len();
-                    bytecode.push(0);
+                    let end_jump_pos = self.emit_jump(Opcode::Jump, bytecode);
 
                     let else_target = bytecode.len();
-                    bytecode[else_jump[0]] = (else_target & 0xFF) as u8;
+                    self.patch_jump(else_jump[0], else_target, bytecode);
 
                     for stmt in else_b {
                         self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                     }
 
                     let end_target = bytecode.len();
-                    bytecode[end_jump_pos] = (end_target & 0xFF) as u8;
+                    self.patch_jump(end_jump_pos, end_target, bytecode);
                 } else {
                     let else_target = bytecode.len();
-                    bytecode[else_jump[0]] = (else_target & 0xFF) as u8;
+                    self.patch_jump(else_jump[0], else_target, bytecode);
                 }
             }
             Stmt::For { var_name, range, body } => {
@@ -387,15 +401,13 @@ impl Compiler {
                     bytecode.push(end_idx as u8);
 
                     // Exit condition depends on direction
-                    if is_descending {
+                    let exit_jump = if is_descending {
                         // For descending: exit when iterator < end
-                        bytecode.push(Opcode::JumpIfLess as u8);
+                        self.emit_jump(Opcode::JumpIfLess, bytecode)
                     } else {
                         // For ascending: exit when iterator > end
-                        bytecode.push(Opcode::JumpIfGreater as u8);
-                    }
-                    let exit_jump = bytecode.len();
-                    bytecode.push(0);
+                        self.emit_jump(Opcode::JumpIfGreater, bytecode)
+                    };
 
                     // Store iterator in loop variable
                     bytecode.push(Opcode::LoadLocal as u8);
@@ -432,33 +444,35 @@ impl Compiler {
                     bytecode.push(iter_idx as u8);
 
                     // Jump back
-                    bytecode.push(Opcode::Jump as u8);
-                    let jump_back = bytecode.len();
-                    bytecode.push(0);
+                    let jump_back = self.emit_jump(Opcode::Jump, bytecode);
 
                     // Fix up jumps - calculate exit position
                     let exit_pos = bytecode.len();
-                    bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
-                    bytecode[jump_back] = (loop_start & 0xFF) as u8;
+                    self.patch_jump(exit_jump, exit_pos, bytecode);
+                    self.patch_jump(jump_back, loop_start, bytecode);
                     
                     // Fix up break jumps
                     if let Some(jumps) = self.break_jumps.pop() {
                         for jump_pos in jumps {
-                            bytecode[jump_pos] = (exit_pos & 0xFF) as u8;
+                            self.patch_jump(jump_pos, exit_pos, bytecode);
                         }
                     }
                     self.break_targets.pop();
                 }
             }
             Stmt::While { condition, body } => {
-                let loop_start = bytecode.len();
+                // Emit line number for condition
+                let line = self.get_statement_line(stmt);
+                bytecode.push(Opcode::Line as u8);
+                bytecode.push(line as u8);
+
+                let loop_start = bytecode.len() - 2;
+                // println!("While loop_start: {}, Line: {}", loop_start, line);
 
                 // Compile condition
                 self.compile_expr(condition, bytecode, strings, classes, type_context)?;
 
-                bytecode.push(Opcode::JumpIfFalse as u8);
-                let exit_jump = bytecode.len();
-                bytecode.push(0); // placeholder
+                let exit_jump = self.emit_jump(Opcode::JumpIfFalse, bytecode);
 
                 // Push break target and jump list for this loop
                 self.break_targets.push(0);  // placeholder for exit position
@@ -469,18 +483,22 @@ impl Compiler {
                     self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
 
+                // Emit line number for the jump back
+                bytecode.push(Opcode::Line as u8);
+                bytecode.push(line as u8);
+
                 // Jump back to start
-                bytecode.push(Opcode::Jump as u8);
-                bytecode.push((loop_start & 0xFF) as u8);
+                let jump_back = self.emit_jump(Opcode::Jump, bytecode);
 
                 // Exit position - fix up jumps
                 let exit_pos = bytecode.len();
-                bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
+                self.patch_jump(exit_jump, exit_pos, bytecode);
+                self.patch_jump(jump_back, loop_start, bytecode);
                 
                 // Fix up break jumps
                 if let Some(jumps) = self.break_jumps.pop() {
                     for jump_pos in jumps {
-                        bytecode[jump_pos] = (exit_pos & 0xFF) as u8;
+                        self.patch_jump(jump_pos, exit_pos, bytecode);
                     }
                 }
                 self.break_targets.pop();
@@ -488,10 +506,9 @@ impl Compiler {
             Stmt::Break => {
                 // Record break jump location to fix up later
                 if let Some(_) = self.break_targets.last() {
+                    let jump_pos = self.emit_jump(Opcode::Jump, bytecode);
                     if let Some(jumps) = self.break_jumps.last_mut() {
-                        bytecode.push(Opcode::Jump as u8);
-                        jumps.push(bytecode.len());  // Record position to fix up
-                        bytecode.push(0);  // placeholder
+                        jumps.push(jump_pos);
                     }
                 } else {
                     return Err("break statement outside of loop".to_string());
@@ -500,7 +517,8 @@ impl Compiler {
             Stmt::TryCatch { try_block, catch_var, catch_block } => {
                 bytecode.push(Opcode::TryStart as u8);
                 let catch_jump_pos = bytecode.len();
-                bytecode.push(0); // placeholder for catch block PC
+                bytecode.push(0); // placeholder for catch block PC (high byte)
+                bytecode.push(0); // placeholder for catch block PC (low byte)
 
                 for stmt in try_block {
                     self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
@@ -509,13 +527,13 @@ impl Compiler {
                 bytecode.push(Opcode::TryEnd as u8);
                 
                 // Jump over catch block after successful try
-                bytecode.push(Opcode::Jump as u8);
-                let end_jump_pos = bytecode.len();
-                bytecode.push(0);
+                let end_jump_pos = self.emit_jump(Opcode::Jump, bytecode);
 
                 // Start of catch block
                 let catch_start = bytecode.len();
-                bytecode[catch_jump_pos] = (catch_start & 0xFF) as u8;
+                let bytes = (catch_start as u16).to_le_bytes();
+                bytecode[catch_jump_pos] = bytes[0];
+                bytecode[catch_jump_pos + 1] = bytes[1];
 
                 // Store exception in catch variable
                 let var_idx = strings.len();
@@ -529,7 +547,7 @@ impl Compiler {
 
                 // End of catch block - fix up jump
                 let end_pos = bytecode.len();
-                bytecode[end_jump_pos] = (end_pos & 0xFF) as u8;
+                self.patch_jump(end_jump_pos, end_pos, bytecode);
             }
             Stmt::Throw(expr) => {
                 self.compile_expr(expr, bytecode, strings, classes, type_context)?;
@@ -624,7 +642,17 @@ impl Compiler {
                     BinaryOp::And => bytecode.push(Opcode::And as u8),
                     BinaryOp::Or => bytecode.push(Opcode::Or as u8),
                     BinaryOp::Greater => bytecode.push(Opcode::Greater as u8),
+                    BinaryOp::GreaterEqual => {
+                        // a >= b is !(a < b)
+                        bytecode.push(Opcode::Less as u8);
+                        bytecode.push(Opcode::Not as u8);
+                    }
                     BinaryOp::Less => bytecode.push(Opcode::Less as u8),
+                    BinaryOp::LessEqual => {
+                        // a <= b is !(a > b)
+                        bytecode.push(Opcode::Greater as u8);
+                        bytecode.push(Opcode::Not as u8);
+                    }
                     BinaryOp::Add => bytecode.push(Opcode::Add as u8),
                     BinaryOp::Subtract => bytecode.push(Opcode::Subtract as u8),
                     BinaryOp::Multiply => bytecode.push(Opcode::Multiply as u8),
@@ -637,30 +665,99 @@ impl Compiler {
                         self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                         bytecode.push(Opcode::Not as u8);
                     }
-                    UnaryOp::Decrement => {
-                        // var-- : get old value, decrement, store, return old value
+                    UnaryOp::PrefixIncrement => {
+                        // ++var : increment, store, return new value
                         if let Expr::Variable { name, .. } = expr.as_ref() {
-                            // Find or create string index for the variable
                             let name_idx = strings.iter().position(|s| s == name).unwrap_or_else(|| {
                                 strings.push(name.clone());
                                 strings.len() - 1
                             });
-
-                            // Load current value (old value) - this will be the result
+                            // Load
                             bytecode.push(Opcode::LoadLocal as u8);
                             bytecode.push(name_idx as u8);
-
-                            // Load current value again for decrement
-                            bytecode.push(Opcode::LoadLocal as u8);
-                            bytecode.push(name_idx as u8);
-
                             // Load 1
                             bytecode.push(Opcode::PushInt as u8);
                             bytecode.extend_from_slice(&1i64.to_le_bytes());
-
+                            // Add
+                            bytecode.push(Opcode::Add as u8);
+                            // Store
+                            bytecode.push(Opcode::StoreLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load again to return the new value
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                        } else {
+                            return Err("Prefix increment operator requires a variable".to_string());
+                        }
+                    }
+                    UnaryOp::PrefixDecrement => {
+                        // --var : decrement, store, return new value
+                        if let Expr::Variable { name, .. } = expr.as_ref() {
+                            let name_idx = strings.iter().position(|s| s == name).unwrap_or_else(|| {
+                                strings.push(name.clone());
+                                strings.len() - 1
+                            });
+                            // Load
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load 1
+                            bytecode.push(Opcode::PushInt as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
                             // Subtract
                             bytecode.push(Opcode::Subtract as u8);
-
+                            // Store
+                            bytecode.push(Opcode::StoreLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load again to return the new value
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                        } else {
+                            return Err("Prefix decrement operator requires a variable".to_string());
+                        }
+                    }
+                    UnaryOp::PostfixIncrement => {
+                        // var++ : get old value, increment, store, return old value
+                        if let Expr::Variable { name, .. } = expr.as_ref() {
+                            let name_idx = strings.iter().position(|s| s == name).unwrap_or_else(|| {
+                                strings.push(name.clone());
+                                strings.len() - 1
+                            });
+                            // Load current value (old value) - this will be the result
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load current value again for increment
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load 1
+                            bytecode.push(Opcode::PushInt as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+                            // Add
+                            bytecode.push(Opcode::Add as u8);
+                            // Store new value
+                            bytecode.push(Opcode::StoreLocal as u8);
+                            bytecode.push(name_idx as u8);
+                        } else {
+                            return Err("Increment operator requires a variable".to_string());
+                        }
+                    }
+                    UnaryOp::PostfixDecrement | UnaryOp::Decrement => {
+                        // var-- : get old value, decrement, store, return old value
+                        if let Expr::Variable { name, .. } = expr.as_ref() {
+                            let name_idx = strings.iter().position(|s| s == name).unwrap_or_else(|| {
+                                strings.push(name.clone());
+                                strings.len() - 1
+                            });
+                            // Load current value (old value) - this will be the result
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load current value again for decrement
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+                            // Load 1
+                            bytecode.push(Opcode::PushInt as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+                            // Subtract
+                            bytecode.push(Opcode::Subtract as u8);
                             // Store new value
                             bytecode.push(Opcode::StoreLocal as u8);
                             bytecode.push(name_idx as u8);
