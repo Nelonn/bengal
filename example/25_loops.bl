@@ -17,7 +17,7 @@ println("Test 3")
 // Simple break test
 let count = 3
 while (true) {
-    if (--count == 0) {
+    if (count-- == 0) {
         break
     }
     println(str(count))
