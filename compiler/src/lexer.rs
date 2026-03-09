@@ -25,6 +25,7 @@ pub enum Token {
     Try,
     Catch,
     Throw,
+    Break,
 
     TypeInt,
     TypeFloat,
@@ -32,13 +33,16 @@ pub enum Token {
     TypeBool,
 
     Equal,
+    DoubleEqual,
     Bang,
     BangEqual,
     Question,
     Range,
 
     Plus,
+    PlusPlus,
     Minus,
+    MinusMinus,
     Star,
     Slash,
 
@@ -175,7 +179,7 @@ impl Lexer {
                 self.advance();
                 if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::BangEqual)
+                    Ok(Token::DoubleEqual)
                 } else {
                     Ok(Token::Equal)
                 }
@@ -190,8 +194,24 @@ impl Lexer {
                 }
             }
             '?' => { self.advance(); Ok(Token::Question) }
-            '+' => { self.advance(); Ok(Token::Plus) }
-            '-' => { self.advance(); Ok(Token::Minus) }
+            '+' => {
+                self.advance();
+                if self.peek() == Some('+') {
+                    self.advance();
+                    Ok(Token::PlusPlus)
+                } else {
+                    Ok(Token::Plus)
+                }
+            }
+            '-' => {
+                self.advance();
+                if self.peek() == Some('-') {
+                    self.advance();
+                    Ok(Token::MinusMinus)
+                } else {
+                    Ok(Token::Minus)
+                }
+            }
             '*' => { self.advance(); Ok(Token::Star) }
             '/' => {
                 self.advance();
@@ -328,6 +348,7 @@ impl Lexer {
             "try" => Token::Try,
             "catch" => Token::Catch,
             "throw" => Token::Throw,
+            "break" => Token::Break,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,

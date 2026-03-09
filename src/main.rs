@@ -23,7 +23,7 @@ async fn main() {
         }
     };
 
-    let compiler = Compiler::new(&source);
+    let mut compiler = Compiler::new(&source);
     let bytecode = match compiler.compile() {
         Ok(bc) => bc,
         Err(e) => {

@@ -10,6 +10,8 @@ pub struct Compiler {
     source: String,
     _source_path: Option<String>,
     _type_context: Option<TypeContext>,
+    break_targets: Vec<usize>,  // Stack of exit positions for innermost loops
+    break_jumps: Vec<Vec<usize>>,  // Stack of lists of jump locations to fix up for each loop level
 }
 
 pub struct CompilerOptions {
@@ -32,6 +34,8 @@ impl Compiler {
             source: source.to_string(),
             _source_path: None,
             _type_context: None,
+            break_targets: Vec::new(),
+            break_jumps: Vec::new(),
         }
     }
 
@@ -40,14 +44,16 @@ impl Compiler {
             source: source.to_string(),
             _source_path: Some(path.to_string()),
             _type_context: None,
+            break_targets: Vec::new(),
+            break_jumps: Vec::new(),
         }
     }
 
-    pub fn compile(&self) -> Result<Bytecode, String> {
+    pub fn compile(&mut self) -> Result<Bytecode, String> {
         self.compile_with_options(&CompilerOptions::default())
     }
 
-    pub fn compile_with_options(&self, options: &CompilerOptions) -> Result<Bytecode, String> {
+    pub fn compile_with_options(&mut self, options: &CompilerOptions) -> Result<Bytecode, String> {
         let mut lexer = Lexer::new(&self.source);
         let (tokens, token_positions) = lexer.tokenize()?;
 
@@ -79,7 +85,7 @@ impl Compiler {
         self.generate_code(&statements, type_context, resolver)
     }
 
-    fn generate_code(&self, statements: &[Stmt], type_context: Option<TypeContext>, resolver: Option<ModuleResolver>) -> Result<Bytecode, String> {
+    fn generate_code(&mut self, statements: &[Stmt], type_context: Option<TypeContext>, resolver: Option<ModuleResolver>) -> Result<Bytecode, String> {
         let mut bytecode = Vec::new();
         let mut strings: Vec<String> = Vec::new();
         let mut classes: Vec<ClassDef> = Vec::new();
@@ -184,7 +190,7 @@ impl Compiler {
 
             // Use the correct source for line number calculation
             let func_source = function_sources.get(&f.name).unwrap_or(&self.source);
-            let func_compiler = Compiler::new(func_source);
+            let mut func_compiler = Compiler::new(func_source);
 
             for stmt in &f.body {
                 func_compiler.compile_stmt(stmt, &mut func_bytecode, &mut strings, &classes, Some(&func_ctx))?;
@@ -216,7 +222,7 @@ impl Compiler {
         })
     }
 
-    fn compile_stmt(&self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
+    fn compile_stmt(&mut self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
         // Emit line number at the start of each statement
         let line = self.get_statement_line(stmt);
         bytecode.push(Opcode::Line as u8);
@@ -400,6 +406,10 @@ impl Compiler {
                     bytecode.push(Opcode::StoreLocal as u8);
                     bytecode.push(var_idx as u8);
 
+                    // Push break target and jump list for this loop
+                    self.break_targets.push(0);  // placeholder for exit position
+                    self.break_jumps.push(Vec::new());
+
                     // Compile body
                     for stmt in body {
                         self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
@@ -426,10 +436,18 @@ impl Compiler {
                     let jump_back = bytecode.len();
                     bytecode.push(0);
 
-                    // Fix up jumps
+                    // Fix up jumps - calculate exit position
                     let exit_pos = bytecode.len();
                     bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
                     bytecode[jump_back] = (loop_start & 0xFF) as u8;
+                    
+                    // Fix up break jumps
+                    if let Some(jumps) = self.break_jumps.pop() {
+                        for jump_pos in jumps {
+                            bytecode[jump_pos] = (exit_pos & 0xFF) as u8;
+                        }
+                    }
+                    self.break_targets.pop();
                 }
             }
             Stmt::While { condition, body } => {
@@ -441,6 +459,10 @@ impl Compiler {
                 bytecode.push(Opcode::JumpIfFalse as u8);
                 let exit_jump = bytecode.len();
                 bytecode.push(0); // placeholder
+
+                // Push break target and jump list for this loop
+                self.break_targets.push(0);  // placeholder for exit position
+                self.break_jumps.push(Vec::new());
 
                 // Compile body
                 for stmt in body {
@@ -454,6 +476,26 @@ impl Compiler {
                 // Exit position - fix up jumps
                 let exit_pos = bytecode.len();
                 bytecode[exit_jump] = (exit_pos & 0xFF) as u8;
+                
+                // Fix up break jumps
+                if let Some(jumps) = self.break_jumps.pop() {
+                    for jump_pos in jumps {
+                        bytecode[jump_pos] = (exit_pos & 0xFF) as u8;
+                    }
+                }
+                self.break_targets.pop();
+            }
+            Stmt::Break => {
+                // Record break jump location to fix up later
+                if let Some(_) = self.break_targets.last() {
+                    if let Some(jumps) = self.break_jumps.last_mut() {
+                        bytecode.push(Opcode::Jump as u8);
+                        jumps.push(bytecode.len());  // Record position to fix up
+                        bytecode.push(0);  // placeholder
+                    }
+                } else {
+                    return Err("break statement outside of loop".to_string());
+                }
             }
             Stmt::TryCatch { try_block, catch_var, catch_block } => {
                 bytecode.push(Opcode::TryStart as u8);
@@ -590,9 +632,42 @@ impl Compiler {
                 }
             }
             Expr::Unary { op, expr, .. } => {
-                self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 match op {
-                    UnaryOp::Not => bytecode.push(Opcode::Not as u8),
+                    UnaryOp::Not => {
+                        self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                        bytecode.push(Opcode::Not as u8);
+                    }
+                    UnaryOp::Decrement => {
+                        // var-- : get old value, decrement, store, return old value
+                        if let Expr::Variable { name, .. } = expr.as_ref() {
+                            // Find or create string index for the variable
+                            let name_idx = strings.iter().position(|s| s == name).unwrap_or_else(|| {
+                                strings.push(name.clone());
+                                strings.len() - 1
+                            });
+
+                            // Load current value (old value) - this will be the result
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+
+                            // Load current value again for decrement
+                            bytecode.push(Opcode::LoadLocal as u8);
+                            bytecode.push(name_idx as u8);
+
+                            // Load 1
+                            bytecode.push(Opcode::PushInt as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            // Subtract
+                            bytecode.push(Opcode::Subtract as u8);
+
+                            // Store new value
+                            bytecode.push(Opcode::StoreLocal as u8);
+                            bytecode.push(name_idx as u8);
+                        } else {
+                            return Err("Decrement operator requires a variable".to_string());
+                        }
+                    }
                 }
             }
             Expr::Call { callee, args, .. } => {

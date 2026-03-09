@@ -700,6 +700,9 @@ impl TypeChecker {
             Stmt::Throw(expr) => {
                 self.infer_expr(expr);
             }
+            Stmt::Break => {
+                // Break statement - no type checking needed
+            }
         }
     }
 
@@ -960,6 +963,16 @@ impl TypeChecker {
                             );
                         }
                         Type::Bool
+                    }
+                    crate::parser::UnaryOp::Decrement => {
+                        // Decrement operator works on numeric types and returns the original type
+                        if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for -- operator, got {}", inner_type.to_str()),
+                                0
+                            );
+                        }
+                        inner_type
                     }
                 }
             }

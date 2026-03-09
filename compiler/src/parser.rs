@@ -26,6 +26,7 @@ pub enum Stmt {
     If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
     For { var_name: String, range: Box<Expr>, body: Block },
     While { condition: Expr, body: Block },
+    Break,
     TryCatch { try_block: Block, catch_var: String, catch_block: Block },
     Throw(Expr),
 }
@@ -137,6 +138,7 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Not,
+    Decrement,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +257,8 @@ impl Parser {
             self.parse_for()?
         } else if self.match_token(&Token::While) {
             self.parse_while()?
+        } else if self.match_token(&Token::Break) {
+            self.parse_break()?
         } else if self.match_token(&Token::Try) {
             self.parse_try_catch()?
         } else if self.match_token(&Token::Throw) {
@@ -769,6 +773,11 @@ impl Parser {
         Ok(Stmt::While { condition, body })
     }
 
+    fn parse_break(&mut self) -> Result<Stmt, String> {
+        if self.match_token(&Token::Semicolon) {}
+        Ok(Stmt::Break)
+    }
+
     fn parse_try_catch(&mut self) -> Result<Stmt, String> {
         if !self.match_token(&Token::LBrace) {
             return Err("Expected '{' for try body".to_string());
@@ -883,6 +892,14 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::NotEqual,
+                    right: Box::new(self.parse_comparison()?),
+                    span,
+                };
+            } else if self.match_token(&Token::DoubleEqual) {
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Equal,
                     right: Box::new(self.parse_comparison()?),
                     span,
                 };
@@ -1087,6 +1104,21 @@ impl Parser {
                     name,
                     span,
                 };
+            } else if self.match_token(&Token::MinusMinus) {
+                // Postfix decrement: var--
+                let span = self.compute_span(self.pos - 1);
+                if let Expr::Variable { name, span: var_span } = &expr {
+                    // var-- is equivalent to: let temp = var; var = var - 1; temp
+                    // But for simplicity, we'll just create a binary subtract expression
+                    // and an assignment. The result is the OLD value (before decrement).
+                    expr = Expr::Unary {
+                        op: UnaryOp::Decrement,
+                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                        span,
+                    };
+                } else {
+                    return Err("Decrement operator requires a variable".to_string());
+                }
             } else {
                 break;
             }
