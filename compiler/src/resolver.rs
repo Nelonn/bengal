@@ -306,6 +306,16 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
         });
+
+        self.type_context.functions.insert("breakpoint".to_string(), FunctionSignature {
+            name: "breakpoint".to_string(),
+            params: vec![],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+        });
     }
 
     pub fn get_loaded_modules(&self) -> &HashMap<String, ModuleInfo> {

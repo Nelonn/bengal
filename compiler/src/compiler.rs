@@ -252,7 +252,7 @@ impl Compiler {
         // Emit line number at the start of each statement
         let line = self.get_statement_line(stmt);
         bytecode.push(Opcode::Line as u8);
-        bytecode.push(line as u8);
+        bytecode.extend_from_slice(&(line as u16).to_le_bytes());
         
         match stmt {
             Stmt::Module { .. } => {
@@ -484,9 +484,9 @@ impl Compiler {
                 // Emit line number for condition
                 let line = self.get_statement_line(stmt);
                 bytecode.push(Opcode::Line as u8);
-                bytecode.push(line as u8);
+                bytecode.extend_from_slice(&(line as u16).to_le_bytes());
 
-                let loop_start = bytecode.len() - 2;
+                let loop_start = bytecode.len() - 3;
                 // println!("While loop_start: {}, Line: {}", loop_start, line);
 
                 self.continue_targets.push(loop_start);
@@ -508,7 +508,7 @@ impl Compiler {
 
                 // Emit line number for the jump back
                 bytecode.push(Opcode::Line as u8);
-                bytecode.push(line as u8);
+                bytecode.extend_from_slice(&(line as u16).to_le_bytes());
 
                 // Jump back to start
                 let jump_back = self.emit_jump(Opcode::Jump, bytecode);
@@ -848,7 +848,9 @@ impl Compiler {
                             }
                         }
 
-                        if is_class {
+                        if resolved_name == "breakpoint" {
+                            bytecode.push(Opcode::Breakpoint as u8);
+                        } else if is_class {
                             // Class instantiation - use Call opcode with class name
                             let idx = strings.len();
                             strings.push(resolved_name.clone());

@@ -441,6 +441,8 @@ pub struct VM {
     call_stack: Vec<StackFrame>,
     source_file: Option<String>,
     current_line: usize,
+    pub breakpoints: std::collections::HashSet<(String, usize)>,
+    pub is_debugging: bool,
 }
 
 #[derive(Clone)]
@@ -467,6 +469,8 @@ impl VM {
             call_stack: Vec::new(),
             source_file: None,
             current_line: 1,
+            breakpoints: std::collections::HashSet::new(),
+            is_debugging: false,
         }
     }
 
@@ -549,8 +553,16 @@ impl VM {
         self.current_line = line;
     }
 
+    pub fn get_line(&self) -> usize {
+        self.current_line
+    }
+
+    pub fn get_source_file(&self) -> Option<String> {
+        self.source_file.clone()
+    }
+
     #[async_recursion]
-    pub async fn run(&mut self) -> Result<Option<Value>, Value> {
+    pub async fn run(&mut self) -> Result<RunResult, Value> {
         while self.pc < self.memory.len() {
             let opcode = self.memory[self.pc];
             let result = match self.execute(opcode).await {
@@ -578,14 +590,19 @@ impl VM {
                 break;
             }
 
-            if let ExecutionResult::Awaiting(promise) = result {
-                return Ok(Some(Value::Promise(promise)));
+            match result {
+                ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
+                ExecutionResult::Breakpoint => {
+                    self.pc += 1;
+                    return Ok(RunResult::Breakpoint);
+                }
+                ExecutionResult::Continue => {}
             }
 
             self.pc += 1;
         }
 
-        Ok(self.stack.last().cloned())
+        Ok(RunResult::Finished(self.stack.last().cloned()))
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -785,7 +802,9 @@ impl VM {
                     // Run the function
                     let result = vm.run().await;
                     match result {
-                        Ok(val) => self.stack.push(val.unwrap_or(Value::Null)),
+                        Ok(RunResult::Finished(val)) => self.stack.push(val.unwrap_or(Value::Null)),
+                        Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                        Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                         Err(e) => {
                             // Propagate the exception value directly
                             return Err(e);
@@ -880,7 +899,9 @@ impl VM {
                             }
                             let result = vm.run().await;
                             match result {
-                                Ok(val) => self.stack.push(val.unwrap_or(Value::Null)),
+                                Ok(RunResult::Finished(val)) => self.stack.push(val.unwrap_or(Value::Null)),
+                                Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                                 Err(e) => return Err(e),
                             }
                         } else {
@@ -1340,8 +1361,18 @@ impl VM {
 
             x if x == Opcode::Line as u8 => {
                 self.pc += 1;
-                let line = self.memory[self.pc] as usize;
+                let line = u16::from_le_bytes([self.memory[self.pc], self.memory[self.pc + 1]]) as usize;
+                self.pc += 1; // Advance to the second byte
                 self.current_line = line;
+
+                if self.is_debugging && self.breakpoints.contains(&(self.source_file.clone().unwrap_or_default(), line)) {
+                    return Ok(ExecutionResult::Breakpoint);
+                }
+            }
+
+            x if x == Opcode::Breakpoint as u8 => {
+                self.stack.push(Value::Null);
+                return Ok(ExecutionResult::Breakpoint);
             }
 
             x if x == Opcode::TryStart as u8 => {
@@ -1386,9 +1417,16 @@ impl VM {
     }
 }
 
+pub enum RunResult {
+    Finished(Option<Value>),
+    Breakpoint,
+    Awaiting(Arc<TokioMutex<PromiseState>>),
+}
+
 pub enum ExecutionResult {
     Continue,
     Awaiting(Arc<TokioMutex<PromiseState>>),
+    Breakpoint,
 }
 
 impl Default for VM {
@@ -1457,6 +1495,8 @@ pub enum Opcode {
     TryStart = 0x80,
     TryEnd = 0x81,
     Throw = 0x82,
+
+    Breakpoint = 0x90,
 
     Halt = 0xFF,
 }
