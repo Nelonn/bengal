@@ -321,6 +321,7 @@ pub struct Class {
     pub name: String,
     pub fields: HashMap<String, Value>,
     pub methods: HashMap<String, Method>,
+    pub native_methods: HashMap<String, NativeFn>,
 }
 
 #[derive(Clone)]
@@ -383,6 +384,7 @@ impl NativeFunctionBuilder {
 pub struct NativeModule {
     name: String,
     functions: Vec<(String, NativeFn)>,
+    class_methods: Vec<(String, String, NativeFn)>, // (class_name, method_name, func)
 }
 
 impl NativeModule {
@@ -390,6 +392,7 @@ impl NativeModule {
         Self {
             name: name.to_string(),
             functions: Vec::new(),
+            class_methods: Vec::new(),
         }
     }
 
@@ -398,10 +401,24 @@ impl NativeModule {
         self
     }
 
+    pub fn class_method(mut self, class_name: &str, method_name: &str, func: NativeFn) -> Self {
+        // If class_name doesn't contain "::", prepend the module name
+        let full_class_name = if class_name.contains("::") {
+            class_name.to_string()
+        } else {
+            format!("{}::{}", self.name, class_name)
+        };
+        self.class_methods.push((full_class_name, method_name.to_string(), func));
+        self
+    }
+
     pub fn register(self, vm: &mut VM) {
         for (name, func) in self.functions {
             let full_name = format!("{}::{}", self.name, name);
             vm.register_native(&full_name, func);
+        }
+        for (class_name, method_name, func) in self.class_methods {
+            vm.register_native_method(&class_name, &method_name, func);
         }
     }
 }
@@ -416,6 +433,7 @@ pub struct VM {
     functions: HashMap<String, Function>,
     pub native_functions: HashMap<String, NativeFn>,
     pub fallback_native: Option<NativeFn>,
+    pending_native_methods: HashMap<String, HashMap<String, NativeFn>>, // class_name -> (method_name -> func)
     exception_handlers: Vec<ExceptionHandler>,
     call_stack: Vec<StackFrame>,
     source_file: Option<String>,
@@ -441,6 +459,7 @@ impl VM {
             functions: HashMap::new(),
             native_functions: HashMap::new(),
             fallback_native: None,
+            pending_native_methods: HashMap::new(),
             exception_handlers: Vec::new(),
             call_stack: Vec::new(),
             source_file: None,
@@ -450,6 +469,20 @@ impl VM {
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
         self.native_functions.insert(name.to_string(), f);
+    }
+
+    /// Register a native method on a class
+    pub fn register_native_method(&mut self, class_name: &str, method_name: &str, f: NativeFn) {
+        // Store in pending methods - will be applied when class is loaded
+        self.pending_native_methods
+            .entry(class_name.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(method_name.to_string(), f);
+    }
+
+    /// Register a native method on a class using the builder pattern
+    pub fn native_method(&mut self, _class_name: &str, method_name: &str, func: NativeFn) -> NativeFunctionBuilder {
+        NativeFunctionBuilder::new(method_name, func)
     }
 
     /// Register a native function using the builder pattern
@@ -475,7 +508,13 @@ impl VM {
         self.memory = bytecode.to_vec();
         self.strings = strings;
         self.classes.clear();
-        for class in classes {
+        for mut class in classes {
+            // Apply pending native methods for this class
+            if let Some(methods) = self.pending_native_methods.get(&class.name) {
+                for (method_name, func) in methods {
+                    class.native_methods.insert(method_name.clone(), *func);
+                }
+            }
             self.classes.insert(class.name.clone(), class);
         }
         self.functions.clear();
@@ -823,7 +862,12 @@ impl VM {
                 if let Some(Value::Instance(instance)) = args.get(0) {
                     let class_name = instance.lock().unwrap().class.clone();
                     if let Some(class) = self.classes.get(&class_name).cloned() {
-                        if let Some(method) = class.methods.get(&name) {
+                        // First try to find a native method
+                        if let Some(native_method) = class.native_methods.get(&name) {
+                            let mut method_args = args.clone();
+                            let result = native_method(&mut method_args)?;
+                            self.stack.push(result);
+                        } else if let Some(method) = class.methods.get(&name) {
                             let mut vm = VM::new();
                             vm.load(&method.bytecode, self.strings.clone(), self.classes.values().cloned().collect(), Vec::new()).map_err(|e| Value::String(e))?;
                             vm.native_functions = self.native_functions.clone();
@@ -868,18 +912,22 @@ impl VM {
                 if let Some(value) = self.stack.pop() {
                     match value {
                         Value::Promise(promise) => {
-                            let mut state = promise.lock().await;
-                            match &mut *state {
-                                PromiseState::Pending => {
-                                    self.stack.push(Value::Promise(promise.clone()));
-                                    drop(state);
-                                    return Ok(ExecutionResult::Awaiting(promise));
-                                }
-                                PromiseState::Resolved(v) => {
-                                    self.stack.push(v.clone());
-                                }
-                                PromiseState::Rejected(e) => {
-                                    return Err(Value::String(format!("Promise rejected: {}", e)));
+                            // Wait for the promise to resolve
+                            loop {
+                                let mut state = promise.lock().await;
+                                match &mut *state {
+                                    PromiseState::Pending => {
+                                        drop(state);
+                                        // Wait a bit and try again
+                                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                    }
+                                    PromiseState::Resolved(v) => {
+                                        self.stack.push(v.clone());
+                                        break;
+                                    }
+                                    PromiseState::Rejected(e) => {
+                                        return Err(Value::String(format!("Promise rejected: {}", e)));
+                                    }
                                 }
                             }
                         }

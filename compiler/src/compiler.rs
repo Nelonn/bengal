@@ -89,7 +89,7 @@ impl Compiler {
         let mut function_source_files: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut function_sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-        // Collect functions from imported modules first (with full qualified names)
+        // Collect functions and classes from imported modules first (with full qualified names)
         if let Some(res) = &resolver {
             for (module_name, module_info) in res.get_loaded_modules() {
                 for stmt in &module_info.statements {
@@ -103,6 +103,12 @@ impl Compiler {
                         function_source_files.insert(full_name.clone(), module_info.path.to_string_lossy().to_string());
                         // Store the source content for line number calculation
                         function_sources.insert(full_name, module_info.source.clone());
+                    } else if let Stmt::Class(class) = stmt {
+                        // Create a new class def with the full qualified name
+                        let mut class_with_module = class.clone();
+                        let full_name = format!("{}::{}", module_name, class.name);
+                        class_with_module.name = full_name;
+                        classes.push(class_with_module);
                     }
                 }
             }
@@ -163,6 +169,7 @@ impl Compiler {
                 name: c.name.clone(),
                 fields,
                 methods: vm_methods,
+                native_methods: std::collections::HashMap::new(),
             });
         }
 
@@ -589,80 +596,11 @@ impl Compiler {
                 }
             }
             Expr::Call { callee, args, .. } => {
-                for arg in args {
-                    self.compile_expr(arg, bytecode, strings, classes, type_context)?;
-                }
-
-                if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
-                    let mut is_native = false;
-                    let mut is_async = false;
-                    let mut resolved_name = func_name.clone();
-
-                    if let Some(ctx) = type_context {
-                        // Use resolve_function to find the fully qualified name
-                        if let Some(sig) = ctx.resolve_function(func_name) {
-                            is_native = sig.is_native;
-                            is_async = sig.is_async;
-                            resolved_name = sig.name.clone();
-                        }
-                    }
-
-                    if is_native {
-                        let idx = strings.len();
-                        strings.push(resolved_name.clone());
-                        if is_async {
-                            bytecode.push(Opcode::CallNativeAsync as u8);
-                        } else {
-                            bytecode.push(Opcode::CallNative as u8);
-                        }
-                        bytecode.push(idx as u8);
-                        bytecode.push(args.len() as u8);
-                    } else if resolved_name.starts_with("C.") {
-                        let native_name = resolved_name.strip_prefix("C.").unwrap();
-                        let idx = strings.len();
-                        strings.push(native_name.to_string());
-
-                        // Check if it's an async native function
-                        if native_name == "http_get" || native_name == "http_post" {
-                            bytecode.push(Opcode::CallNativeAsync as u8);
-                        } else {
-                            bytecode.push(Opcode::CallNative as u8);
-                        }
-                        bytecode.push(idx as u8);
-                        bytecode.push(args.len() as u8);
-                    } else if resolved_name == "println" || resolved_name == "print" {
-                        let idx = strings.len();
-                        strings.push(resolved_name.clone());
-                        bytecode.push(Opcode::CallNative as u8);
-                        bytecode.push(idx as u8);
-                        bytecode.push(args.len() as u8);
-                    } else {
-                        // Check if it's a known function in type context
-                        let is_defined = if let Some(ctx) = type_context {
-                            ctx.resolve_function(func_name).is_some() || classes.iter().any(|c| c.name == *func_name)
-                        } else {
-                            false
-                        };
-
-                        if !is_defined {
-                            return Err(format!("Undefined function: {}", func_name));
-                        }
-
-                        let idx = strings.len();
-                        strings.push(resolved_name.clone());
-                        bytecode.push(Opcode::Call as u8);
-                        bytecode.push(idx as u8);
-                        bytecode.push(args.len() as u8);
-                    }
-                } else if let Expr::Get { object, name, .. } = callee.as_ref() {
+                if let Expr::Get { object, name, .. } = callee.as_ref() {
+                    // Method call: push object first, then args
                     self.compile_expr(object, bytecode, strings, classes, type_context)?;
-
-                    let mut _is_native = false;
-                    let mut _is_async = false;
-
-                    if let Some(_ctx) = type_context {
-                        // We need a way to infer object type here, but for now we skip this
-                        // and assume native methods are handled via InvokeNative
+                    for arg in args {
+                        self.compile_expr(arg, bytecode, strings, classes, type_context)?;
                     }
 
                     let method_idx = strings.len();
@@ -670,6 +608,88 @@ impl Compiler {
                     bytecode.push(Opcode::Invoke as u8);
                     bytecode.push(method_idx as u8);
                     bytecode.push((args.len() + 1) as u8);
+                } else {
+                    // Regular function call: push args first, then call
+                    for arg in args {
+                        self.compile_expr(arg, bytecode, strings, classes, type_context)?;
+                    }
+
+                    if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
+                        let mut is_native = false;
+                        let mut is_async = false;
+                        let mut resolved_name = func_name.clone();
+                        let mut is_class = false;
+
+                        if let Some(ctx) = type_context {
+                            // Use resolve_function to find the fully qualified name
+                            if let Some(sig) = ctx.resolve_function(func_name) {
+                                is_native = sig.is_native;
+                                is_async = sig.is_async;
+                                resolved_name = sig.name.clone();
+                            } else if let Some(class_name) = ctx.resolve_class(func_name) {
+                                // It's a class instantiation
+                                is_class = true;
+                                resolved_name = class_name;
+                            }
+                        }
+
+                        if is_class {
+                            // Class instantiation - use Call opcode with class name
+                            let idx = strings.len();
+                            strings.push(resolved_name.clone());
+                            bytecode.push(Opcode::Call as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(args.len() as u8);
+                        } else if is_native {
+                            let idx = strings.len();
+                            strings.push(resolved_name.clone());
+                            if is_async {
+                                bytecode.push(Opcode::CallNativeAsync as u8);
+                            } else {
+                                bytecode.push(Opcode::CallNative as u8);
+                            }
+                            bytecode.push(idx as u8);
+                            bytecode.push(args.len() as u8);
+                        } else if resolved_name.starts_with("C.") {
+                            let native_name = resolved_name.strip_prefix("C.").unwrap();
+                            let idx = strings.len();
+                            strings.push(native_name.to_string());
+
+                            // Check if it's an async native function
+                            if native_name == "http_get" || native_name == "http_post" {
+                                bytecode.push(Opcode::CallNativeAsync as u8);
+                            } else {
+                                bytecode.push(Opcode::CallNative as u8);
+                            }
+                            bytecode.push(idx as u8);
+                            bytecode.push(args.len() as u8);
+                        } else if resolved_name == "println" || resolved_name == "print" {
+                            let idx = strings.len();
+                            strings.push(resolved_name.clone());
+                            bytecode.push(Opcode::CallNative as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(args.len() as u8);
+                        } else {
+                            // Check if it's a known function or class in type context
+                            let is_defined = if let Some(ctx) = type_context {
+                                ctx.resolve_function(func_name).is_some() ||
+                                classes.iter().any(|c| c.name == *func_name) ||
+                                ctx.get_class(func_name).is_some()
+                            } else {
+                                false
+                            };
+
+                            if !is_defined {
+                                return Err(format!("Undefined function: {}", func_name));
+                            }
+
+                            let idx = strings.len();
+                            strings.push(resolved_name.clone());
+                            bytecode.push(Opcode::Call as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(args.len() as u8);
+                        }
+                    }
                 }
             }
             Expr::Get { object, name, .. } => {

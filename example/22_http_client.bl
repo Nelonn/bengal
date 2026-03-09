@@ -1,19 +1,22 @@
 import std::http
 
-// Print enum values (they are integers)
-println("HTTP Client example loaded!")
+async fn main() {
+    // Print enum values (they are integers)
+    println("HTTP Client example loaded!")
 
-// Create HTTP client
-let client = HttpClient()
-client.set_timeout(5000)
-client.set_verify_ssl(true)
+    // Create HTTP client
+    let client = HttpClient()
+    client.set_timeout(5000)
 
-// Add default headers
-client.add_header("User-Agent", "Bengal/1.0")
-client.add_header("Accept", "application/json")
+    // Add default headers
+    client.add_header("User-Agent", "Bengal/1.0")
+    client.add_header("Accept", "application/json")
 
-println("HttpClient created and configured!")
-println("Ready to make HTTP requests!")
+    println("HttpClient created and configured!")
+    println("Ready to make HTTP requests!")
 
-let result = client.get("https://jsonplaceholder.typicode.com/posts")
-println(str(result))
+    let result = await client.get("https://jsonplaceholder.typicode.com/posts")
+    println(str(result))
+}
+
+main()

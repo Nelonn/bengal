@@ -45,13 +45,20 @@ impl Executor {
 
             match result {
                 Some(Value::Promise(promise)) => {
-                    let state = promise.lock().await;
-                    if matches!(*state, PromiseState::Resolved(_) | PromiseState::Rejected(_)) {
-                        drop(state);
-                        continue;
+                    // Wait for the promise to resolve
+                    let mut state = promise.lock().await;
+                    match &mut *state {
+                        PromiseState::Pending => {
+                            // Wait for it to resolve
+                            drop(state);
+                            let _ = promise.lock().await;
+                            continue;
+                        }
+                        PromiseState::Resolved(_) | PromiseState::Rejected(_) => {
+                            drop(state);
+                            continue;
+                        }
                     }
-                    drop(state);
-                    return Ok(Some(Value::Promise(promise)));
                 }
                 _ => return Ok(result),
             }

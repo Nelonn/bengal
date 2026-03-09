@@ -24,6 +24,11 @@ pub fn register_all(vm: &mut VM) {
     NativeModule::new("std::http")
         .function("get", http::native_http_get)
         .function("post", http::native_http_post)
+        .class_method("HttpClient", "set_timeout", http::native_http_client_set_timeout)
+        .class_method("HttpClient", "set_base_url", http::native_http_client_set_base_url)
+        .class_method("HttpClient", "add_header", http::native_http_client_add_header)
+        .class_method("HttpClient", "get", http::native_http_client_get)
+        .class_method("HttpClient", "post", http::native_http_client_post)
         .register(vm);
 
     NativeModule::new("std::json")

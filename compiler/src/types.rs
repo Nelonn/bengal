@@ -399,6 +399,35 @@ impl TypeContext {
         None
     }
 
+    /// Try to resolve a class name, including searching for unqualified names
+    /// in qualified classes (e.g., "HttpClient" matches "std::http::HttpClient")
+    pub fn resolve_class(&self, name: &str) -> Option<String> {
+        // First try exact match
+        if self.classes.contains_key(name) {
+            // If the exact match contains ::, use it; otherwise check if there's also a qualified version
+            let exact = name.to_string();
+            if exact.contains("::") {
+                return Some(exact);
+            }
+            // Prefer qualified version if available
+            for class_name in self.classes.keys() {
+                if class_name.ends_with(&format!("::{}", name)) {
+                    return Some(class_name.clone());
+                }
+            }
+            return Some(exact);
+        }
+
+        // Try to find a class that ends with ::<name>
+        for class_name in self.classes.keys() {
+            if class_name.ends_with(&format!("::{}", name)) {
+                return Some(class_name.clone());
+            }
+        }
+
+        None
+    }
+
     pub fn get_method(&self, class_name: &str, method_name: &str) -> Option<&MethodSignature> {
         self.classes.get(class_name).and_then(|c| c.methods.get(method_name))
     }
@@ -950,6 +979,20 @@ impl TypeChecker {
                             }
                         }
                         return_type
+                    } else if let Some(class_info) = self.context.get_class(func_name) {
+                        // It's a class instantiation - check constructor args
+                        let ctor_sig = class_info.methods.get("__init__").cloned();
+                        if let Some(ref sig) = ctor_sig {
+                            self.check_method_call(sig, args, "__init__", func_name);
+                        } else if !args.is_empty() {
+                            // No explicit constructor but args were provided
+                            self.context.add_error(
+                                format!("Class '{}' does not accept constructor arguments", func_name),
+                                0
+                            );
+                        }
+                        // Return type is the class type
+                        Type::Class(func_name.clone())
                     } else {
                         Type::Unknown
                     }
