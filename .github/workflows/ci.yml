@@ -11,13 +11,9 @@ on:
   push:
     branches:
       - main
-      - master
-      - bengal-pipelines  # Development branch for pipeline features
   pull_request:
     branches:
       - main
-      - master
-      - bengal-pipelines
 
 env:
   CARGO_TERM_COLOR: always
