@@ -1,5 +1,17 @@
 use crate::lexer::Token;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl Span {
+    pub fn unknown() -> Self {
+        Self { line: 0, column: 0 }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Module { path: Vec<String> },
@@ -79,18 +91,18 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Literal(Literal),
-    Variable(String),
-    Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr> },
-    Unary { op: UnaryOp, expr: Box<Expr> },
-    Call { callee: Box<Expr>, args: Vec<Expr> },
-    Get { object: Box<Expr>, name: String },
-    Set { object: Box<Expr>, name: String, value: Box<Expr> },
-    Interpolated { parts: Vec<InterpPart> },
-    Range { start: Box<Expr>, end: Box<Expr> },
-    Await { expr: Box<Expr> },
+    Variable { name: String, span: Span },
+    Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr>, span: Span },
+    Unary { op: UnaryOp, expr: Box<Expr>, span: Span },
+    Call { callee: Box<Expr>, args: Vec<Expr>, span: Span },
+    Get { object: Box<Expr>, name: String, span: Span },
+    Set { object: Box<Expr>, name: String, value: Box<Expr>, span: Span },
+    Interpolated { parts: Vec<InterpPart>, span: Span },
+    Range { start: Box<Expr>, end: Box<Expr>, span: Span },
+    Await { expr: Box<Expr>, span: Span },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     String(String),
     Int(i64),
@@ -127,11 +139,88 @@ pub enum InterpPart {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    source: String,
+    token_positions: Vec<usize>,  // Position in source for each token
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+    pub fn new(tokens: Vec<Token>, source: &str) -> Self {
+        // Compute token positions by scanning through source
+        let mut token_positions = Vec::new();
+        let mut current_pos = 0;
+        let source_str = source;
+        let source_chars: Vec<char> = source.chars().collect();
+        let source_len = source_chars.len();
+        
+        for token in &tokens {
+            // Skip whitespace and comments to find the token
+            loop {
+                if current_pos >= source_len {
+                    break;
+                }
+                let ch = source_chars[current_pos];
+                if ch.is_whitespace() {
+                    current_pos += 1;
+                } else if ch == '/' && current_pos + 1 < source_len {
+                    // Skip comments
+                    let next_ch = source_chars[current_pos + 1];
+                    if next_ch == '/' {
+                        // Line comment - skip to end of line
+                        while current_pos < source_len && source_chars[current_pos] != '\n' {
+                            current_pos += 1;
+                        }
+                    } else if next_ch == '*' {
+                        // Block comment - skip to */
+                        current_pos += 2;
+                        while current_pos + 1 < source_len {
+                            if source_chars[current_pos] == '*' && source_chars[current_pos + 1] == '/' {
+                                current_pos += 2;
+                                break;
+                            }
+                            current_pos += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            token_positions.push(current_pos);
+            
+            // Advance past this token's content
+            match token {
+                Token::Identifier(s) => {
+                    current_pos += s.len();
+                },
+                Token::String(s) => {
+                    current_pos += s.len() + 2;  // Account for quotes
+                },
+                Token::Int(n) => current_pos += n.to_string().len(),
+                Token::Float(n) => current_pos += n.to_string().len(),
+                _ => current_pos += 1,  // Single-char tokens
+            }
+        }
+        
+        Self { 
+            tokens, 
+            pos: 0,
+            source: source_str.to_string(),
+            token_positions,
+        }
+    }
+
+    fn compute_span(&self, token_idx: usize) -> Span {
+        let pos = self.token_positions.get(token_idx).copied().unwrap_or(0);
+        let source_up_to_pos = &self.source[..pos.min(self.source.len())];
+        let line = source_up_to_pos.matches('\n').count() + 1;
+        
+        // Find column (position after last newline)
+        let last_newline = source_up_to_pos.rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let column = pos - last_newline + 1;
+        
+        Span { line, column }
     }
 
     fn peek(&self) -> &Token {
@@ -223,14 +312,14 @@ impl Parser {
             let expr = self.parse_expression()?;
 
             if self.match_token(&Token::Equal) {
-                if let Expr::Variable(name) = expr {
+                if let Expr::Variable { name, .. } = expr {
                     let value = self.parse_expression()?;
                     if self.match_token(&Token::Semicolon) {}
                     Stmt::Assign { name, expr: value }
-                } else if let Expr::Get { object, name } = expr {
+                } else if let Expr::Get { object, name, span } = expr {
                     let value = self.parse_expression()?;
                     if self.match_token(&Token::Semicolon) {}
-                    Stmt::Expr(Expr::Set { object, name, value: Box::new(value) })
+                    Stmt::Expr(Expr::Set { object, name, value: Box::new(value), span })
                 } else {
                     return Err("Left side of assignment must be a variable or property access".to_string());
                 }
@@ -820,12 +909,14 @@ impl Parser {
 
     fn parse_range(&mut self) -> Result<Expr, String> {
         let start = self.parse_equality()?;
+        let span = self.compute_span(self.pos);
 
         if self.match_token(&Token::Range) {
             let end = self.parse_equality()?;
             return Ok(Expr::Range {
                 start: Box::new(start),
                 end: Box::new(end),
+                span,
             });
         }
 
@@ -837,10 +928,12 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::BangEqual) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::NotEqual,
                     right: Box::new(self.parse_comparison()?),
+                    span,
                 };
             } else {
                 break;
@@ -855,16 +948,20 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::Greater) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Greater,
                     right: Box::new(self.parse_additive()?),
+                    span,
                 };
             } else if self.match_token(&Token::Less) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Less,
                     right: Box::new(self.parse_additive()?),
+                    span,
                 };
             } else {
                 break;
@@ -879,16 +976,20 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::Plus) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Add,
                     right: Box::new(self.parse_multiplicative()?),
+                    span,
                 };
             } else if self.match_token(&Token::Minus) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Subtract,
                     right: Box::new(self.parse_multiplicative()?),
+                    span,
                 };
             } else {
                 break;
@@ -903,16 +1004,20 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::Star) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Multiply,
                     right: Box::new(self.parse_unary()?),
+                    span,
                 };
             } else if self.match_token(&Token::Slash) {
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Divide,
                     right: Box::new(self.parse_unary()?),
+                    span,
                 };
             } else {
                 break;
@@ -924,15 +1029,19 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
         if self.match_token(&Token::Bang) {
+            let span = self.compute_span(self.pos - 1);
             return Ok(Expr::Unary {
                 op: UnaryOp::Not,
                 expr: Box::new(self.parse_unary()?),
+                span,
             });
         }
 
         if self.match_token(&Token::Await) {
+            let span = self.compute_span(self.pos - 1);
             return Ok(Expr::Await {
                 expr: Box::new(self.parse_unary()?),
+                span,
             });
         }
 
@@ -945,6 +1054,7 @@ impl Parser {
         loop {
             if self.match_token(&Token::LParen) {
                 let args = self.parse_arguments()?;
+                let span = self.compute_span(self.pos - 1);
                 self.skip_newlines();
                 if !self.match_token(&Token::RParen) {
                     return Err("Expected ')' after arguments".to_string());
@@ -952,6 +1062,7 @@ impl Parser {
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
+                    span,
                 };
             } else if self.match_token(&Token::LBrace) {
                 // Class instantiation with {} - for now we just consume the braces
@@ -986,18 +1097,22 @@ impl Parser {
                     return Err("Expected '}' to close class instantiation".to_string());
                 }
                 // For now, class instantiation is just a Call with no args
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args: vec![],
+                    span,
                 };
             } else if self.match_token(&Token::Dot) {
                 let name = match self.advance() {
                     Token::Identifier(n) => n,
                     _ => return Err("Expected identifier after '.'".to_string()),
                 };
+                let span = self.compute_span(self.pos - 1);
                 expr = Expr::Get {
                     object: Box::new(expr),
                     name,
+                    span,
                 };
             } else {
                 break;
@@ -1029,6 +1144,7 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
+        let token_pos = self.pos;
         match self.advance() {
             Token::String(s) => self.parse_interpolated_text(s),
             Token::Int(n) => Ok(Expr::Literal(Literal::Int(n))),
@@ -1051,13 +1167,14 @@ impl Parser {
                         return Err("Expected identifier after ::".to_string());
                     }
                 }
-                
+
                 if full_name == "true" {
                     Ok(Expr::Literal(Literal::Bool(true)))
                 } else if full_name == "false" {
                     Ok(Expr::Literal(Literal::Bool(false)))
                 } else {
-                    Ok(Expr::Variable(full_name))
+                    let span = self.compute_span(token_pos);
+                    Ok(Expr::Variable { name: full_name, span })
                 }
             },
             Token::Dollar => self.parse_interpolated_string(),
@@ -1070,6 +1187,7 @@ impl Parser {
             return Err("Expected '{' after '$' in interpolated string".to_string());
         }
 
+        let span = self.compute_span(self.pos - 1);
         let expr = self.parse_expression()?;
 
         if !self.match_token(&Token::RBrace) {
@@ -1077,35 +1195,39 @@ impl Parser {
         }
 
         Ok(Expr::Interpolated {
-            parts: vec![InterpPart::Expr(expr)]
+            parts: vec![InterpPart::Expr(expr)],
+            span,
         })
     }
 
     fn parse_interpolated_text(&mut self, s: String) -> Result<Expr, String> {
         let mut parts = Vec::new();
         let mut last_pos = 0;
-        
+        let span = Span::unknown();  // Approximate span for interpolated strings
+
         while let Some(interp_start) = s[last_pos..].find("${") {
             let abs_start = last_pos + interp_start;
             if abs_start > last_pos {
                 parts.push(InterpPart::Text(s[last_pos..abs_start].to_string()));
             }
-            
+
             let rest = &s[abs_start + 2..];
             if let Some(interp_end) = rest.find('}') {
                 let expr_str = &rest[..interp_end];
-                
+
                 let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim());
                 let tokens = sub_lexer.tokenize()?;
-                let mut sub_parser = Parser::new(tokens);
+                let mut sub_parser = Parser::new(tokens, expr_str.trim());
                 let sub_stmts = sub_parser.parse()?;
 
                 let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {
                     e.clone()
                 } else if let Some(Stmt::Assign { name, expr: _ }) = sub_stmts.first() {
-                    Expr::Variable(name.clone())
+                    let span = Span::unknown();
+                    Expr::Variable { name: name.clone(), span }
                 } else {
-                    Expr::Variable(expr_str.trim().to_string())
+                    let span = Span::unknown();
+                    Expr::Variable { name: expr_str.trim().to_string(), span }
                 };
 
                 parts.push(InterpPart::Expr(expr));
@@ -1114,13 +1236,13 @@ impl Parser {
                 return Err("Unclosed interpolation ${...}".to_string());
             }
         }
-        
+
         if last_pos < s.len() {
             parts.push(InterpPart::Text(s[last_pos..].to_string()));
         }
-        
+
         if parts.iter().any(|p| matches!(p, InterpPart::Expr(_))) {
-            Ok(Expr::Interpolated { parts })
+            Ok(Expr::Interpolated { parts, span })
         } else {
             Ok(Expr::Literal(Literal::String(s)))
         }

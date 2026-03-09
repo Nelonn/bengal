@@ -51,7 +51,7 @@ impl Compiler {
         let mut lexer = Lexer::new(&self.source);
         let tokens = lexer.tokenize()?;
 
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::new(tokens, &self.source);
         let statements = parser.parse()?;
 
         let mut resolver = None;
@@ -65,7 +65,7 @@ impl Compiler {
                 }
             }
 
-            match resolver_instance.build_type_context(&statements) {
+            match resolver_instance.build_type_context_with_source(&statements, &self.source, self._source_path.as_deref()) {
                 Ok(ctx) => {
                     type_context = Some(ctx.clone());
                     resolver = Some(resolver_instance);
@@ -335,7 +335,7 @@ impl Compiler {
             }
             Stmt::For { var_name, range, body } => {
                 // Compile range expression
-                if let Expr::Range { start, end } = range.as_ref() {
+                if let Expr::Range { start, end, .. } = range.as_ref() {
                     // Check if we can determine direction at compile time
                     let is_descending = match (start.as_ref(), end.as_ref()) {
                         (Expr::Literal(Literal::Int(start_val)), Expr::Literal(Literal::Int(end_val))) => {
@@ -517,7 +517,7 @@ impl Compiler {
                     }
                 }
             }
-            Expr::Variable(name) => {
+            Expr::Variable { name, .. } => {
                 if let Some(ctx) = type_context {
                     if let Some(current_class_name) = &ctx.current_class {
                         if let Some(class_info) = ctx.get_class(current_class_name) {
@@ -528,7 +528,7 @@ impl Compiler {
                                 strings.push("0".to_string());
                                 bytecode.push(Opcode::LoadLocal as u8);
                                 bytecode.push(self_name_idx as u8);
-                                
+
                                 // GetProperty
                                 let field_name_idx = strings.len();
                                 strings.push(name.clone());
@@ -538,7 +538,7 @@ impl Compiler {
                             }
                         }
                     }
-                    
+
                     // Handle parameters and 'self' mapping
                     if let Some(pos) = ctx.current_method_params.iter().position(|p| p == name) {
                         let idx = strings.len();
@@ -562,7 +562,7 @@ impl Compiler {
                 bytecode.push(Opcode::LoadLocal as u8);
                 bytecode.push(idx as u8);
             }
-            Expr::Binary { left, op, right } => {
+            Expr::Binary { left, op, right, .. } => {
                 self.compile_expr(left, bytecode, strings, classes, type_context)?;
                 self.compile_expr(right, bytecode, strings, classes, type_context)?;
 
@@ -582,18 +582,18 @@ impl Compiler {
                     BinaryOp::Divide => bytecode.push(Opcode::Divide as u8),
                 }
             }
-            Expr::Unary { op, expr } => {
+            Expr::Unary { op, expr, .. } => {
                 self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 match op {
                     UnaryOp::Not => bytecode.push(Opcode::Not as u8),
                 }
             }
-            Expr::Call { callee, args } => {
+            Expr::Call { callee, args, .. } => {
                 for arg in args {
                     self.compile_expr(arg, bytecode, strings, classes, type_context)?;
                 }
 
-                if let Expr::Variable(func_name) = callee.as_ref() {
+                if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
                     let mut is_native = false;
                     let mut is_async = false;
                     let mut resolved_name = func_name.clone();
@@ -654,12 +654,12 @@ impl Compiler {
                         bytecode.push(idx as u8);
                         bytecode.push(args.len() as u8);
                     }
-                } else if let Expr::Get { object, name } = callee.as_ref() {
+                } else if let Expr::Get { object, name, .. } = callee.as_ref() {
                     self.compile_expr(object, bytecode, strings, classes, type_context)?;
 
                     let mut _is_native = false;
                     let mut _is_async = false;
-                    
+
                     if let Some(_ctx) = type_context {
                         // We need a way to infer object type here, but for now we skip this
                         // and assume native methods are handled via InvokeNative
@@ -672,14 +672,14 @@ impl Compiler {
                     bytecode.push((args.len() + 1) as u8);
                 }
             }
-            Expr::Get { object, name } => {
+            Expr::Get { object, name, .. } => {
                 self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let idx = strings.len();
                 strings.push(name.clone());
                 bytecode.push(Opcode::GetProperty as u8);
                 bytecode.push(idx as u8);
             }
-            Expr::Set { object, name, value } => {
+            Expr::Set { object, name, value, .. } => {
                 self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 self.compile_expr(value, bytecode, strings, classes, type_context)?;
                 let idx = strings.len();
@@ -687,7 +687,7 @@ impl Compiler {
                 bytecode.push(Opcode::SetProperty as u8);
                 bytecode.push(idx as u8);
             }
-            Expr::Interpolated { parts } => {
+            Expr::Interpolated { parts, .. } => {
                 for part in parts {
                     match part {
                         InterpPart::Text(s) => {
@@ -704,12 +704,12 @@ impl Compiler {
                 bytecode.push(Opcode::Concat as u8);
                 bytecode.push(parts.len() as u8);
             }
-            Expr::Range { start: _, end: _ } => {
+            Expr::Range { start: _, end: _, .. } => {
                 // Range expressions are only used in for loops and handled specially
                 // This should not be reached during normal compilation
                 return Err("Range expression outside of for loop".to_string());
             }
-            Expr::Await { expr } => {
+            Expr::Await { expr, .. } => {
                 self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 bytecode.push(Opcode::Await as u8);
             }
@@ -759,7 +759,7 @@ impl Compiler {
             Stmt::Expr(expr) => {
                 // For expression statements, try to find the line by looking for common patterns
                 if let Expr::Call { callee, .. } = expr {
-                    if let Expr::Variable(name) = callee.as_ref() {
+                    if let Expr::Variable { name, .. } = callee.as_ref() {
                         // Find all occurrences of the function call pattern
                         let pattern = format!("{}(", name);
                         let mut search_start = 0;
