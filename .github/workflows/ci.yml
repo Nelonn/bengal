@@ -1,0 +1,64 @@
+# CI pipeline for Bengal language project
+# Builds and tests all workspace components:
+# - bengal-cli: Main CLI binary
+# - bengal-compiler: Compiler library
+# - sparkler: Virtual machine
+# - bengal-std: Standard library
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        id: fmt_check
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        id: clippy_check
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Build workspace
+        run: cargo build --workspace --verbose
+
+      - name: Run tests
+        run: cargo test --workspace --verbose
+
+      # Fail job if formatting or clippy checks did not pass
+      - name: Check lint results
+        if: |
+          steps.fmt_check.outcome == 'failure' ||
+          steps.clippy_check.outcome == 'failure'
+        run: |
+          echo "❌ Some checks failed:"
+          echo "  formatting: ${{ steps.fmt_check.outcome }}"
+          echo "  clippy:     ${{ steps.clippy_check.outcome }}"
+          exit 1
