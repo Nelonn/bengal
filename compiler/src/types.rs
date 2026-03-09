@@ -566,10 +566,16 @@ impl TypeChecker {
                             return;
                         }
                     }
-                    // Variable not declared with let, create it
-                    self.context.add_variable(name, expr_type);
+                    // Inside a class method, implicit variable declarations are not allowed
+                    self.context.add_error_with_location(
+                        format!("Undeclared variable '{}'. Use 'let {} = ...' to declare a local variable", name, name),
+                        span.line,
+                        span.column,
+                        None,
+                        None,
+                    );
                 } else {
-                    // Variable not declared with let, create it
+                    // Variable not declared with let, create it (implicit declaration in global/function scope)
                     self.context.add_variable(name, expr_type);
                 }
             }
@@ -809,11 +815,27 @@ impl TypeChecker {
                             return field_type;
                         }
                     }
+                    // Variable not found in class context - report as undeclared
+                    self.context.add_error_with_location(
+                        format!("Undeclared variable '{}'", name),
+                        span.line,
+                        span.column,
+                        None,
+                        None,
+                    );
                     Type::Unknown
                 } else if self.context.get_enum(name).is_some() {
                     // Enum type access
                     Type::Enum(name.clone())
                 } else {
+                    // Variable not found in global/function context - report as undeclared
+                    self.context.add_error_with_location(
+                        format!("Undeclared variable '{}'", name),
+                        span.line,
+                        span.column,
+                        None,
+                        None,
+                    );
                     Type::Unknown
                 }
             }
@@ -1035,7 +1057,7 @@ impl TypeChecker {
                     Type::Unknown
                 }
             }
-            Expr::Set { object, name, value, .. } => {
+            Expr::Set { object, name, value, span } => {
                 let object_type = self.infer_expr(object);
                 let value_type = self.infer_expr(value);
 
@@ -1057,25 +1079,31 @@ impl TypeChecker {
                         }
 
                         if let Some(err) = visibility_error {
-                            self.context.add_error(err, 0);
+                            self.context.add_error_with_location(err, span.line, span.column, None, None);
                         }
 
                         if !value_type.is_assignable_to(&field.type_name) {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!(
                                     "Cannot assign {} to field '{}' of type {}",
                                     value_type.to_str(),
                                     name,
                                     field.type_name.to_str()
                                 ),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         field.type_name.clone()
                     } else {
-                        self.context.add_error(
+                        self.context.add_error_with_location(
                             format!("Field '{}' not found on class '{}'", name, class_name),
-                            0
+                            span.line,
+                            span.column,
+                            None,
+                            None,
                         );
                         Type::Unknown
                     }
