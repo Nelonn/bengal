@@ -490,6 +490,16 @@ impl Lexer {
     }
 
     pub fn tokenize(&mut self) -> Result<(Vec<Token>, Vec<usize>), String> {
+        // Skip shebang line if it exists at the very beginning
+        if self.pos == 0 && self.peek() == Some('#') && self.peek_next() == Some('!') {
+            while let Some(ch) = self.peek() {
+                if ch == '\n' {
+                    break;
+                }
+                self.advance();
+            }
+        }
+
         let mut tokens = Vec::new();
         let mut token_positions = Vec::new();
         loop {

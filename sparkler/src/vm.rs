@@ -99,6 +99,7 @@ pub enum Value {
     Bool(bool),
     Null,
     Instance(Arc<Mutex<Instance>>),
+    Array(Arc<Mutex<Vec<Value>>>),
     Promise(Arc<TokioMutex<PromiseState>>),
     Exception(Exception),
 }
@@ -120,6 +121,7 @@ impl fmt::Debug for Value {
             Value::Bool(b) => write!(f, "Bool({})", b),
             Value::Null => write!(f, "Null"),
             Value::Instance(_) => write!(f, "Instance(...)"),
+            Value::Array(_) => write!(f, "Array(...)"),
             Value::Promise(_) => write!(f, "Promise(...)"),
             Value::Exception(e) => write!(f, "Exception({})", e.message),
         }
@@ -133,6 +135,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Instance(a), Value::Instance(b)) => Arc::ptr_eq(a, b),
+            (Value::Array(a), Value::Array(b)) => Arc::ptr_eq(a, b),
             (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             (Value::Exception(a), Value::Exception(b)) => a.message == b.message,
             (Value::Int64(a), Value::Int64(b)) => a == b,
@@ -300,6 +303,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Null => "null".to_string(),
             Value::Instance(_) => "[instance]".to_string(),
+            Value::Array(_) => "[array]".to_string(),
             Value::Promise(_) => "[promise]".to_string(),
             Value::Exception(e) => e.to_string(),
         }
@@ -1424,6 +1428,55 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
 
+            // Create array
+            // Format: [Array, Rd, rs_start, count]
+            x if x == Opcode::Array as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs_start = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let count = self.bytecode[self.pc()] as u8;
+                
+                let mut elements = Vec::new();
+                for i in 0..count {
+                    elements.push(self.get_reg(rs_start + i).clone());
+                }
+                
+                self.set_reg(rd, Value::Array(Arc::new(Mutex::new(elements))));
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Index array or object
+            // Format: [Index, Rd, Robj, Ridx]
+            x if x == Opcode::Index as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let r_obj = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let r_idx = self.bytecode[self.pc()] as u8;
+                
+                let obj = self.get_reg(r_obj).clone();
+                let idx_val = self.get_reg(r_idx).clone();
+                
+                let result = match obj {
+                    Value::Array(arr) => {
+                        let idx = idx_val.to_int().unwrap_or(0) as usize;
+                        let elements = arr.lock().unwrap();
+                        elements.get(idx).cloned().unwrap_or(Value::Null)
+                    }
+                    Value::String(s) => {
+                        let idx = idx_val.to_int().unwrap_or(0) as usize;
+                        s.chars().nth(idx).map(|c| Value::String(c.to_string())).unwrap_or(Value::Null)
+                    }
+                    _ => Value::Null,
+                };
+                
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
             // Logical AND
             // Format: [And, Rd, Rs1, Rs2]
             x if x == Opcode::And as u8 => {
@@ -1885,6 +1938,8 @@ pub enum Opcode {
 
     // Type operations
     Cast = 0x74,     // Rd, Rs, type
+    Array = 0x76,    // Rd, rs_start, count
+    Index = 0x77,    // Rd, Robj, Ridx
 
     // Debugging
     Line = 0x73,     // line_number (2 bytes)
@@ -1928,7 +1983,17 @@ impl Serialize for Value {
                 }
                 map.end()
             }
+            Value::Array(arr) => {
+                use serde::ser::SerializeSeq;
+                let elements = arr.lock().unwrap();
+                let mut seq = serializer.serialize_seq(Some(elements.len()))?;
+                for el in elements.iter() {
+                    seq.serialize_element(el)?;
+                }
+                seq.end()
+            }
             Value::Promise(_) => serializer.serialize_none(),
+
             Value::Exception(e) => serializer.serialize_str(&e.message),
         }
     }
@@ -1982,30 +2047,15 @@ impl<'de> Deserialize<'de> for Value {
                 Ok(Value::String(value))
             }
 
-            fn visit_none<E>(self) -> Result<Value, E>
-            where E: serde::de::Error {
-                Ok(Value::Null)
-            }
-
-            fn visit_unit<E>(self) -> Result<Value, E>
-            where E: serde::de::Error {
-                Ok(Value::Null)
-            }
-
             fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
-            where A: serde::de::SeqAccess<'de> {
-                let mut fields = HashMap::new();
-                let mut idx = 0;
-                while let Some(value) = seq.next_element()? {
-                    fields.insert(idx.to_string(), value);
-                    idx += 1;
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut elements = Vec::new();
+                while let Some(el) = seq.next_element()? {
+                    elements.push(el);
                 }
-                fields.insert("length".to_string(), Value::Int64(idx));
-                Ok(Value::Instance(Arc::new(Mutex::new(Instance {
-                    class: "Array".to_string(),
-                    fields,
-                    native_data: Arc::new(Mutex::new(None)),
-                }))))
+                Ok(Value::Array(Arc::new(Mutex::new(elements))))
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
@@ -2019,6 +2069,16 @@ impl<'de> Deserialize<'de> for Value {
                     fields,
                     native_data: Arc::new(Mutex::new(None)),
                 }))))
+            }
+
+            fn visit_none<E>(self) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Null)
+            }
+
+            fn visit_unit<E>(self) -> Result<Value, E>
+            where E: serde::de::Error {
+                Ok(Value::Null)
             }
         }
 

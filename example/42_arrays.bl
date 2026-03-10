@@ -1,0 +1,24 @@
+import std::io
+
+class MyClass {
+    constructor() {
+        println("MyClass constructed!")
+    }
+}
+
+fn main() {
+    let arr = [1, 2, 3]
+    println("arr[0]: " + str(arr[0]))
+    println("arr[1]: " + str(arr[1]))
+    println("arr[2]: " + str(arr[2]))
+
+    println("Creating array of MyClass...")
+    let arr2 = [MyClass(), MyClass()]
+    println("arr2 length: 2")
+
+    let s = "hello"
+    println("s[0]: " + s[0])
+    println("s[1]: " + s[1])
+}
+
+main()

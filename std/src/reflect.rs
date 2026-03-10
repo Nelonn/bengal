@@ -23,6 +23,7 @@ pub fn native_reflect_typeof(args: &mut Vec<Value>) -> Result<Value, Value> {
         Value::Bool(_) => "bool",
         Value::Null => "null",
         Value::Instance(_) => "object",
+        Value::Array(_) => "array",
         Value::Promise(_) => "promise",
         Value::Exception(_) => "exception",
     };

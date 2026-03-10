@@ -1,7 +1,7 @@
 use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, FunctionDef, BinaryOp, UnaryOp, InterpPart, CastType};
 use crate::lexer::Lexer;
 use crate::resolver::ModuleResolver;
-use crate::types::TypeContext;
+use crate::types::{TypeContext, Type, TypeChecker};
 use sparkler::vm::{Class, Value, Opcode, Function, Method};
 
 pub type Bytecode = sparkler::executor::Bytecode;
@@ -189,6 +189,16 @@ impl CompileContext {
             self.max_reg = reg;
         }
         reg
+    }
+
+    fn allocate_regs(&mut self, count: usize) -> usize {
+        if count == 0 { return self.next_reg; }
+        let start = self.next_reg;
+        self.next_reg += count;
+        if start + count - 1 > self.max_reg {
+            self.max_reg = start + count - 1;
+        }
+        start
     }
 
     fn get_local_reg(&mut self, name: &str) -> usize {
@@ -1050,7 +1060,7 @@ impl Compiler {
                         } else { true };
 
                         if has_constructor {
-                            let contiguous_start = self.current_ctx.allocate_reg();
+                            let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
                             // First arg for Invoke is the object (self)
                             bytecode.push(Opcode::Move as u8);
                             bytecode.push(contiguous_start as u8);
@@ -1075,7 +1085,7 @@ impl Compiler {
                     } else if is_method {
                         // Method call on implicit 'self'
                         let r_self = self.current_ctx.get_local_reg("self");
-                        let contiguous_start = self.current_ctx.allocate_reg();
+                        let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
 
                         // First arg for Invoke is the object (self)
                         bytecode.push(Opcode::Move as u8);
@@ -1098,7 +1108,7 @@ impl Compiler {
                         bytecode.push((args.len() + 1) as u8);
                     } else {
                         // Regular function call
-                        let contiguous_start = self.current_ctx.allocate_reg();
+                        let contiguous_start = self.current_ctx.allocate_regs(args.len());
                         for (i, &r) in arg_regs.iter().enumerate() {
                             let r_arg = contiguous_start + i;
                             bytecode.push(Opcode::Move as u8);
@@ -1116,7 +1126,7 @@ impl Compiler {
                     }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
                     let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
-                    let contiguous_start = self.current_ctx.allocate_reg();
+                    let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
 
                     // First arg for Invoke is the object (self)
                     bytecode.push(Opcode::Move as u8);
@@ -1204,6 +1214,69 @@ impl Compiler {
                 bytecode.push(Opcode::Await as u8);
                 bytecode.push(rd as u8);
                 bytecode.push(r as u8);
+                Ok(rd)
+            }
+
+            Expr::Array { elements, .. } => {
+                let mut el_regs = Vec::new();
+                for el in elements {
+                    el_regs.push(self.compile_expr(el, bytecode, strings, classes, type_context)?);
+                }
+
+                let rd = self.current_ctx.allocate_reg();
+                let contiguous_start = self.current_ctx.allocate_regs(elements.len());
+                // Move elements to contiguous registers for Opcode::Array
+                for (i, &r) in el_regs.iter().enumerate() {
+                    let r_arg = contiguous_start + i;
+                    bytecode.push(Opcode::Move as u8);
+                    bytecode.push(r_arg as u8);
+                    bytecode.push(r as u8);
+                }
+
+                bytecode.push(Opcode::Array as u8);
+                bytecode.push(rd as u8);
+                bytecode.push(contiguous_start as u8);
+                bytecode.push(elements.len() as u8);
+
+                // If non-POD, call constructor for each element
+                for (i, el) in elements.iter().enumerate() {
+                    let mut el_type = Type::Unknown;
+                    if let Some(ctx) = type_context {
+                        let mut checker = TypeChecker::with_context(ctx.clone());
+                        el_type = checker.infer_expr(el);
+                    }
+
+                    if !el_type.is_pod() {
+                        let r_el = el_regs[i];
+                        let constructor_idx = strings.len();
+                        strings.push("constructor".to_string());
+                        
+                        let contiguous_call_start = self.current_ctx.allocate_regs(1);
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(contiguous_call_start as u8);
+                        bytecode.push(r_el as u8);
+
+                        bytecode.push(Opcode::Invoke as u8);
+                        let r_unused = self.current_ctx.allocate_reg();
+                        bytecode.push(r_unused as u8);
+                        bytecode.push(constructor_idx as u8);
+                        bytecode.push(contiguous_call_start as u8);
+                        bytecode.push(1); // arg_count (only self)
+                    }
+                }
+
+                Ok(rd)
+            }
+
+            Expr::Index { object, index, .. } => {
+                let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                let r_idx = self.compile_expr(index, bytecode, strings, classes, type_context)?;
+                let rd = self.current_ctx.allocate_reg();
+
+                bytecode.push(Opcode::Index as u8);
+                bytecode.push(rd as u8);
+                bytecode.push(r_obj as u8);
+                bytecode.push(r_idx as u8);
                 Ok(rd)
             }
 

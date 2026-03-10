@@ -877,7 +877,7 @@ impl TypeChecker {
         self.context.current_async_inner_return = old_async_inner;
     }
 
-    fn infer_expr(&mut self, expr: &Expr) -> Type {
+    pub fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             Expr::Literal(lit) => {
                 match lit {
@@ -1367,6 +1367,7 @@ impl TypeChecker {
                 
                 match object_type {
                     Type::Array(inner) => *inner,
+                    Type::Str => Type::Str,
                     Type::Unknown => Type::Unknown,
                     _ => {
                         self.context.add_error(

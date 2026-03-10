@@ -8,4 +8,7 @@ native class ByteBuffer {
   fn get(index: int): uint8
   fn set(index: int, value: uint8)
   fn length(): int
+  fn empty(): bool {
+    return length() <= 0
+  }
 }
