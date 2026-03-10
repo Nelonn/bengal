@@ -1,0 +1,26 @@
+
+native class str {
+  fn length(): int
+
+  fn trim(): str
+
+  fn split(delimiter: str): [str]
+
+  fn toInt(): int?
+
+  fn toFloat(): float?
+
+  fn contains(substr: str): bool
+
+  fn startsWith(prefix: str): bool
+
+  fn endsWith(suffix: str): bool
+
+  fn substr(start: int, end: int? = null): str
+
+  fn toLower(): str
+
+  fn toUpper(): str
+
+  fn replace(pattern: str, replacement: str): str
+}

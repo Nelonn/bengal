@@ -72,10 +72,10 @@ impl ModuleResolver {
         let source = fs::read_to_string(&module_file)
             .map_err(|e| format!("Failed to read module '{}': {}", module_file.display(), e))?;
 
-        let mut lexer = Lexer::new(&source);
+        let mut lexer = Lexer::new(&source, module_file.to_str().unwrap_or("unknown"));
         let (tokens, token_positions) = lexer.tokenize()?;
 
-        let mut parser = Parser::new(tokens, &source, token_positions);
+        let mut parser = Parser::new(tokens, &source, module_file.to_str().unwrap_or("unknown"), token_positions);
         let statements = parser.parse()?;
 
         // Create module info
@@ -256,6 +256,9 @@ impl ModuleResolver {
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
+                }
+                Stmt::TypeAlias(alias) => {
+                    self.type_context.add_type_alias(alias);
                 }
                 Stmt::Function(func) => {
                     let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {

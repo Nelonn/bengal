@@ -268,10 +268,10 @@ impl Compiler {
     }
 
     pub fn compile_with_options(&mut self, options: &CompilerOptions) -> Result<Bytecode, String> {
-        let mut lexer = Lexer::new(&self.source);
+        let mut lexer = Lexer::new(&self.source, self._source_path.as_deref().unwrap_or("unknown"));
         let (tokens, token_positions) = lexer.tokenize()?;
 
-        let mut parser = Parser::new(tokens, &self.source, token_positions);
+        let mut parser = Parser::new(tokens, &self.source, self._source_path.as_deref().unwrap_or("unknown"), token_positions);
         let statements = parser.parse()?;
 
         let mut resolver = None;
@@ -518,7 +518,7 @@ impl Compiler {
         bytecode.extend_from_slice(&(line as u16).to_le_bytes());
 
         match stmt {
-            Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Enum(_) | Stmt::Function(_) => {}
+            Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
 
             Stmt::Let { name, expr } => {
                 let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;

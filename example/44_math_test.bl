@@ -1,0 +1,11 @@
+import std::math
+
+fn main() {
+  let v2 = math::tvec2<float>()
+  let iv2 = math::ivec2()
+  
+  let v3 = math::vec3()
+  let iv3 = math::ivec3()
+  
+  println("Generics and type aliases from std::math work!")
+}

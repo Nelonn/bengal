@@ -1,16 +1,25 @@
 module std::sys
 
-class Process {
-
-}
-
 native fn exit(code: int)
 native fn env(key: str): str?
+native fn setPwd(dir: str)
 
-fn just_throw_internal() {
-    throw "Some exception"
-}
+native class Process {
+  fn start(cmd: str, args: [str] = [], capture_stdout: bool = false, capture_stderr: bool = false, inherit_stdin: bool = false, working_dir: str? = null)
 
-fn just_throw() {
-    just_throw_internal()
+  fn writeStdin(data: str)
+
+  fn closeStdin()
+
+  fn readStdout() -> str
+
+  fn readStderr() -> str
+
+  fn wait()
+
+  fn exitCode() -> int?
+
+  fn getStdout() -> str
+
+  fn getStderr() -> str
 }

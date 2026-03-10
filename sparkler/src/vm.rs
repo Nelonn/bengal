@@ -1153,82 +1153,110 @@ impl VM {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
 
-                let instance = if let Some(Value::Instance(instance)) = args.first() {
-                    instance.clone()
+                // Check if this is an array method call
+                if let Some(Value::Array(_)) = args.first() {
+                    // Handle array native methods directly
+                    let result = match name.as_str() {
+                        "length" => {
+                            if let Value::Array(arr) = &args[0] {
+                                let elements = arr.lock().unwrap();
+                                Ok(Value::Int64(elements.len() as i64))
+                            } else {
+                                Err(Value::String("length requires an array".to_string()))
+                            }
+                        }
+                        "add" => {
+                            if args.len() < 2 {
+                                Err(Value::String("add requires a value argument".to_string()))
+                            } else if let Value::Array(arr) = &args[0] {
+                                let mut elements = arr.lock().unwrap();
+                                elements.push(args[1].clone());
+                                Ok(Value::Null)
+                            } else {
+                                Err(Value::String("add requires an array".to_string()))
+                            }
+                        }
+                        _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
+                    };
+                    self.set_reg(rd, result?);
                 } else {
-                    return Err(Value::String("Invoke requires an instance".to_string()));
-                };
+                    let instance = if let Some(Value::Instance(instance)) = args.first() {
+                        instance.clone()
+                    } else {
+                        return Err(Value::String("Invoke requires an instance".to_string()));
+                    };
 
-                let class_name = instance.lock().unwrap().class.clone();
-                if let Some(class) = self.classes.get(&class_name).cloned() {
-                    if let Some(native_method) = class.native_methods.get(&name) {
-                        let mut method_args = args.clone();
-                        let result = native_method(&mut method_args)?;
-                        self.set_reg(rd, result);
-                    } else if let Some(method) = class.methods.get(&name) {
-                        // Set up method call frame
-                        let caller_pc = self.pc();
-                        let caller_frame_base = self.frame_base();
+                    let class_name = instance.lock().unwrap().class.clone();
+                    if let Some(class) = self.classes.get(&class_name).cloned() {
+                        if let Some(native_method) = class.native_methods.get(&name) {
+                            let mut method_args = args.clone();
+                            let result = native_method(&mut method_args)?;
+                            self.set_reg(rd, result);
+                        } else if let Some(method) = class.methods.get(&name) {
+                            // Set up method call frame
+                            let caller_pc = self.pc();
+                            let caller_frame_base = self.frame_base();
 
-                        let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-                        
-                        if new_frame_base + method.register_count as usize > self.registers.len() {
-                            return Err(Value::String("Register overflow in method call".to_string()));
-                        }
+                            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
 
-                        let mut new_call_stack = self.call_stack.clone();
-                        if let Some(last_frame) = new_call_stack.last_mut() {
-                            last_frame.line_number = self.current_line;
-                        }
-                        new_call_stack.push(CallFrame::new(
-                            0,
-                            new_frame_base,
-                            arg_count,
-                            method.register_count,
-                            format!("{}.{}", class_name, name),
-                            self.source_file.clone(),
-                        ));
-                        self.call_stack = new_call_stack;
+                            if new_frame_base + method.register_count as usize > self.registers.len() {
+                                return Err(Value::String("Register overflow in method call".to_string()));
+                            }
 
-                        // Copy arguments (first is self, placed in R1..Rn)
-                        for (i, arg) in args.iter().enumerate() {
-                            self.set_reg((i + 1) as u8, arg.clone());
-                        }
+                            let mut new_call_stack = self.call_stack.clone();
+                            if let Some(last_frame) = new_call_stack.last_mut() {
+                                last_frame.line_number = self.current_line;
+                            }
+                            new_call_stack.push(CallFrame::new(
+                                0,
+                                new_frame_base,
+                                arg_count,
+                                method.register_count,
+                                format!("{}.{}", class_name, name),
+                                self.source_file.clone(),
+                            ));
+                            self.call_stack = new_call_stack;
 
-                        let new_bytecode = method.bytecode.clone();
-                        let new_strings = self.strings.clone();
-                        let new_classes = self.classes.clone();
-                        let new_native_functions = self.native_functions.clone();
+                            // Copy arguments (first is self, placed in R1..Rn)
+                            for (i, arg) in args.iter().enumerate() {
+                                self.set_reg((i + 1) as u8, arg.clone());
+                            }
 
-                        let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
-                        let old_strings = std::mem::replace(&mut self.strings, new_strings);
-                        let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                        let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                            let new_bytecode = method.bytecode.clone();
+                            let new_strings = self.strings.clone();
+                            let new_classes = self.classes.clone();
+                            let new_native_functions = self.native_functions.clone();
 
-                        let result = self.run().await;
+                            let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
+                            let old_strings = std::mem::replace(&mut self.strings, new_strings);
+                            let old_classes = std::mem::replace(&mut self.classes, new_classes);
+                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
 
-                        self.bytecode = old_bytecode;
-                        self.strings = old_strings;
-                        self.classes = old_classes;
-                        self.native_functions = old_native_functions;
+                            let result = self.run().await;
 
-                        self.call_stack.pop();
-                        if let Some(frame) = self.call_stack.last_mut() {
-                            frame.pc = caller_pc;  // PC already points to next instruction
-                            frame.frame_base = caller_frame_base;
-                        }
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.classes = old_classes;
+                            self.native_functions = old_native_functions;
 
-                        match result {
-                            Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
-                            Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                            Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
-                            Err(e) => return Err(e),
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;  // PC already points to next instruction
+                                frame.frame_base = caller_frame_base;
+                            }
+
+                            match result {
+                                Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
+                                Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
                         }
                     } else {
-                        return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                        return Err(Value::String(format!("Class '{}' not found", class_name)));
                     }
-                } else {
-                    return Err(Value::String(format!("Class '{}' not found", class_name)));
                 }
             }
 

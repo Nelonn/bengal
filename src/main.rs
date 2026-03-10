@@ -24,7 +24,7 @@ async fn main() {
         }
     };
 
-    let mut compiler = Compiler::new(&source);
+    let mut compiler = Compiler::with_path(&source, source_file);
     let bytecode = match compiler.compile() {
         Ok(bc) => bc,
         Err(e) => {

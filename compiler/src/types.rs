@@ -28,6 +28,11 @@ pub enum Type {
     Array(Box<Type>),
     Null,
     Unknown,
+    // Generics support
+    TypeParameter(String),                    // T (type parameter)
+    GenericInstance(String, Vec<Type>),       // ClassName<T1, T2, ...>
+    // Type alias support
+    TypeAlias(String, Vec<Type>),             // Alias name with optional type args
 }
 
 impl Type {
@@ -42,7 +47,17 @@ impl Type {
             let inner = s.trim_end_matches('?');
             return Type::Optional(Box::new(Type::from_str(inner)));
         }
-        
+
+        // Handle generic types like ClassName<T1, T2>
+        if let Some(angle_start) = s.find('<') {
+            if s.ends_with('>') {
+                let class_name = &s[..angle_start];
+                let args_str = &s[angle_start + 1..s.len() - 1];
+                let args = Self::parse_generic_args(args_str);
+                return Type::GenericInstance(class_name.to_string(), args);
+            }
+        }
+
         match s {
             "int" => Type::Int,
             "float" => Type::Float,
@@ -60,6 +75,42 @@ impl Type {
             "float64" => Type::Float64,
             _ => Type::Class(s.to_string()),
         }
+    }
+
+    fn parse_generic_args(args_str: &str) -> Vec<Type> {
+        let mut args = Vec::new();
+        let mut depth = 0;
+        let mut current = String::new();
+
+        for ch in args_str.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    let arg = current.trim().to_string();
+                    if !arg.is_empty() {
+                        args.push(Type::from_str(&arg));
+                    }
+                    current.clear();
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+        }
+
+        let arg = current.trim().to_string();
+        if !arg.is_empty() {
+            args.push(Type::from_str(&arg));
+        }
+
+        args
     }
 
     pub fn to_str(&self) -> String {
@@ -85,6 +136,19 @@ impl Type {
             Type::Array(t) => format!("{}[]", t.to_str()),
             Type::Null => "null".to_string(),
             Type::Unknown => "unknown".to_string(),
+            Type::TypeParameter(name) => name.clone(),
+            Type::GenericInstance(name, args) => {
+                let args_str: Vec<String> = args.iter().map(|a| a.to_str()).collect();
+                format!("{}<{}>", name, args_str.join(", "))
+            }
+            Type::TypeAlias(name, args) => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let args_str: Vec<String> = args.iter().map(|a| a.to_str()).collect();
+                    format!("{}<{}>", name, args_str.join(", "))
+                }
+            }
         }
     }
 
@@ -95,6 +159,22 @@ impl Type {
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
             (Type::Array(a), Type::Array(b)) => a.is_assignable_to(b),
+            // Generic instance matching
+            (Type::GenericInstance(a_name, a_args), Type::GenericInstance(b_name, b_args)) => {
+                if a_name != b_name || a_args.len() != b_args.len() {
+                    return false;
+                }
+                a_args.iter().zip(b_args.iter()).all(|(a, b)| a.is_assignable_to(b))
+            }
+            // Type alias resolution
+            (Type::TypeAlias(_, _), _) => {
+                // For now, type aliases are transparent - they should be resolved before this check
+                false
+            }
+            (_, Type::TypeAlias(_, _)) => false,
+            // Type parameters - very permissive for now (will be refined in type checker)
+            (Type::TypeParameter(_), _) => true,
+            (_, Type::TypeParameter(_)) => true,
             (a, b) if a == b => true,
             // Numeric compatibility
             (Type::Int, Type::Float) => true,
@@ -145,6 +225,7 @@ pub struct ParamSignature {
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: HashMap<String, FieldInfo>,
     pub methods: HashMap<String, MethodSignature>,
     pub is_native: bool,
@@ -187,11 +268,19 @@ pub struct VariableInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeAliasInfo {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub aliased_type: Type,
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeContext {
     pub classes: HashMap<String, ClassInfo>,
     pub functions: HashMap<String, FunctionSignature>,
     pub variables: HashMap<String, VariableInfo>,
     pub enums: HashMap<String, EnumInfo>,
+    pub type_aliases: HashMap<String, TypeAliasInfo>,
     pub current_class: Option<String>,
     pub current_method_return: Option<Type>,
     pub current_async_inner_return: Option<Type>,
@@ -216,6 +305,7 @@ impl TypeContext {
             functions: HashMap::new(),
             variables: HashMap::new(),
             enums: HashMap::new(),
+            type_aliases: HashMap::new(),
             current_class: None,
             current_method_return: None,
             current_async_inner_return: None,
@@ -371,6 +461,7 @@ impl TypeContext {
 
         self.classes.insert(class.name.clone(), ClassInfo {
             name: class.name.clone(),
+            type_params: class.type_params.clone(),
             fields,
             methods,
             is_native: false,
@@ -379,6 +470,19 @@ impl TypeContext {
 
     pub fn add_function(&mut self, name: &str, signature: FunctionSignature) {
         self.functions.insert(name.to_string(), signature);
+    }
+
+    pub fn add_type_alias(&mut self, alias: &crate::parser::TypeAliasDef) {
+        let aliased_type = Type::from_str(&alias.aliased_type);
+        self.type_aliases.insert(alias.name.clone(), TypeAliasInfo {
+            name: alias.name.clone(),
+            type_params: alias.type_params.clone(),
+            aliased_type,
+        });
+    }
+
+    pub fn get_type_alias(&self, name: &str) -> Option<&TypeAliasInfo> {
+        self.type_aliases.get(name)
     }
 
     pub fn add_enum(&mut self, enum_def: &crate::parser::EnumDef) {
@@ -574,6 +678,9 @@ impl TypeChecker {
                 Stmt::Enum(enum_def) => {
                     self.context.add_enum(enum_def);
                 }
+                Stmt::TypeAlias(alias) => {
+                    self.context.add_type_alias(alias);
+                }
                 Stmt::Function(func) => {
                     if !skip_functions {
                         let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
@@ -613,6 +720,9 @@ impl TypeChecker {
             }
             Stmt::Enum(_) => {
                 // Enum definitions are already processed in collect_definitions
+            }
+            Stmt::TypeAlias(_) => {
+                // Type aliases are already processed in collect_definitions
             }
             Stmt::Function(func) => {
                 self.check_function(func);

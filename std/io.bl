@@ -6,4 +6,4 @@ native fn println(line: str)
 
 async native fn sleep(ms: int)
 
-async native fn read_line(): str
+async native fn readLine(): str

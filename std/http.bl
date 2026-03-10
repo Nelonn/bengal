@@ -16,26 +16,36 @@ enum RedirectPolicy {
   None = 2
 }
 
+native class Request {
+  url: str
+  // TODO: headers map
+  body: str?
+}
+
+native class Response {
+  code: int
+  // TODO: headers map
+  body: str?
+}
+
 native class HttpClient {
-  fn set_base_url(url: str)
+  fn setBaseUrl(url: str)
 
-  fn set_timeout(ms: int)
+  fn setTimeout(ms: int)
 
-  fn set_redirect_policy(policy: RedirectPolicy)
+  fn setRedirectPolicy(policy: RedirectPolicy)
 
-  fn set_max_redirects(max: int)
+  fn setMaxRedirects(max: int)
 
-  fn set_proxy(host: str, port: int)
+  fn setProxy(host: str, port: int)
 
-  fn set_verify_ssl(verify: bool)
+  fn setVerifySsl(verify: bool)
 
-  fn add_header(key: str, value: str)
+  async fn get(url: str): Response?
 
-  async fn get(url: str): str?
+  async fn post(url: str, body: str): Response?
 
-  async fn post(url: str, body: str): str?
+  async fn get(req: Request): Response?
 
-  async fn get_with_headers(url: str, extra_headers: str): str?
-
-  async fn post_with_headers(url: str, extra_headers: str, body: str): str?
+  async fn post(req: Request): Response?
 }

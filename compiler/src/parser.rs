@@ -19,6 +19,7 @@ pub enum Stmt {
     Class(ClassDef),
     Enum(EnumDef),
     Function(FunctionDef),
+    TypeAlias(TypeAliasDef),
     Let { name: String, expr: Expr },
     Assign { name: String, expr: Expr, span: Span },
     Return(Option<Expr>),
@@ -33,6 +34,13 @@ pub enum Stmt {
 }
 
 pub type Block = Vec<Stmt>;
+
+#[derive(Debug, Clone)]
+pub struct TypeAliasDef {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub aliased_type: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct EnumDef {
@@ -60,6 +68,7 @@ pub struct FunctionDef {
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
     pub is_native: bool,
@@ -172,15 +181,17 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     source: String,
+    path: String,
     token_positions: Vec<usize>,  // Position in source for each token
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>, source: &str, token_positions: Vec<usize>) -> Self {
+    pub fn new(tokens: Vec<Token>, source: &str, path: &str, token_positions: Vec<usize>) -> Self {
         Self {
             tokens,
             pos: 0,
             source: source.to_string(),
+            path: path.to_string(),
             token_positions,
         }
     }
@@ -213,17 +224,29 @@ impl Parser {
 
     fn error(&self, message: &str) -> Result<Stmt, String> {
         let span = self.compute_span(self.pos);
-        Err(format!("[{}:{}] {}", span.line, span.column, message))
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
     }
 
     fn error_expr(&self, message: &str) -> Result<Expr, String> {
         let span = self.compute_span(self.pos);
-        Err(format!("[{}:{}] {}", span.line, span.column, message))
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
     }
 
     fn error_generic<T>(&self, message: &str) -> Result<T, String> {
         let span = self.compute_span(self.pos);
-        Err(format!("[{}:{}] {}", span.line, span.column, message))
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
     }
 
     fn check(&self, token: &Token) -> bool {
@@ -283,6 +306,8 @@ impl Parser {
             self.parse_enum()?
         } else if self.match_token(&Token::Fn) {
             self.parse_function_ext(false, is_async, is_native)?
+        } else if self.match_token(&Token::Type) {
+            self.parse_type_alias()?
         } else if self.match_token(&Token::Let) {
             self.parse_let()?
         } else if self.match_token(&Token::Return) {
@@ -377,6 +402,27 @@ impl Parser {
             _ => return self.error_generic("Expected class name"),
         };
 
+        // Parse generic type parameters if present
+        let type_params = if self.match_token(&Token::LAngle) {
+            let mut params = Vec::new();
+            loop {
+                if let Token::Identifier(param) = self.advance() {
+                    params.push(param);
+                } else {
+                    return self.error_generic("Expected type parameter name");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after type parameters");
+            }
+            params
+        } else {
+            Vec::new()
+        };
+
         if !self.match_token(&Token::LBrace) {
             return self.error_generic("Expected '{' after class name");
         }
@@ -426,7 +472,7 @@ impl Parser {
             return self.error_generic("Expected '}' to close class");
         }
 
-        Ok(Stmt::Class(ClassDef { name, fields, methods, is_native: is_native_class }))
+        Ok(Stmt::Class(ClassDef { name, type_params, fields, methods, is_native: is_native_class }))
     }
 
     fn parse_enum(&mut self) -> Result<Stmt, String> {
@@ -466,6 +512,45 @@ impl Parser {
         }
 
         Ok(Stmt::Enum(EnumDef { name, variants }))
+    }
+
+    fn parse_type_alias(&mut self) -> Result<Stmt, String> {
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return self.error("Expected type alias name"),
+        };
+
+        // Parse generic type parameters if present
+        let type_params = if self.match_token(&Token::LAngle) {
+            let mut params = Vec::new();
+            loop {
+                if let Token::Identifier(param) = self.advance() {
+                    params.push(param);
+                } else {
+                    return self.error_generic("Expected type parameter name");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after type parameters");
+            }
+            params
+        } else {
+            Vec::new()
+        };
+
+        if !self.match_token(&Token::Equal) {
+            return self.error("Expected '=' after type alias name");
+        }
+
+        // Parse the aliased type name
+        let (aliased_type, _) = self.parse_type()?;
+
+        if self.match_token(&Token::Semicolon) {}
+
+        Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type }))
     }
 
     fn parse_function_ext(&mut self, _is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
@@ -622,52 +707,10 @@ impl Parser {
             return Ok(params);
         }
 
-        let mut current_type: Option<String> = None;
-
         loop {
             self.skip_newlines();
             if self.check(&Token::RParen) {
                 break;
-            }
-
-            let mut param_type: Option<String> = None;
-
-            let is_type_start = (self.check(&Token::TypeInt) || self.check(&Token::TypeFloat) ||
-               self.check(&Token::TypeStr) || self.check(&Token::TypeBool) ||
-               self.check(&Token::TypeInt8) || self.check(&Token::TypeUInt8) ||
-               self.check(&Token::TypeInt16) || self.check(&Token::TypeUInt16) ||
-               self.check(&Token::TypeInt32) || self.check(&Token::TypeUInt32) ||
-               self.check(&Token::TypeInt64) || self.check(&Token::TypeUInt64) ||
-               self.check(&Token::TypeFloat32) || self.check(&Token::TypeFloat64)) &&
-               matches!(self.peek_next(), Token::Identifier(_));
-
-            let is_class_type = !is_type_start && matches!(self.peek(), Token::Identifier(_)) &&
-               matches!(self.peek_next(), Token::Identifier(_));
-
-            if is_type_start || is_class_type {
-                let (mut type_name, optional) = self.parse_type()?;
-                if optional {
-                    type_name = type_name + "?";
-                }
-                let potential_type = Some(type_name);
-
-                if potential_type.is_some() && matches!(self.peek(), Token::Identifier(_)) {
-                    param_type = potential_type;
-                    current_type = param_type.clone();
-                } else {
-                    // This was actually a name if we can't find another identifier
-                    // But with our grammar (type name), this should be the name
-                    // and we use the current_type
-                    if let Some(name) = potential_type {
-                        param_type = current_type.clone();
-                        params.push(Param { name, type_name: param_type });
-
-                        if !self.match_token(&Token::Comma) {
-                            break;
-                        }
-                        continue;
-                    }
-                }
             }
 
             let name = match self.advance() {
@@ -675,17 +718,16 @@ impl Parser {
                 t => return self.error_generic(&format!("Expected parameter name, got {:?}", t)),
             };
 
-            let type_name = if self.match_token(&Token::Colon) {
-                let (mut t_name, optional) = self.parse_type()?;
-                if optional {
-                    t_name = t_name + "?";
-                }
-                Some(t_name)
-            } else {
-                param_type.or_else(|| current_type.clone())
-            };
+            if !self.match_token(&Token::Colon) {
+                return self.error_generic(&format!("Expected ':' after parameter name '{}'. Use 'name: type' syntax (e.g., 'path: str')", name));
+            }
 
-            params.push(Param { name, type_name });
+            let (mut t_name, optional) = self.parse_type()?;
+            if optional {
+                t_name = t_name + "?";
+            }
+
+            params.push(Param { name, type_name: Some(t_name) });
 
             if !self.match_token(&Token::Comma) {
                 break;
@@ -713,14 +755,36 @@ impl Parser {
             Token::TypeUInt64 => "uint64".to_string(),
             Token::TypeFloat32 => "float32".to_string(),
             Token::TypeFloat64 => "float64".to_string(),
-            Token::Null => "null".to_string(),
+            Token::Null => return self.error_generic("'null' is not a valid type. Functions without a return value should not specify a return type"),
             Token::Identifier(t) => t.clone(),
             _ => return self.error_generic(&format!("Expected type name, got {:?}", token)),
         };
 
+        // Handle generic type arguments
+        let mut full_type = type_name;
+        if self.match_token(&Token::LAngle) {
+            full_type.push('<');
+            let mut first = true;
+            loop {
+                if !first {
+                    full_type.push_str(", ");
+                }
+                first = false;
+                let (arg_type, _) = self.parse_type()?;
+                full_type.push_str(&arg_type);
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after generic type arguments");
+            }
+            full_type.push('>');
+        }
+
         let optional = self.match_token(&Token::Question);
 
-        Ok((type_name, optional))
+        Ok((full_type, optional))
     }
 
     fn parse_let(&mut self) -> Result<Stmt, String> {
@@ -995,7 +1059,7 @@ impl Parser {
         let mut expr = self.parse_additive()?;
 
         loop {
-            if self.match_token(&Token::Greater) {
+            if self.match_token(&Token::RAngle) {
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1011,7 +1075,7 @@ impl Parser {
                     right: Box::new(self.parse_additive()?),
                     span,
                 };
-            } else if self.match_token(&Token::Less) {
+            } else if self.match_token(&Token::LAngle) {
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1152,6 +1216,63 @@ impl Parser {
         let mut expr = self.parse_primary()?;
 
         loop {
+            // Check for generic type arguments before function call
+            // Only parse as generic if it's an identifier followed by <types> and then (
+            if self.check(&Token::LAngle) {
+                // Save position in case we need to backtrack
+                let saved_pos = self.pos;
+                
+                // Build generic type string
+                let mut type_str = String::new();
+                if let Expr::Variable { name, .. } = &expr {
+                    type_str = name.clone();
+                }
+                
+                self.advance(); // consume <
+                type_str.push('<');
+                let mut first = true;
+                let mut valid_generic = true;
+                
+                loop {
+                    if !first {
+                        type_str.push_str(", ");
+                    }
+                    first = false;
+                    
+                    // Try to parse a type
+                    match self.parse_type() {
+                        Ok((arg_type, _)) => {
+                            type_str.push_str(&arg_type);
+                        }
+                        Err(_) => {
+                            valid_generic = false;
+                            break;
+                        }
+                    }
+                    
+                    if !self.match_token(&Token::Comma) {
+                        break;
+                    }
+                }
+                
+                if valid_generic && self.match_token(&Token::RAngle) {
+                    // Check if followed by ( for class instantiation
+                    self.skip_newlines();
+                    if self.check(&Token::LParen) {
+                        // This is a generic class instantiation
+                        type_str.push('>');
+                        
+                        // Update expr to be the generic type
+                        if let Expr::Variable { span, .. } = &expr {
+                            expr = Expr::Variable { name: type_str, span: *span };
+                        }
+                        continue;
+                    }
+                }
+                // Backtrack - restore position
+                self.pos = saved_pos;
+            }
+
             if self.match_token(&Token::LParen) {
                 let args = self.parse_arguments()?;
                 let span = self.compute_span(self.pos - 1);
@@ -1455,9 +1576,9 @@ impl Parser {
             if let Some(interp_end) = rest.find('}') {
                 let expr_str = &rest[..interp_end];
 
-                let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim());
+                let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim(), &self.path);
                 let (tokens, token_positions) = sub_lexer.tokenize()?;
-                let mut sub_parser = Parser::new(tokens, expr_str.trim(), token_positions);
+                let mut sub_parser = Parser::new(tokens, expr_str.trim(), &self.path, token_positions);
                 let sub_stmts = sub_parser.parse()?;
 
                 let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {

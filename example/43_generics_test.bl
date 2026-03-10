@@ -1,0 +1,28 @@
+module test::generics
+
+class tvec2<T> {
+  x: T
+  y: T
+}
+
+class tvec3<T> {
+  x: T
+  y: T
+  z: T
+}
+
+type vec2 = tvec2<float>
+type ivec2 = tvec2<int>
+
+type vec3 = tvec3<float>
+type ivec3 = tvec3<int>
+
+fn main() {
+  let v2 = tvec2<float>()
+  let iv2 = tvec2<int>()
+  
+  let v3 = tvec3<float>()
+  let iv3 = tvec3<int>()
+  
+  print("Generics and type aliases work!")
+}

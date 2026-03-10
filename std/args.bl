@@ -1,0 +1,70 @@
+module std::args
+
+native fn get(): str[]
+
+fn count(): int {
+  let args = get()
+  return args.length()
+}
+
+fn at(index: int): str? {
+  let args = get()
+  if (index < 0) {
+    return null
+  }
+  if (index >= args.length()) {
+    return null
+  }
+  return args[index]
+}
+
+fn program(): str {
+  let args = get()
+  if (args.length() > 0) {
+    return args[0]
+  }
+  return ""
+}
+
+fn hasFlag(flag: str): bool {
+  let args = get()
+  let i = 0
+  let len = args.length()
+  while (i < len) {
+    let arg = args[i]
+    if (arg == flag) {
+      return true
+    }
+    if (arg == "--" + flag) {
+      return true
+    }
+    if (arg == "-" + flag) {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+fn getFlag(flag: str): str? {
+  let args = get()
+  let i = 0
+  let len = args.length()
+  while (i < len) {
+    let arg = args[i]
+    if (arg == "--" + flag) {
+      if (i + 1 < len) {
+        return args[i + 1]
+      }
+      return null
+    }
+    if (arg == "-" + flag) {
+      if (i + 1 < len) {
+        return args[i + 1]
+      }
+      return null
+    }
+    i = i + 1
+  }
+  return null
+}
