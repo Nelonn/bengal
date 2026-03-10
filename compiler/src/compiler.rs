@@ -179,10 +179,8 @@ pub struct Compiler {
     source: String,
     _source_path: Option<String>,
     _type_context: Option<TypeContext>,
-    break_targets: Vec<usize>,
     break_jumps: Vec<Vec<usize>>,
     continue_targets: Vec<usize>,
-    continue_jumps: Vec<Vec<usize>>,
     current_ctx: CompileContext,
 }
 
@@ -206,10 +204,8 @@ impl Compiler {
             source: source.to_string(),
             _source_path: None,
             _type_context: None,
-            break_targets: Vec::new(),
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            continue_jumps: Vec::new(),
             current_ctx: CompileContext::new(),
         }
     }
@@ -219,10 +215,8 @@ impl Compiler {
             source: source.to_string(),
             _source_path: Some(path.to_string()),
             _type_context: None,
-            break_targets: Vec::new(),
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            continue_jumps: Vec::new(),
             current_ctx: CompileContext::new(),
         }
     }
@@ -557,20 +551,92 @@ impl Compiler {
             Stmt::For { var_name, range, body } => {
                 if let Expr::Range { start, end, .. } = range.as_ref() {
                     let r_iter = self.current_ctx.get_local_reg(var_name);
-                    let r_start = self.compile_expr(start, bytecode, strings, classes, type_context)?;
+                    let r_start_expr = self.compile_expr(start, bytecode, strings, classes, type_context)?;
+                    
+                    // Initialize iterator
                     bytecode.push(Opcode::Move as u8);
                     bytecode.push(r_iter as u8);
-                    bytecode.push(r_start as u8);
+                    bytecode.push(r_start_expr as u8);
 
-                    let r_end = self.compile_expr(end, bytecode, strings, classes, type_context)?;
+                    // Capture end value to a fresh register
+                    let r_end_expr = self.compile_expr(end, bytecode, strings, classes, type_context)?;
+                    let r_end = self.current_ctx.allocate_reg();
+                    bytecode.push(Opcode::Move as u8);
+                    bytecode.push(r_end as u8);
+                    bytecode.push(r_end_expr as u8);
 
-                    let loop_start = bytecode.len();
+                    // Determine direction: r_is_desc = r_iter > r_end
+                    let r_is_desc = self.current_ctx.allocate_reg();
+                    bytecode.push(Opcode::Greater as u8);
+                    bytecode.push(r_is_desc as u8);
+                    bytecode.push(r_iter as u8);
+                    bytecode.push(r_end as u8);
+
+                    let first_check_jump = self.emit_jump(Opcode::Jump, bytecode);
+
+                    // increment_start (continue target)
+                    let increment_start = bytecode.len();
+                    self.continue_targets.push(increment_start);
+                    self.break_jumps.push(Vec::new());
+
+                    bytecode.push(Opcode::JumpIfTrue as u8);
+                    bytecode.push(r_is_desc as u8);
+                    let desc_step_jump_pos = bytecode.len();
+                    bytecode.push(0); bytecode.push(0);
+
+                    // Increasing: r_iter++
+                    let r_one = self.current_ctx.allocate_reg();
+                    bytecode.push(Opcode::LoadInt as u8);
+                    bytecode.push(r_one as u8);
+                    bytecode.extend_from_slice(&1i64.to_le_bytes());
+                    bytecode.push(Opcode::Add as u8);
+                    bytecode.push(r_iter as u8);
+                    bytecode.push(r_iter as u8);
+                    bytecode.push(r_one as u8);
+                    let step_done_jump_pos = self.emit_jump(Opcode::Jump, bytecode);
+
+                    // Descending: r_iter--
+                    let desc_step_start = bytecode.len();
+                    self.patch_jump(desc_step_jump_pos, desc_step_start, bytecode);
+                    let r_minus_one = self.current_ctx.allocate_reg();
+                    bytecode.push(Opcode::LoadInt as u8);
+                    bytecode.push(r_minus_one as u8);
+                    bytecode.extend_from_slice(&1i64.to_le_bytes());
+                    bytecode.push(Opcode::Subtract as u8);
+                    bytecode.push(r_iter as u8);
+                    bytecode.push(r_iter as u8);
+                    bytecode.push(r_minus_one as u8);
+
+                    let step_done_pos = bytecode.len();
+                    self.patch_jump(step_done_jump_pos, step_done_pos, bytecode);
+
+                    // check_cond
+                    let check_cond_start = bytecode.len();
+                    self.patch_jump(first_check_jump, check_cond_start, bytecode);
+
+                    bytecode.push(Opcode::JumpIfTrue as u8);
+                    bytecode.push(r_is_desc as u8);
+                    let desc_comp_jump_pos = bytecode.len();
+                    bytecode.push(0); bytecode.push(0);
+
+                    // Increasing: r_iter <= r_end
                     let r_cond = self.current_ctx.allocate_reg();
-
-                    bytecode.push(Opcode::Less as u8);
+                    bytecode.push(Opcode::LessEqual as u8);
                     bytecode.push(r_cond as u8);
                     bytecode.push(r_iter as u8);
                     bytecode.push(r_end as u8);
+                    let comp_done_jump_pos = self.emit_jump(Opcode::Jump, bytecode);
+
+                    // Descending: r_iter >= r_end
+                    let desc_comp_start = bytecode.len();
+                    self.patch_jump(desc_comp_jump_pos, desc_comp_start, bytecode);
+                    bytecode.push(Opcode::GreaterEqual as u8);
+                    bytecode.push(r_cond as u8);
+                    bytecode.push(r_iter as u8);
+                    bytecode.push(r_end as u8);
+
+                    let comp_done_pos = bytecode.len();
+                    self.patch_jump(comp_done_jump_pos, comp_done_pos, bytecode);
 
                     bytecode.push(Opcode::JumpIfFalse as u8);
                     bytecode.push(r_cond as u8);
@@ -581,22 +647,18 @@ impl Compiler {
                         self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                     }
 
-                    // Increment
-                    let r_one = self.current_ctx.allocate_reg();
-                    bytecode.push(Opcode::LoadInt as u8);
-                    bytecode.push(r_one as u8);
-                    bytecode.extend_from_slice(&1i64.to_le_bytes());
-
-                    bytecode.push(Opcode::Add as u8);
-                    bytecode.push(r_iter as u8);
-                    bytecode.push(r_iter as u8);
-                    bytecode.push(r_one as u8);
-
                     let jump_back = self.emit_jump(Opcode::Jump, bytecode);
-                    self.patch_jump(jump_back, loop_start, bytecode);
+                    self.patch_jump(jump_back, increment_start, bytecode);
 
                     let exit_pos = bytecode.len();
                     self.patch_jump(exit_jump_pos, exit_pos, bytecode);
+
+                    if let Some(jumps) = self.break_jumps.pop() {
+                        for jump_pos in jumps {
+                            self.patch_jump(jump_pos, exit_pos, bytecode);
+                        }
+                    }
+                    self.continue_targets.pop();
                 }
             }
 
@@ -604,7 +666,6 @@ impl Compiler {
                 let loop_start = bytecode.len();
 
                 self.continue_targets.push(loop_start);
-                self.continue_jumps.push(Vec::new());
                 self.break_jumps.push(Vec::new());
 
                 let r_cond = self.compile_expr(condition, bytecode, strings, classes, type_context)?;
@@ -630,7 +691,6 @@ impl Compiler {
                     }
                 }
                 self.continue_targets.pop();
-                self.continue_jumps.pop();
             }
 
             Stmt::Break => {

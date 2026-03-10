@@ -707,7 +707,16 @@ impl VM {
                         _ => self.build_exception(&e),
                     };
 
-                    if let Some(handler) = self.exception_handlers.pop() {
+                    // Only catch if we have a handler in the current call frame
+                    let mut has_local_handler = false;
+                    if let Some(handler) = self.exception_handlers.last() {
+                        if handler.call_stack_depth == self.call_stack.len() {
+                            has_local_handler = true;
+                        }
+                    }
+
+                    if has_local_handler {
+                        let handler = self.exception_handlers.pop().unwrap();
                         self.set_pc(handler.catch_pc);
                         self.set_reg(handler.catch_register as u8, Value::Exception(exception));
                         continue;
@@ -877,15 +886,27 @@ impl VM {
                     .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
                     .clone();
 
-                let instance = if let Value::Instance(instance) = self.get_reg(robj) {
-                    instance.clone()
-                } else {
-                    return Err(Value::String("Expected instance for property get".to_string()));
-                };
-
-                let instance_lock = instance.lock().unwrap();
-                let value = instance_lock.fields.get(&name).cloned().unwrap_or(Value::Null);
-                self.set_reg(rd, value);
+                let robj_val = self.get_reg(robj).clone();
+                match robj_val {
+                    Value::Instance(instance) => {
+                        let instance_lock = instance.lock().unwrap();
+                        let value = instance_lock.fields.get(&name).cloned().unwrap_or(Value::Null);
+                        self.set_reg(rd, value);
+                    }
+                    Value::Exception(exception) => {
+                        if name == "message" {
+                            self.set_reg(rd, Value::String(exception.message.clone()));
+                        } else if name == "stack_trace" {
+                            let trace = exception.stack_trace.iter().map(|f| f.to_string()).collect::<Vec<String>>().join("\n");
+                            self.set_reg(rd, Value::String(trace));
+                        } else {
+                            self.set_reg(rd, Value::Null);
+                        }
+                    }
+                    _ => {
+                        return Err(Value::String(format!("Expected instance for property get, got {:?}", robj_val)));
+                    }
+                }
                 self.set_pc(self.pc() + 1);
             }
 
@@ -1432,6 +1453,52 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
 
+            // Greater than or equal comparison
+            x if x == Opcode::GreaterEqual as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = match (left, right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Bool(left.to_arithmetic_int().unwrap() >= right.to_arithmetic_int().unwrap())
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Bool(left.to_float().unwrap() >= right.to_float().unwrap())
+                    }
+                    _ => Value::Bool(false),
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Less than or equal comparison
+            x if x == Opcode::LessEqual as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = match (left, right) {
+                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                        Value::Bool(left.to_arithmetic_int().unwrap() <= right.to_arithmetic_int().unwrap())
+                    }
+                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                        Value::Bool(left.to_float().unwrap() <= right.to_float().unwrap())
+                    }
+                    _ => Value::Bool(false),
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
             // Addition
             // Format: [Add, Rd, Rs1, Rs2]
             x if x == Opcode::Add as u8 => {
@@ -1645,6 +1712,7 @@ impl VM {
                 ]) as usize;
                 self.set_pc(self.pc() + 2);
                 let catch_reg = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
 
                 self.exception_handlers.push(ExceptionHandler {
                     catch_pc,
@@ -1752,6 +1820,8 @@ pub enum Opcode {
     NotEqual = 0x61, // Rd, Rs1, Rs2
     Greater = 0x66,  // Rd, Rs1, Rs2
     Less = 0x67,     // Rd, Rs1, Rs2
+    GreaterEqual = 0x6A,
+    LessEqual = 0x6B,
 
     // Logical operations
     And = 0x62,      // Rd, Rs1, Rs2
