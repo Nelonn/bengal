@@ -7,6 +7,7 @@ use serde::de::{MapAccess, Visitor};
 use std::fmt;
 use async_recursion::async_recursion;
 use std::any::Any;
+use crate::linker::NativeFunctionRegistry;
 
 pub type Bytecode = Vec<u8>;
 
@@ -530,7 +531,10 @@ pub struct VM {
     classes: HashMap<String, Class>,
     /// Function definitions
     functions: HashMap<String, Function>,
-    /// Native functions
+    /// Native function registry with indexed lookup (optimized)
+    pub native_registry: NativeFunctionRegistry,
+    /// Legacy native functions HashMap (for backward compatibility)
+    #[deprecated(since = "0.2.0", note = "Use native_registry instead")]
     pub native_functions: HashMap<String, NativeFn>,
     /// Fallback native handler
     pub fallback_native: Option<NativeFn>,
@@ -567,7 +571,7 @@ impl Default for VM {
 
 impl VM {
     /// Create a new VM instance
-    /// 
+    ///
     /// The registry-based VM uses a fixed register file size.
     /// Each call frame gets a window into this register file.
     pub fn new() -> Self {
@@ -580,6 +584,8 @@ impl VM {
             locals: HashMap::new(),
             classes: HashMap::new(),
             functions: HashMap::new(),
+            native_registry: NativeFunctionRegistry::new(),
+            #[allow(deprecated)]
             native_functions: HashMap::new(),
             fallback_native: None,
             pending_native_methods: HashMap::new(),
@@ -594,6 +600,15 @@ impl VM {
     }
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
+        // Check if already registered
+        if self.native_registry.get_index(name).is_some() {
+            // Update existing registration (hot-swap)
+            self.native_registry.hot_swap(name, f);
+        } else {
+            // New registration
+            self.native_registry.register(name, f);
+        }
+        #[allow(deprecated)]
         self.native_functions.insert(name.to_string(), f);
     }
 
@@ -626,6 +641,7 @@ impl VM {
 
     pub fn register_fallback(&mut self, f: NativeFn) {
         self.fallback_native = Some(f);
+        self.native_registry.set_fallback(f);
     }
 
     /// Load bytecode and initialize the VM
@@ -1117,14 +1133,59 @@ impl VM {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
 
-                let func = self.native_functions.get(&name);
-                let result = match func {
+                // Try indexed lookup first (faster), fall back to HashMap
+                let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
+                    Some(f) => f(&mut args)?,
+                    None => {
+                        // Fall back to legacy HashMap lookup
+                        #[allow(deprecated)]
+                        match self.native_functions.get(&name) {
+                            Some(f) => f(&mut args)?,
+                            None => {
+                                match &self.fallback_native {
+                                    Some(f) => f(&mut args)?,
+                                    None => {
+                                        return Err(Value::String(format!("Native function not found: {}", name)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+            
+            // Call native function by index (optimized - O(1) lookup)
+            // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count]
+            x if x == Opcode::CallNativeIndexed as u8 || x == Opcode::CallNativeIndexedAsync as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                // Read u16 function index (little-endian)
+                let func_idx_lo = self.bytecode[self.pc()] as u16;
+                self.set_pc(self.pc() + 1);
+                let func_idx_hi = self.bytecode[self.pc()] as u16;
+                self.set_pc(self.pc() + 1);
+                let func_index = (func_idx_hi << 8) | func_idx_lo;
+                
+                let arg_start = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let arg_count = self.bytecode[self.pc()] as u8;
+
+                let mut args = Vec::new();
+                for i in 0..arg_count {
+                    args.push(self.get_reg(arg_start + i).clone());
+                }
+
+                // Direct indexed lookup - O(1)
+                let result = match self.native_registry.get_by_index(func_index) {
                     Some(f) => f(&mut args)?,
                     None => {
                         match &self.fallback_native {
                             Some(f) => f(&mut args)?,
                             None => {
-                                return Err(Value::String(format!("Native function not found: {}", name)));
+                                return Err(Value::String(format!("Native function not found at index: {}", func_index)));
                             }
                         }
                     }
@@ -2118,6 +2179,10 @@ pub enum Opcode {
     Spawn = 0x48,
     InvokeInterface = 0x49,  // Rd, vtable_idx, arg_start, arg_count
     InvokeInterfaceAsync = 0x4A,  // Rd, vtable_idx, arg_start, arg_count
+    
+    // Indexed native calls (optimized - uses function index instead of string lookup)
+    CallNativeIndexed = 0x4B,  // Rd, func_idx (u16), arg_start, arg_count
+    CallNativeIndexedAsync = 0x4C,  // Rd, func_idx (u16), arg_start, arg_count
 
     // Control flow
     Jump = 0x50,         // target (2 bytes)
