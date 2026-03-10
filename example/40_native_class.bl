@@ -1,0 +1,14 @@
+import std::data;
+import std::io;
+
+fn main() {
+    let buf = ByteBuffer(10);
+    buf.set(0, uint8(42));
+    buf.set(1, uint8(100));
+    
+    println("buf[0]: " + str(buf.get(0)));
+    println("buf[1]: " + str(buf.get(1)));
+    println("buf length: " + str(buf.length()));
+}
+
+main();

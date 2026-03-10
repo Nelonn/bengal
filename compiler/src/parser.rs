@@ -62,6 +62,7 @@ pub struct ClassDef {
     pub name: String,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
+    pub is_native: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +104,8 @@ pub enum Expr {
     Range { start: Box<Expr>, end: Box<Expr>, span: Span },
     Await { expr: Box<Expr>, span: Span },
     Cast { expr: Box<Expr>, target_type: CastType, span: Span },
+    Array { elements: Vec<Expr>, span: Span },
+    Index { object: Box<Expr>, index: Box<Expr>, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -111,6 +114,16 @@ pub enum CastType {
     Float,
     Str,
     Bool,
+    Int8,
+    UInt8,
+    Int16,
+    UInt16,
+    Int32,
+    UInt32,
+    Int64,
+    UInt64,
+    Float32,
+    Float64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -265,7 +278,7 @@ impl Parser {
         } else if self.match_token(&Token::Import) {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
-            self.parse_class()?
+            self.parse_class(is_native)?
         } else if self.match_token(&Token::Enum) {
             self.parse_enum()?
         } else if self.match_token(&Token::Fn) {
@@ -358,14 +371,14 @@ impl Parser {
         Ok(Stmt::Module { path })
     }
 
-    fn parse_class(&mut self) -> Result<Stmt, String> {
+    fn parse_class(&mut self, is_native_class: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return self.error("Expected class name"),
+            _ => return self.error_generic("Expected class name"),
         };
 
         if !self.match_token(&Token::LBrace) {
-            return self.error("Expected '{' after class name");
+            return self.error_generic("Expected '{' after class name");
         }
 
         let mut fields = Vec::new();
@@ -374,21 +387,35 @@ impl Parser {
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             let mut is_private = false;
-            let mut is_native = false;
+            let mut is_native_method = false;
             let mut is_async = false;
 
             self.skip_newlines();
             while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) {
                 if self.match_token(&Token::Private) { is_private = true; }
-                else if self.match_token(&Token::Native) { is_native = true; }
+                else if self.match_token(&Token::Native) { 
+                    if !is_native_class {
+                        return self.error_generic("Class member-functions can't have 'native' modifier. Use 'native class' instead.");
+                    }
+                    is_native_method = true; 
+                }
                 else if self.match_token(&Token::Async) { is_async = true; }
                 self.skip_newlines();
             }
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_method(is_private, is_async, is_native)?;
+                let method = self.parse_method(is_private, is_async, is_native_method || is_native_class)?;
+                methods.push(method);
+            } else if self.match_token(&Token::Constructor) {
+                let method = self.parse_method_named("constructor", is_private, false, is_native_class)?;
+                if is_native_class && !method.body.is_empty() {
+                    return self.error_generic("Constructor in native classes cannot have implementation.");
+                }
                 methods.push(method);
             } else {
+                if is_native_class {
+                    return self.error_generic("Native classes cannot have member-fields.");
+                }
                 let field = self.parse_field(is_private)?;
                 fields.push(field);
             }
@@ -396,10 +423,10 @@ impl Parser {
         }
 
         if !self.match_token(&Token::RBrace) {
-            return self.error("Expected '}' to close class");
+            return self.error_generic("Expected '}' to close class");
         }
 
-        Ok(Stmt::Class(ClassDef { name, fields, methods }))
+        Ok(Stmt::Class(ClassDef { name, fields, methods, is_native: is_native_class }))
     }
 
     fn parse_enum(&mut self) -> Result<Stmt, String> {
@@ -536,9 +563,12 @@ impl Parser {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected method name"),
         };
+        self.parse_method_named(&name, private, is_async, is_native)
+    }
 
+    fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
         if !self.match_token(&Token::LParen) {
-            return self.error_generic("Expected '(' after method name");
+            return self.error_generic(&format!("Expected '(' after {} name", name));
         }
 
         let params = self.parse_params()?;
@@ -562,7 +592,7 @@ impl Parser {
                 self.advance();
                 let b = self.parse_block()?;
                 if !self.match_token(&Token::RBrace) {
-                    return self.error_generic("Expected '}' to close native method body");
+                    return self.error_generic(&format!("Expected '}}' to close native {} body", name));
                 }
                 b
             } else {
@@ -570,18 +600,18 @@ impl Parser {
             }
         } else {
             if !self.match_token(&Token::LBrace) {
-                return self.error_generic("Expected '{' to start method body");
+                return self.error_generic(&format!("Expected '{{' to start {} body", name));
             }
 
             let body = self.parse_block()?;
 
             if !self.match_token(&Token::RBrace) {
-                return self.error_generic("Expected '}' to close method");
+                return self.error_generic(&format!("Expected '}}' to close {}", name));
             }
             body
         };
 
-        Ok(Method { name, params, return_type, return_optional, body, private, is_async, is_native })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -603,7 +633,12 @@ impl Parser {
             let mut param_type: Option<String> = None;
 
             let is_type_start = (self.check(&Token::TypeInt) || self.check(&Token::TypeFloat) ||
-               self.check(&Token::TypeStr) || self.check(&Token::TypeBool)) &&
+               self.check(&Token::TypeStr) || self.check(&Token::TypeBool) ||
+               self.check(&Token::TypeInt8) || self.check(&Token::TypeUInt8) ||
+               self.check(&Token::TypeInt16) || self.check(&Token::TypeUInt16) ||
+               self.check(&Token::TypeInt32) || self.check(&Token::TypeUInt32) ||
+               self.check(&Token::TypeInt64) || self.check(&Token::TypeUInt64) ||
+               self.check(&Token::TypeFloat32) || self.check(&Token::TypeFloat64)) &&
                matches!(self.peek_next(), Token::Identifier(_));
 
             let is_class_type = !is_type_start && matches!(self.peek(), Token::Identifier(_)) &&
@@ -668,6 +703,16 @@ impl Parser {
             Token::TypeFloat => "float".to_string(),
             Token::TypeStr => "str".to_string(),
             Token::TypeBool => "bool".to_string(),
+            Token::TypeInt8 => "int8".to_string(),
+            Token::TypeUInt8 => "uint8".to_string(),
+            Token::TypeInt16 => "int16".to_string(),
+            Token::TypeUInt16 => "uint16".to_string(),
+            Token::TypeInt32 => "int32".to_string(),
+            Token::TypeUInt32 => "uint32".to_string(),
+            Token::TypeInt64 => "int64".to_string(),
+            Token::TypeUInt64 => "uint64".to_string(),
+            Token::TypeFloat32 => "float32".to_string(),
+            Token::TypeFloat64 => "float64".to_string(),
             Token::Null => "null".to_string(),
             Token::Identifier(t) => t.clone(),
             _ => return self.error_generic(&format!("Expected type name, got {:?}", token)),
@@ -683,6 +728,11 @@ impl Parser {
             Token::Identifier(n) => n,
             _ => return self.error("Expected variable name after 'let'"),
         };
+
+        if self.match_token(&Token::Colon) {
+            let (_type_name, _optional) = self.parse_type()?;
+            // For now we just consume it, TypeChecker handles it via inference or we could store it in AST
+        }
 
         if !self.match_token(&Token::Equal) {
             return self.error("Expected '=' in let statement");
@@ -1118,6 +1168,16 @@ impl Parser {
                             "int" => Some(CastType::Int),
                             "float" => Some(CastType::Float),
                             "bool" => Some(CastType::Bool),
+                            "int8" => Some(CastType::Int8),
+                            "uint8" => Some(CastType::UInt8),
+                            "int16" => Some(CastType::Int16),
+                            "uint16" => Some(CastType::UInt16),
+                            "int32" => Some(CastType::Int32),
+                            "uint32" => Some(CastType::UInt32),
+                            "int64" => Some(CastType::Int64),
+                            "uint64" => Some(CastType::UInt64),
+                            "float32" => Some(CastType::Float32),
+                            "float64" => Some(CastType::Float64),
                             _ => None,
                         };
                         if let Some(target_type) = cast_type {
@@ -1134,6 +1194,17 @@ impl Parser {
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
+                    span,
+                };
+            } else if self.match_token(&Token::LBracket) {
+                let index = self.parse_expression()?;
+                if !self.match_token(&Token::RBracket) {
+                    return self.error_expr("Expected ']' after array index");
+                }
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Index {
+                    object: Box::new(expr),
+                    index: Box::new(index),
                     span,
                 };
             } else if self.match_token(&Token::LBrace) {
@@ -1273,6 +1344,23 @@ impl Parser {
                 }
             },
             // Handle type keywords as potential cast functions
+            Token::LBracket => {
+                let span = self.compute_span(token_pos);
+                let mut elements = Vec::new();
+                self.skip_newlines();
+                while !self.check(&Token::RBracket) && !self.check(&Token::Eof) {
+                    elements.push(self.parse_expression()?);
+                    self.skip_newlines();
+                    if !self.match_token(&Token::Comma) {
+                        break;
+                    }
+                    self.skip_newlines();
+                }
+                if !self.match_token(&Token::RBracket) {
+                    return self.error_expr("Expected ']' after array elements");
+                }
+                Ok(Expr::Array { elements, span })
+            },
             Token::TypeInt => {
                 let span = self.compute_span(token_pos);
                 Ok(Expr::Variable { name: "int".to_string(), span })
@@ -1288,6 +1376,46 @@ impl Parser {
             Token::TypeBool => {
                 let span = self.compute_span(token_pos);
                 Ok(Expr::Variable { name: "bool".to_string(), span })
+            },
+            Token::TypeInt8 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "int8".to_string(), span })
+            },
+            Token::TypeUInt8 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "uint8".to_string(), span })
+            },
+            Token::TypeInt16 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "int16".to_string(), span })
+            },
+            Token::TypeUInt16 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "uint16".to_string(), span })
+            },
+            Token::TypeInt32 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "int32".to_string(), span })
+            },
+            Token::TypeUInt32 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "uint32".to_string(), span })
+            },
+            Token::TypeInt64 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "int64".to_string(), span })
+            },
+            Token::TypeUInt64 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "uint64".to_string(), span })
+            },
+            Token::TypeFloat32 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "float32".to_string(), span })
+            },
+            Token::TypeFloat64 => {
+                let span = self.compute_span(token_pos);
+                Ok(Expr::Variable { name: "float64".to_string(), span })
             },
             Token::Dollar => self.parse_interpolated_string(),
             token => self.error_expr(&format!("Unexpected token: {:?}", token)),

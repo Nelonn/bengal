@@ -27,11 +27,22 @@ pub enum Token {
     Throw,
     Break,
     Continue,
+    Constructor,
 
     TypeInt,
     TypeFloat,
     TypeStr,
     TypeBool,
+    TypeInt8,
+    TypeUInt8,
+    TypeInt16,
+    TypeUInt16,
+    TypeInt32,
+    TypeUInt32,
+    TypeInt64,
+    TypeUInt64,
+    TypeFloat32,
+    TypeFloat64,
 
     Equal,
     DoubleEqual,
@@ -57,6 +68,8 @@ pub enum Token {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Colon,
     DoubleColon,
     Comma,
@@ -177,6 +190,8 @@ impl Lexer {
             ')' => { self.advance(); Ok(Token::RParen) }
             '{' => { self.advance(); Ok(Token::LBrace) }
             '}' => { self.advance(); Ok(Token::RBrace) }
+            '[' => { self.advance(); Ok(Token::LBracket) }
+            ']' => { self.advance(); Ok(Token::RBracket) }
             ':' => {
                 self.advance();
                 if self.peek() == Some(':') {
@@ -417,10 +432,21 @@ impl Lexer {
             "throw" => Token::Throw,
             "break" => Token::Break,
             "continue" => Token::Continue,
+            "constructor" => Token::Constructor,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,
             "bool" => Token::TypeBool,
+            "int8" => Token::TypeInt8,
+            "uint8" => Token::TypeUInt8,
+            "int16" => Token::TypeInt16,
+            "uint16" => Token::TypeUInt16,
+            "int32" => Token::TypeInt32,
+            "uint32" => Token::TypeUInt32,
+            "int64" => Token::TypeInt64,
+            "uint64" => Token::TypeUInt64,
+            "float32" => Token::TypeFloat32,
+            "float64" => Token::TypeFloat64,
             _ => Token::Identifier(s),
         };
         Ok(token)

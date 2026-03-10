@@ -1,3 +1,4 @@
+pub mod data;
 pub mod ffi;
 pub mod fs;
 pub mod http;
@@ -19,6 +20,15 @@ pub fn register_all(vm: &mut VM) {
     NativeModule::new("std::io")
         .function("print", io::native_print)
         .function("println", io::native_println)
+        .register(vm);
+
+    NativeModule::new("std::data")
+        .class_native_create("ByteBuffer", data::native_byte_buffer_native_create)
+        .class_method("ByteBuffer", "constructor", data::native_byte_buffer_constructor)
+        .class_method("ByteBuffer", "reserve", data::native_byte_buffer_reserve)
+        .class_method("ByteBuffer", "get", data::native_byte_buffer_get)
+        .class_method("ByteBuffer", "set", data::native_byte_buffer_set)
+        .class_method("ByteBuffer", "length", data::native_byte_buffer_length)
         .register(vm);
 
     NativeModule::new("std::http")

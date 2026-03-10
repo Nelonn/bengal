@@ -1,0 +1,24 @@
+import std::data;
+import std::io;
+
+fn main() {
+    let b: int8 = int8(127);
+    let u: uint8 = uint8(255);
+    let i: int16 = int16(32767);
+    let f: float32 = float32(3.14);
+    
+    println("int8: " + str(b));
+    println("uint8: " + str(u));
+    println("int16: " + str(i));
+    println("float32: " + str(f));
+
+    let buf = ByteBuffer(10);
+    buf.set(0, uint8(100));
+    buf.set(1, uint8(200));
+    
+    println("buf[0]: " + str(buf.get(0)));
+    println("buf[1]: " + str(buf.get(1)));
+    println("buf length: " + str(buf.length()));
+}
+
+main();

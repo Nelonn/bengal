@@ -368,6 +368,14 @@ impl Compiler {
                 method_ctx.current_class = Some(c.name.clone());
                 method_ctx.current_method_params = method.params.iter().map(|p| p.name.clone()).collect();
 
+                let is_native_method = method.is_native && method.body.is_empty();
+
+                if is_native_method {
+                    // For native methods without body, we don't generate bytecode.
+                    // The VM will check class.native_methods.
+                    continue;
+                }
+
                 // Create compiler context for method with "self" as first param
                 let mut method_params = vec!["self".to_string()];
                 method_params.extend(method.params.iter().map(|p| p.name.clone()));
@@ -413,6 +421,8 @@ impl Compiler {
                 fields,
                 methods: vm_methods,
                 native_methods: std::collections::HashMap::new(),
+                native_create: None,
+                is_native: c.is_native,
             });
         }
 
@@ -996,30 +1006,114 @@ impl Compiler {
 
                     // Resolve function/class name if type context is available
                     let mut resolved_name = func_name.clone();
+                    let mut is_class = false;
+                    let mut is_method = false;
                     if let Some(ctx) = type_context {
                         if let Some(resolved_class) = ctx.resolve_class(func_name) {
                             resolved_name = resolved_class;
+                            is_class = true;
                         } else if let Some(sig) = ctx.resolve_function(func_name) {
                             resolved_name = sig.name.clone();
+                        } else if let Some(current_class) = &ctx.current_class {
+                            // Check if it's a method on current class
+                            if let Some(class_info) = ctx.get_class(current_class) {
+                                if class_info.methods.contains_key(func_name) {
+                                    is_method = true;
+                                }
+                            }
+                        }
+                    } else {
+                        // Fallback: check if it's a known class in classes slice
+                        if classes.iter().any(|c| &c.name == func_name) {
+                            is_class = true;
                         }
                     }
 
-                    // Move arguments to contiguous registers for the call
-                    let contiguous_start = self.current_ctx.allocate_reg();
-                    for (i, &r) in arg_regs.iter().enumerate() {
-                        let r_arg = contiguous_start + i;
-                        bytecode.push(Opcode::Move as u8);
-                        bytecode.push(r_arg as u8);
-                        bytecode.push(r as u8);
-                    }
+                    if is_class {
+                        // ... (keep class creation logic)
+                        // 1. Create instance
+                        let idx = strings.len();
+                        strings.push(resolved_name.clone());
+                        bytecode.push(Opcode::Call as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(0); // arg_start (not used for class creation)
+                        bytecode.push(0); // arg_count (not used for class creation)
 
-                    let idx = strings.len();
-                    strings.push(resolved_name);
-                    bytecode.push(Opcode::Call as u8);
-                    bytecode.push(rd as u8);
-                    bytecode.push(idx as u8);
-                    bytecode.push(contiguous_start as u8);
-                    bytecode.push(args.len() as u8);
+                        // 2. Call constructor if it exists
+                        // Note: For now we assume a constructor exists if args are provided, 
+                        // or we could check the class definition.
+                        let has_constructor = if let Some(ctx) = type_context {
+                            if let Some(class_info) = ctx.get_class(&resolved_name) {
+                                class_info.methods.contains_key("constructor")
+                            } else { true }
+                        } else { true };
+
+                        if has_constructor {
+                            let contiguous_start = self.current_ctx.allocate_reg();
+                            // First arg for Invoke is the object (self)
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push(rd as u8);
+
+                            for (i, &r) in arg_regs.iter().enumerate() {
+                                let r_arg = contiguous_start + 1 + i;
+                                bytecode.push(Opcode::Move as u8);
+                                bytecode.push(r_arg as u8);
+                                bytecode.push(r as u8);
+                            }
+
+                            let constructor_idx = strings.len();
+                            strings.push("constructor".to_string());
+                            bytecode.push(Opcode::Invoke as u8);
+                            let r_unused = self.current_ctx.allocate_reg();
+                            bytecode.push(r_unused as u8);
+                            bytecode.push(constructor_idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push((args.len() + 1) as u8);
+                        }
+                    } else if is_method {
+                        // Method call on implicit 'self'
+                        let r_self = self.current_ctx.get_local_reg("self");
+                        let contiguous_start = self.current_ctx.allocate_reg();
+
+                        // First arg for Invoke is the object (self)
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push(r_self as u8);
+
+                        for (i, &r) in arg_regs.iter().enumerate() {
+                            let r_arg = contiguous_start + 1 + i;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_arg as u8);
+                            bytecode.push(r as u8);
+                        }
+
+                        let idx = strings.len();
+                        strings.push(func_name.clone());
+                        bytecode.push(Opcode::Invoke as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push((args.len() + 1) as u8);
+                    } else {
+                        // Regular function call
+                        let contiguous_start = self.current_ctx.allocate_reg();
+                        for (i, &r) in arg_regs.iter().enumerate() {
+                            let r_arg = contiguous_start + i;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_arg as u8);
+                            bytecode.push(r as u8);
+                        }
+
+                        let idx = strings.len();
+                        strings.push(resolved_name);
+                        bytecode.push(Opcode::Call as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push(args.len() as u8);
+                    }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
                     let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                     let contiguous_start = self.current_ctx.allocate_reg();
@@ -1124,6 +1218,16 @@ impl Compiler {
                     CastType::Float => bytecode.push(0x02),
                     CastType::Str => bytecode.push(0x03),
                     CastType::Bool => bytecode.push(0x04),
+                    CastType::Int8 => bytecode.push(0x05),
+                    CastType::UInt8 => bytecode.push(0x06),
+                    CastType::Int16 => bytecode.push(0x07),
+                    CastType::UInt16 => bytecode.push(0x08),
+                    CastType::Int32 => bytecode.push(0x09),
+                    CastType::UInt32 => bytecode.push(0x0A),
+                    CastType::Int64 => bytecode.push(0x0B),
+                    CastType::UInt64 => bytecode.push(0x0C),
+                    CastType::Float32 => bytecode.push(0x0D),
+                    CastType::Float64 => bytecode.push(0x0E),
                 }
                 Ok(rd)
             }

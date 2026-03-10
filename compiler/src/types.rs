@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::parser::{ClassDef, Method, Expr, Literal, Stmt, CastType};
 
 fn is_numeric_type(ty: &Type) -> bool {
-    matches!(ty, Type::Int | Type::Float)
+    ty.is_numeric()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -11,16 +11,32 @@ pub enum Type {
     Float,
     Str,
     Bool,
+    Int8,
+    UInt8,
+    Int16,
+    UInt16,
+    Int32,
+    UInt32,
+    Int64,
+    UInt64,
+    Float32,
+    Float64,
     Class(String),
     Enum(String),
     Optional(Box<Type>),
     Promise(Box<Type>),
+    Array(Box<Type>),
     Null,
     Unknown,
 }
 
 impl Type {
     pub fn from_str(s: &str) -> Self {
+        // Handle array type suffix []
+        if s.ends_with("[]") {
+            let inner = s.trim_end_matches("[]");
+            return Type::Array(Box::new(Type::from_str(inner)));
+        }
         // Handle optional type suffix
         if s.ends_with('?') {
             let inner = s.trim_end_matches('?');
@@ -32,6 +48,16 @@ impl Type {
             "float" => Type::Float,
             "str" => Type::Str,
             "bool" => Type::Bool,
+            "int8" => Type::Int8,
+            "uint8" => Type::UInt8,
+            "int16" => Type::Int16,
+            "uint16" => Type::UInt16,
+            "int32" => Type::Int32,
+            "uint32" => Type::UInt32,
+            "int64" => Type::Int64,
+            "uint64" => Type::UInt64,
+            "float32" => Type::Float32,
+            "float64" => Type::Float64,
             _ => Type::Class(s.to_string()),
         }
     }
@@ -42,10 +68,21 @@ impl Type {
             Type::Float => "float".to_string(),
             Type::Str => "str".to_string(),
             Type::Bool => "bool".to_string(),
+            Type::Int8 => "int8".to_string(),
+            Type::UInt8 => "uint8".to_string(),
+            Type::Int16 => "int16".to_string(),
+            Type::UInt16 => "uint16".to_string(),
+            Type::Int32 => "int32".to_string(),
+            Type::UInt32 => "uint32".to_string(),
+            Type::Int64 => "int64".to_string(),
+            Type::UInt64 => "uint64".to_string(),
+            Type::Float32 => "float32".to_string(),
+            Type::Float64 => "float64".to_string(),
             Type::Class(name) => name.clone(),
             Type::Enum(name) => name.clone(),
             Type::Optional(t) => format!("{}?", t.to_str()),
             Type::Promise(t) => format!("Promise<{}>", t.to_str()),
+            Type::Array(t) => format!("{}[]", t.to_str()),
             Type::Null => "null".to_string(),
             Type::Unknown => "unknown".to_string(),
         }
@@ -57,10 +94,32 @@ impl Type {
             (Type::Null, Type::Promise(_)) => true,
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
+            (Type::Array(a), Type::Array(b)) => a.is_assignable_to(b),
             (a, b) if a == b => true,
+            // Numeric compatibility
             (Type::Int, Type::Float) => true,
+            (Type::Int, Type::Int64) => true,
+            (Type::Int64, Type::Int) => true,
+            (Type::Float, Type::Float64) => true,
+            (Type::Float64, Type::Float) => true,
+            // All numeric types are somewhat compatible for now as requested for FFI/ByteBuffer
+            (a, b) if a.is_numeric() && b.is_numeric() => true,
             (_, Type::Unknown) => true,
             (Type::Unknown, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Type::Int | Type::Float | Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 | Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 | Type::Float32 | Type::Float64)
+    }
+
+    pub fn is_pod(&self) -> bool {
+        match self {
+            Type::Int | Type::Float | Type::Str | Type::Bool |
+            Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+            Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 |
+            Type::Float32 | Type::Float64 | Type::Null => true,
             _ => false,
         }
     }
@@ -1009,9 +1068,9 @@ impl TypeChecker {
                         return_type
                     } else if let Some(class_info) = self.context.get_class(func_name) {
                         // It's a class instantiation - check constructor args
-                        let ctor_sig = class_info.methods.get("__init__").cloned();
+                        let ctor_sig = class_info.methods.get("constructor").cloned();
                         if let Some(ref sig) = ctor_sig {
-                            self.check_method_call(sig, args, "__init__", func_name);
+                            self.check_method_call(sig, args, "constructor", func_name);
                         } else if !args.is_empty() {
                             // No explicit constructor but args were provided
                             self.context.add_error(
@@ -1222,28 +1281,27 @@ impl TypeChecker {
                 
                 // Validate cast is reasonable (allow most casts, warn about nonsensical ones)
                 match target_type {
-                    CastType::Int => {
-                        // int() can accept: float, str, bool, int
-                        if inner_type != Type::Float && 
+                    CastType::Int | CastType::Int8 | CastType::UInt8 | CastType::Int16 | CastType::UInt16 | 
+                    CastType::Int32 | CastType::UInt32 | CastType::Int64 | CastType::UInt64 => {
+                        // int() can accept: float, str, bool, int, and other numeric types
+                        if !inner_type.is_numeric() && 
                            inner_type != Type::Str && 
                            inner_type != Type::Bool && 
-                           inner_type != Type::Int &&
                            inner_type != Type::Unknown {
                             self.context.add_error(
-                                format!("Cannot cast {} to int", inner_type.to_str()),
+                                format!("Cannot cast {} to integer type", inner_type.to_str()),
                                 0
                             );
                         }
                     }
-                    CastType::Float => {
-                        // float() can accept: int, str, bool, float
-                        if inner_type != Type::Int && 
+                    CastType::Float | CastType::Float32 | CastType::Float64 => {
+                        // float() can accept: int, str, bool, float, and other numeric types
+                        if !inner_type.is_numeric() && 
                            inner_type != Type::Str && 
                            inner_type != Type::Bool &&
-                           inner_type != Type::Float &&
                            inner_type != Type::Unknown {
                             self.context.add_error(
-                                format!("Cannot cast {} to float", inner_type.to_str()),
+                                format!("Cannot cast {} to float type", inner_type.to_str()),
                                 0
                             );
                         }
@@ -1253,8 +1311,7 @@ impl TypeChecker {
                     }
                     CastType::Bool => {
                         // bool() can accept: int, float, str, bool
-                        if inner_type != Type::Int && 
-                           inner_type != Type::Float && 
+                        if !inner_type.is_numeric() && 
                            inner_type != Type::Str &&
                            inner_type != Type::Bool &&
                            inner_type != Type::Unknown {
@@ -1272,6 +1329,52 @@ impl TypeChecker {
                     CastType::Float => Type::Float,
                     CastType::Str => Type::Str,
                     CastType::Bool => Type::Bool,
+                    CastType::Int8 => Type::Int8,
+                    CastType::UInt8 => Type::UInt8,
+                    CastType::Int16 => Type::Int16,
+                    CastType::UInt16 => Type::UInt16,
+                    CastType::Int32 => Type::Int32,
+                    CastType::UInt32 => Type::UInt32,
+                    CastType::Int64 => Type::Int64,
+                    CastType::UInt64 => Type::UInt64,
+                    CastType::Float32 => Type::Float32,
+                    CastType::Float64 => Type::Float64,
+                }
+            }
+            Expr::Array { elements, .. } => {
+                let mut element_type = Type::Unknown;
+                if !elements.is_empty() {
+                    element_type = self.infer_expr(&elements[0]);
+                    for el in elements.iter().skip(1) {
+                        let ty = self.infer_expr(el);
+                        if !ty.is_assignable_to(&element_type) {
+                            // Elements should be compatible
+                        }
+                    }
+                }
+                Type::Array(Box::new(element_type))
+            }
+            Expr::Index { object, index, .. } => {
+                let object_type = self.infer_expr(object);
+                let index_type = self.infer_expr(index);
+                
+                if index_type != Type::Int && index_type != Type::Unknown {
+                    self.context.add_error(
+                        format!("Array index must be an integer, got {}", index_type.to_str()),
+                        0
+                    );
+                }
+                
+                match object_type {
+                    Type::Array(inner) => *inner,
+                    Type::Unknown => Type::Unknown,
+                    _ => {
+                        self.context.add_error(
+                            format!("Type {} does not support indexing", object_type.to_str()),
+                            0
+                        );
+                        Type::Unknown
+                    }
                 }
             }
         }

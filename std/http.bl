@@ -16,26 +16,26 @@ enum RedirectPolicy {
   None = 2
 }
 
-class HttpClient {
-  native fn set_base_url(url: str)
+native class HttpClient {
+  fn set_base_url(url: str)
 
-  native fn set_timeout(ms: int)
+  fn set_timeout(ms: int)
 
-  native fn set_redirect_policy(policy: RedirectPolicy)
+  fn set_redirect_policy(policy: RedirectPolicy)
 
-  native fn set_max_redirects(max: int)
+  fn set_max_redirects(max: int)
 
-  native fn set_proxy(host: str, port: int)
+  fn set_proxy(host: str, port: int)
 
-  native fn set_verify_ssl(verify: bool)
+  fn set_verify_ssl(verify: bool)
 
-  native fn add_header(key: str, value: str)
+  fn add_header(key: str, value: str)
 
-  async native fn get(url: str): str?
+  async fn get(url: str): str?
 
-  async native fn post(url: str, body: str): str?
+  async fn post(url: str, body: str): str?
 
-  async native fn get_with_headers(url: str, extra_headers: str): str?
+  async fn get_with_headers(url: str, extra_headers: str): str?
 
-  async native fn post_with_headers(url: str, extra_headers: str, body: str): str?
+  async fn post_with_headers(url: str, extra_headers: str, body: str): str?
 }

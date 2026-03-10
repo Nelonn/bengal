@@ -1,0 +1,11 @@
+module std::data
+
+native class ByteBuffer {
+  constructor()
+  constructor(size: int)
+
+  fn reserve(size: int)
+  fn get(index: int): uint8
+  fn set(index: int, value: uint8)
+  fn length(): int
+}

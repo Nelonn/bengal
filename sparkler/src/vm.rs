@@ -326,6 +326,8 @@ pub struct Class {
     pub fields: HashMap<String, Value>,
     pub methods: HashMap<String, Method>,
     pub native_methods: HashMap<String, NativeFn>,
+    pub native_create: Option<NativeFn>,
+    pub is_native: bool,
 }
 
 #[derive(Clone)]
@@ -389,6 +391,7 @@ pub struct NativeModule {
     name: String,
     functions: Vec<(String, NativeFn)>,
     class_methods: Vec<(String, String, NativeFn)>,
+    class_native_create_callbacks: Vec<(String, NativeFn)>,
 }
 
 impl NativeModule {
@@ -397,6 +400,7 @@ impl NativeModule {
             name: name.to_string(),
             functions: Vec::new(),
             class_methods: Vec::new(),
+            class_native_create_callbacks: Vec::new(),
         }
     }
 
@@ -415,6 +419,16 @@ impl NativeModule {
         self
     }
 
+    pub fn class_native_create(mut self, class_name: &str, func: NativeFn) -> Self {
+        let full_class_name = if class_name.contains("::") {
+            class_name.to_string()
+        } else {
+            format!("{}::{}", self.name, class_name)
+        };
+        self.class_native_create_callbacks.push((full_class_name, func));
+        self
+    }
+
     pub fn register(self, vm: &mut VM) {
         for (name, func) in self.functions {
             let full_name = format!("{}::{}", self.name, name);
@@ -422,6 +436,9 @@ impl NativeModule {
         }
         for (class_name, method_name, func) in self.class_methods {
             vm.register_native_method(&class_name, &method_name, func);
+        }
+        for (class_name, func) in self.class_native_create_callbacks {
+            vm.register_class_native_create(&class_name, func);
         }
     }
 }
@@ -512,6 +529,8 @@ pub struct VM {
     pub fallback_native: Option<NativeFn>,
     /// Pending native methods to be attached to classes
     pending_native_methods: HashMap<String, HashMap<String, NativeFn>>,
+    /// Pending class native_create callbacks
+    pending_class_native_create: HashMap<String, NativeFn>,
     /// Exception handlers
     exception_handlers: Vec<ExceptionHandler>,
     /// Call stack - frames for active function calls
@@ -557,6 +576,7 @@ impl VM {
             native_functions: HashMap::new(),
             fallback_native: None,
             pending_native_methods: HashMap::new(),
+            pending_class_native_create: HashMap::new(),
             exception_handlers: Vec::new(),
             call_stack: Vec::new(),
             source_file: None,
@@ -575,6 +595,10 @@ impl VM {
             .entry(class_name.to_string())
             .or_insert_with(HashMap::new)
             .insert(method_name.to_string(), f);
+    }
+
+    pub fn register_class_native_create(&mut self, class_name: &str, f: NativeFn) {
+        self.pending_class_native_create.insert(class_name.to_string(), f);
     }
 
     pub fn native_method(&mut self, _class_name: &str, method_name: &str, func: NativeFn) -> NativeFunctionBuilder {
@@ -608,6 +632,9 @@ impl VM {
                 for (method_name, func) in methods {
                     class.native_methods.insert(method_name.clone(), *func);
                 }
+            }
+            if let Some(on_init) = self.pending_class_native_create.get(&class.name) {
+                class.native_create = Some(*on_init);
             }
             self.classes.insert(class.name.clone(), class);
         }
@@ -955,12 +982,18 @@ impl VM {
 
                 // Check if it's a class constructor
                 if let Some(class) = self.classes.get(&func_name).cloned() {
-                    let instance = Instance {
-                        class: func_name,
+                    let instance = Value::Instance(Arc::new(Mutex::new(Instance {
+                        class: func_name.clone(),
                         fields: class.fields.clone(),
                         native_data: Arc::new(Mutex::new(None)),
-                    };
-                    self.set_reg(rd, Value::Instance(Arc::new(Mutex::new(instance))));
+                    })));
+                    self.set_reg(rd, instance.clone());
+
+                    // Call native_create if it exists
+                    if let Some(native_create) = class.native_create {
+                        let mut args = vec![instance];
+                        native_create(&mut args)?;
+                    }
                 } 
                 // Check if it's a native function
                 else if let Some(native_f) = self.native_functions.get(&func_name) {
@@ -1375,6 +1408,16 @@ impl VM {
                     0x04 => { // Cast to bool
                         Value::Bool(value.is_truthy())
                     }
+                    0x05 => Value::Int8(value.to_i8().unwrap_or(0)),
+                    0x06 => Value::UInt8(value.to_u8().unwrap_or(0)),
+                    0x07 => Value::Int16(value.to_i16().unwrap_or(0)),
+                    0x08 => Value::UInt16(value.to_u16().unwrap_or(0)),
+                    0x09 => Value::Int32(value.to_i32().unwrap_or(0)),
+                    0x0A => Value::UInt32(value.to_u32().unwrap_or(0)),
+                    0x0B => Value::Int64(value.to_i64().unwrap_or(0)),
+                    0x0C => Value::UInt64(value.to_u64().unwrap_or(0)),
+                    0x0D => Value::Float32(value.to_f32().unwrap_or(0.0)),
+                    0x0E => Value::Float64(value.to_f64().unwrap_or(0.0)),
                     _ => value,
                 };
                 self.set_reg(rd, result);
