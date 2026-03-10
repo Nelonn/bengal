@@ -13,7 +13,11 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
     while i < bytecode.len() {
         let opcode = bytecode[i];
         match opcode {
-            // LoadConst: Rd, string_idx
+            // Nop, TryEnd, Breakpoint, Halt: 1 byte
+            0x00 | 0x81 | 0x90 | 0xFF => {
+                i += 1;
+            }
+            // LoadConst: Rd, string_idx (3 bytes)
             0x10 => {
                 if i + 2 < bytecode.len() {
                     i += 1; // skip opcode
@@ -21,22 +25,25 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 1;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
             }
-            // StoreLocal: name_idx, Rs
-            0x22 => {
-                if i + 2 < bytecode.len() {
-                    i += 1; // skip opcode
-                    let idx = bytecode[i] as usize;
-                    bytecode[i] = (idx + offset) as u8;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
+            // LoadInt, LoadFloat: Rd, 8 bytes (10 bytes)
+            0x11 | 0x12 => {
+                i += 10;
             }
-            // LoadLocal: Rd, name_idx
+            // LoadBool: Rd, 1 byte (3 bytes)
+            0x13 => {
+                i += 3;
+            }
+            // LoadNull, Return, Throw: Rd/Rs (2 bytes)
+            0x14 | 0x43 | 0x82 => {
+                i += 2;
+            }
+            // Move, Not: Rd, Rs (3 bytes)
+            0x20 | 0x64 => {
+                i += 3;
+            }
+            // LoadLocal: Rd, name_idx (3 bytes)
             0x21 => {
                 if i + 2 < bytecode.len() {
                     i += 1; // skip opcode
@@ -44,11 +51,18 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 1;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
             }
-            // GetProperty: Rd, Robj, name_idx
+            // StoreLocal: name_idx, Rs (3 bytes)
+            0x22 => {
+                if i + 2 < bytecode.len() {
+                    i += 1; // skip opcode
+                    let idx = bytecode[i] as usize;
+                    bytecode[i] = (idx + offset) as u8;
+                    i += 2;
+                } else { i += 1; }
+            }
+            // GetProperty: Rd, Robj, name_idx (4 bytes)
             0x30 => {
                 if i + 3 < bytecode.len() {
                     i += 1; // skip opcode
@@ -57,11 +71,9 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 1;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
             }
-            // SetProperty: Robj, name_idx, Rs
+            // SetProperty: Robj, name_idx, Rs (4 bytes)
             0x31 => {
                 if i + 3 < bytecode.len() {
                     i += 1; // skip opcode
@@ -69,11 +81,9 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 2;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
             }
-            // Call: Rd, func_idx, arg_start, arg_count
+            // Call: Rd, func_idx, arg_start, arg_count (5 bytes)
             0x40 => {
                 if i + 4 < bytecode.len() {
                     i += 1; // skip opcode
@@ -81,11 +91,9 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 3;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
             }
-            // CallNative: Rd, name_idx, arg_start, arg_count
+            // CallNative: Rd, name_idx, arg_start, arg_count (5 bytes)
             0x41 | 0x45 => {
                 if i + 4 < bytecode.len() {
                     i += 1; // skip opcode
@@ -93,11 +101,9 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 3;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
             }
-            // Invoke: Rd, method_idx, arg_start, arg_count
+            // Invoke: Rd, method_idx, arg_start, arg_count (5 bytes)
             0x42 | 0x46 => {
                 if i + 4 < bytecode.len() {
                     i += 1; // skip opcode
@@ -105,9 +111,35 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     let idx = bytecode[i] as usize;
                     bytecode[i] = (idx + offset) as u8;
                     i += 3;
-                } else {
-                    i += 1;
-                }
+                } else { i += 1; }
+            }
+            // Jump: target (3 bytes)
+            0x50 => {
+                i += 3;
+            }
+            // JumpIfTrue, JumpIfFalse: Rs, target (4 bytes)
+            0x51 | 0x52 => {
+                i += 4;
+            }
+            // Binary Ops, Concat: Rd, Rs1, Rs2 (4 bytes)
+            0x60 | 0x61 | 0x62 | 0x63 | 0x66 | 0x67 | 0x6A | 0x6B | 0x68 | 0x69 | 0x70 | 0x71 | 0x75 | 0x65 => {
+                i += 4;
+            }
+            // Cast: Rd, Rs, type (4 bytes)
+            0x74 => {
+                i += 4;
+            }
+            // Line: line_number (3 bytes)
+            0x73 => {
+                i += 3;
+            }
+            // TryStart: catch_pc, catch_reg (4 bytes)
+            0x80 => {
+                i += 4;
+            }
+            // Await: Rd, Rs (3 bytes)
+            0x47 => {
+                i += 3;
             }
             _ => {
                 i += 1;
@@ -823,15 +855,18 @@ impl Compiler {
 
                 let opcode = match op {
                     BinaryOp::Equal => Opcode::Equal,
+                    BinaryOp::NotEqual => Opcode::NotEqual,
+                    BinaryOp::And => Opcode::And,
+                    BinaryOp::Or => Opcode::Or,
                     BinaryOp::Add => Opcode::Add,
                     BinaryOp::Subtract => Opcode::Subtract,
                     BinaryOp::Multiply => Opcode::Multiply,
                     BinaryOp::Divide => Opcode::Divide,
+                    BinaryOp::Modulo => Opcode::Modulo,
                     BinaryOp::Greater => Opcode::Greater,
+                    BinaryOp::GreaterEqual => Opcode::GreaterEqual,
                     BinaryOp::Less => Opcode::Less,
-                    BinaryOp::And => Opcode::And,
-                    BinaryOp::Or => Opcode::Or,
-                    _ => return Err(format!("Unsupported binary op: {:?}", op)),
+                    BinaryOp::LessEqual => Opcode::LessEqual,
                 };
 
                 bytecode.push(opcode as u8);
@@ -952,6 +987,23 @@ impl Compiler {
                 let rd = self.current_ctx.allocate_reg();
 
                 if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
+                    if func_name == "breakpoint" {
+                        bytecode.push(Opcode::Breakpoint as u8);
+                        bytecode.push(Opcode::LoadNull as u8);
+                        bytecode.push(rd as u8);
+                        return Ok(rd);
+                    }
+
+                    // Resolve function/class name if type context is available
+                    let mut resolved_name = func_name.clone();
+                    if let Some(ctx) = type_context {
+                        if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                            resolved_name = resolved_class;
+                        } else if let Some(sig) = ctx.resolve_function(func_name) {
+                            resolved_name = sig.name.clone();
+                        }
+                    }
+
                     // Move arguments to contiguous registers for the call
                     let contiguous_start = self.current_ctx.allocate_reg();
                     for (i, &r) in arg_regs.iter().enumerate() {
@@ -962,7 +1014,7 @@ impl Compiler {
                     }
 
                     let idx = strings.len();
-                    strings.push(func_name.clone());
+                    strings.push(resolved_name);
                     bytecode.push(Opcode::Call as u8);
                     bytecode.push(rd as u8);
                     bytecode.push(idx as u8);
@@ -1020,26 +1072,34 @@ impl Compiler {
             }
 
             Expr::Interpolated { parts, .. } => {
-                let contiguous_start = self.current_ctx.next_reg;
-                for part in parts {
+                let start_reg = self.current_ctx.allocate_reg();
+                // We need to ensure subsequent parts are also in contiguous registers
+                for _i in 1..parts.len() {
+                    self.current_ctx.allocate_reg();
+                }
+
+                for (i, part) in parts.iter().enumerate() {
+                    let rd_part = start_reg + i;
                     match part {
                         InterpPart::Text(s) => {
-                            let r = self.current_ctx.allocate_reg();
                             let idx = strings.len();
                             strings.push(s.clone());
                             bytecode.push(Opcode::LoadConst as u8);
-                            bytecode.push(r as u8);
+                            bytecode.push(rd_part as u8);
                             bytecode.push(idx as u8);
                         }
                         InterpPart::Expr(e) => {
-                            self.compile_expr(e, bytecode, strings, classes, type_context)?;
+                            let r = self.compile_expr(e, bytecode, strings, classes, type_context)?;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd_part as u8);
+                            bytecode.push(r as u8);
                         }
                     }
                 }
                 let rd = self.current_ctx.allocate_reg();
                 bytecode.push(Opcode::Concat as u8);
                 bytecode.push(rd as u8);
-                bytecode.push(contiguous_start as u8);
+                bytecode.push(start_reg as u8);
                 bytecode.push(parts.len() as u8);
                 Ok(rd)
             }
@@ -1072,61 +1132,7 @@ impl Compiler {
         }
     }
 
-    fn get_statement_line(&self, stmt: &Stmt) -> usize {
-        let source_slice = &self.source;
-        let mut line = 1;
-
-        match stmt {
-            Stmt::Let { name, .. } => {
-                if let Some(pos) = source_slice.find(&format!("let {}", name)) {
-                    line = source_slice[..pos].matches('\n').count() + 1;
-                }
-            }
-            Stmt::Assign { name, .. } => {
-                if let Some(pos) = source_slice.find(&format!("{} =", name)) {
-                    line = source_slice[..pos].matches('\n').count() + 1;
-                }
-            }
-            Stmt::If { .. } => {
-                if let Some(pos) = source_slice.find("if ") {
-                    line = source_slice[..pos].matches('\n').count() + 1;
-                }
-            }
-            Stmt::Return(_) => {
-                if let Some(pos) = source_slice.find("return ") {
-                    line = source_slice[..pos].matches('\n').count() + 1;
-                }
-            }
-            Stmt::Throw(_) => {
-                if let Some(pos) = source_slice.find("throw ") {
-                    line = source_slice[..pos].matches('\n').count() + 1;
-                }
-            }
-            Stmt::TryCatch { .. } => {
-                if let Some(pos) = source_slice.find("try ") {
-                    line = source_slice[..pos].matches('\n').count() + 1;
-                }
-            }
-            Stmt::Expr(expr) => {
-                if let Expr::Call { callee, .. } = expr {
-                    if let Expr::Variable { name, .. } = callee.as_ref() {
-                        let pattern = format!("{}(", name);
-                        let mut search_start = 0;
-                        while let Some(pos) = source_slice[search_start..].find(&pattern) {
-                            let absolute_pos = search_start + pos;
-                            let before = &source_slice[..absolute_pos];
-                            if !before.trim_end().ends_with("fn") {
-                                line = source_slice[..absolute_pos].matches('\n').count() + 1;
-                                break;
-                            }
-                            search_start = absolute_pos + 1;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        line
+    fn get_statement_line(&self, _stmt: &Stmt) -> usize {
+        1
     }
 }

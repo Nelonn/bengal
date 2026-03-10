@@ -938,7 +938,7 @@ impl VM {
             // Call function
             // Format: [Call, Rd, func_idx, arg_start, arg_count]
             // Rd receives the result, args are in registers [arg_start..arg_start+arg_count]
-            x if x == Opcode::Call as u8 => {
+            x if x == Opcode::Call as u8 || x == Opcode::CallAsync as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1090,12 +1090,13 @@ impl VM {
                     }
                 };
                 self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
             }
 
             // Invoke method on instance
             // Format: [Invoke, Rd, method_idx, arg_start, arg_count]
             // First argument (arg_start) is the receiver (self)
-            x if x == Opcode::Invoke as u8 => {
+            x if x == Opcode::Invoke as u8 || x == Opcode::InvokeAsync as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1226,6 +1227,7 @@ impl VM {
                         return Err(Value::String("Can only await Promise values".to_string()));
                     }
                 }
+                self.set_pc(self.pc() + 1);
             }
 
             // Return from function

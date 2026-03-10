@@ -120,7 +120,7 @@ impl Lexer {
         }
     }
 
-    fn skip_comment(&mut self) {
+    fn skip_comment(&mut self) -> bool {
         // Line comment: //
         if self.peek() == Some('/') && self.peek_next() == Some('/') {
             self.advance(); // skip first /
@@ -131,6 +131,7 @@ impl Lexer {
                 }
                 self.advance();
             }
+            true
         }
         // Block comment: /* */
         else if self.peek() == Some('/') && self.peek_next() == Some('*') {
@@ -155,6 +156,9 @@ impl Lexer {
                     self.advance();
                 }
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -235,13 +239,7 @@ impl Lexer {
             '%' => { self.advance(); Ok(Token::Percent) }
             '/' => {
                 self.advance();
-                if self.peek() == Some('/') {
-                    // This is a comment, skip it
-                    self.skip_comment();
-                    self.next_token_inner()
-                } else {
-                    Ok(Token::Slash)
-                }
+                Ok(Token::Slash)
             }
             '"' => self.read_string(),
             '>' => {
@@ -469,10 +467,15 @@ impl Lexer {
         let mut tokens = Vec::new();
         let mut token_positions = Vec::new();
         loop {
-            self.skip_whitespace();
-            self.skip_comment();
-            self.skip_whitespace();
-            let token_pos = self.pos;  // Record position after skipping whitespace
+            // Skip all whitespace and comments
+            loop {
+                self.skip_whitespace();
+                if !self.skip_comment() {
+                    break;
+                }
+            }
+
+            let token_pos = self.pos;
             let token = self.next_token_inner()?;
             if token == Token::Eof {
                 tokens.push(token);
