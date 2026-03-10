@@ -198,6 +198,21 @@ impl Parser {
         token
     }
 
+    fn error(&self, message: &str) -> Result<Stmt, String> {
+        let span = self.compute_span(self.pos);
+        Err(format!("[{}:{}] {}", span.line, span.column, message))
+    }
+
+    fn error_expr(&self, message: &str) -> Result<Expr, String> {
+        let span = self.compute_span(self.pos);
+        Err(format!("[{}:{}] {}", span.line, span.column, message))
+    }
+
+    fn error_generic<T>(&self, message: &str) -> Result<T, String> {
+        let span = self.compute_span(self.pos);
+        Err(format!("[{}:{}] {}", span.line, span.column, message))
+    }
+
     fn check(&self, token: &Token) -> bool {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(token)
     }
@@ -286,7 +301,7 @@ impl Parser {
                     if self.match_token(&Token::Semicolon) {}
                     Stmt::Expr(Expr::Set { object, name, value: Box::new(value), span })
                 } else {
-                    return Err("Left side of assignment must be a variable or property access".to_string());
+                    return self.error_generic("Left side of assignment must be a variable or property access");
                 }
             } else {
                 if self.match_token(&Token::Semicolon) {}
@@ -304,7 +319,7 @@ impl Parser {
             if let Token::Identifier(part) = self.advance() {
                 path.push(part);
             } else {
-                return Err("Expected identifier in import path".to_string());
+                return self.error("Expected identifier in import path");
             }
 
             if self.match_token(&Token::DoubleColon) {
@@ -327,7 +342,7 @@ impl Parser {
             if let Token::Identifier(part) = self.advance() {
                 path.push(part);
             } else {
-                return Err("Expected identifier in module path".to_string());
+                return self.error("Expected identifier in module path");
             }
 
             if self.match_token(&Token::DoubleColon) {
@@ -346,11 +361,11 @@ impl Parser {
     fn parse_class(&mut self) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return Err("Expected class name".to_string()),
+            _ => return self.error("Expected class name"),
         };
 
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' after class name".to_string());
+            return self.error("Expected '{' after class name");
         }
 
         let mut fields = Vec::new();
@@ -381,7 +396,7 @@ impl Parser {
         }
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close class".to_string());
+            return self.error("Expected '}' to close class");
         }
 
         Ok(Stmt::Class(ClassDef { name, fields, methods }))
@@ -390,11 +405,11 @@ impl Parser {
     fn parse_enum(&mut self) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return Err("Expected enum name".to_string()),
+            _ => return self.error("Expected enum name"),
         };
 
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' after enum name".to_string());
+            return self.error("Expected '{' after enum name");
         }
 
         let mut variants = Vec::new();
@@ -403,7 +418,7 @@ impl Parser {
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             let variant_name = match self.advance() {
                 Token::Identifier(n) => n,
-                _ => return Err("Expected variant name".to_string()),
+                _ => return self.error_generic("Expected variant name"),
             };
 
             let value = if self.match_token(&Token::Equal) {
@@ -420,7 +435,7 @@ impl Parser {
         }
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close enum".to_string());
+            return self.error("Expected '}' to close enum");
         }
 
         Ok(Stmt::Enum(EnumDef { name, variants }))
@@ -429,18 +444,18 @@ impl Parser {
     fn parse_function_ext(&mut self, _is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return Err("Expected function name".to_string()),
+            _ => return self.error("Expected function name"),
         };
 
         if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after function name".to_string());
+            return self.error("Expected '(' after function name");
         }
 
         let params = self.parse_params()?;
         self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after parameters".to_string());
+            return self.error("Expected ')' after parameters");
         }
 
         let (return_type, return_optional) = if self.match_token(&Token::Colon) {
@@ -457,7 +472,7 @@ impl Parser {
                 self.advance();
                 let b = self.parse_block()?;
                 if !self.match_token(&Token::RBrace) {
-                    return Err("Expected '}' to close native function body".to_string());
+                    return self.error_generic("Expected '}' to close native function body");
                 }
                 b
             } else {
@@ -466,13 +481,13 @@ impl Parser {
             }
         } else {
             if !self.match_token(&Token::LBrace) {
-                return Err(format!("Expected '{{' to start function body for '{}'", name));
+                return self.error(&format!("Expected '{{' to start function body for '{}'", name));
             }
 
             let body = self.parse_block()?;
 
             if !self.match_token(&Token::RBrace) {
-                return Err("Expected '}' to close function".to_string());
+                return self.error("Expected '}' to close function");
             }
             body
         };
@@ -491,11 +506,11 @@ impl Parser {
     fn parse_field(&mut self, private: bool) -> Result<Field, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            t => return Err(format!("Expected field name, got {:?}", t)),
+            t => return self.error_generic(&format!("Expected field name, got {:?}", t)),
         };
 
         if !self.match_token(&Token::Colon) {
-            return Err(format!("Expected ':' after field name, got {:?}", self.peek()));
+            return self.error_generic(&format!("Expected ':' after field name, got {:?}", self.peek()));
         }
 
         let (mut type_name, optional) = self.parse_type()?;
@@ -519,18 +534,18 @@ impl Parser {
     fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return Err("Expected method name".to_string()),
+            _ => return self.error_generic("Expected method name"),
         };
 
         if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after method name".to_string());
+            return self.error_generic("Expected '(' after method name");
         }
 
         let params = self.parse_params()?;
         self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after parameters".to_string());
+            return self.error_generic("Expected ')' after parameters");
         }
 
         let (return_type, return_optional) = if self.match_token(&Token::Colon) {
@@ -547,7 +562,7 @@ impl Parser {
                 self.advance();
                 let b = self.parse_block()?;
                 if !self.match_token(&Token::RBrace) {
-                    return Err("Expected '}' to close native method body".to_string());
+                    return self.error_generic("Expected '}' to close native method body");
                 }
                 b
             } else {
@@ -555,13 +570,13 @@ impl Parser {
             }
         } else {
             if !self.match_token(&Token::LBrace) {
-                return Err("Expected '{' to start method body".to_string());
+                return self.error_generic("Expected '{' to start method body");
             }
 
             let body = self.parse_block()?;
 
             if !self.match_token(&Token::RBrace) {
-                return Err("Expected '}' to close method".to_string());
+                return self.error_generic("Expected '}' to close method");
             }
             body
         };
@@ -622,7 +637,7 @@ impl Parser {
 
             let name = match self.advance() {
                 Token::Identifier(n) => n,
-                t => return Err(format!("Expected parameter name, got {:?}", t)),
+                t => return self.error_generic(&format!("Expected parameter name, got {:?}", t)),
             };
 
             let type_name = if self.match_token(&Token::Colon) {
@@ -655,7 +670,7 @@ impl Parser {
             Token::TypeBool => "bool".to_string(),
             Token::Null => "null".to_string(),
             Token::Identifier(t) => t.clone(),
-            _ => return Err(format!("Expected type name, got {:?}", token)),
+            _ => return self.error_generic(&format!("Expected type name, got {:?}", token)),
         };
 
         let optional = self.match_token(&Token::Question);
@@ -666,11 +681,11 @@ impl Parser {
     fn parse_let(&mut self) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return Err("Expected variable name after 'let'".to_string()),
+            _ => return self.error("Expected variable name after 'let'"),
         };
 
         if !self.match_token(&Token::Equal) {
-            return Err("Expected '=' in let statement".to_string());
+            return self.error("Expected '=' in let statement");
         }
 
         let expr = self.parse_expression()?;
@@ -694,29 +709,29 @@ impl Parser {
 
     fn parse_if(&mut self) -> Result<Stmt, String> {
         if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after 'if'".to_string());
+            return self.error("Expected '(' after 'if'");
         }
 
         let condition = self.parse_expression()?;
         self.skip_newlines();
 
         if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after condition".to_string());
+            return self.error("Expected ')' after condition");
         }
 
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' for if body".to_string());
+            return self.error("Expected '{' for if body");
         }
 
         let then_branch = self.parse_block()?;
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close if body".to_string());
+            return self.error("Expected '}' to close if body");
         }
 
         let else_branch = if self.match_token(&Token::Else) {
             if !self.match_token(&Token::LBrace) {
-                return Err("Expected '{' for else body".to_string());
+                return self.error("Expected '{' for else body");
             }
             Some(self.parse_block()?)
         } else {
@@ -728,32 +743,32 @@ impl Parser {
 
     fn parse_for(&mut self) -> Result<Stmt, String> {
         if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after 'for'".to_string());
+            return self.error("Expected '(' after 'for'");
         }
 
         let var_name = match self.advance() {
             Token::Identifier(name) => name,
-            _ => return Err("Expected variable name in for loop".to_string()),
+            _ => return self.error("Expected variable name in for loop"),
         };
 
         if !self.match_token(&Token::In) {
-            return Err("Expected 'in' after loop variable".to_string());
+            return self.error("Expected 'in' after loop variable");
         }
 
         let range = self.parse_range()?;
 
         if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after range expression".to_string());
+            return self.error("Expected ')' after range expression");
         }
 
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' for loop body".to_string());
+            return self.error("Expected '{' for loop body");
         }
 
         let body = self.parse_block()?;
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close loop body".to_string());
+            return self.error("Expected '}' to close loop body");
         }
 
         Ok(Stmt::For { var_name, range: Box::new(range), body })
@@ -761,23 +776,23 @@ impl Parser {
 
     fn parse_while(&mut self) -> Result<Stmt, String> {
         if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after 'while'".to_string());
+            return self.error("Expected '(' after 'while'");
         }
 
         let condition = self.parse_expression()?;
 
         if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after condition".to_string());
+            return self.error("Expected ')' after condition");
         }
 
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' for while body".to_string());
+            return self.error("Expected '{' for while body");
         }
 
         let body = self.parse_block()?;
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close while body".to_string());
+            return self.error("Expected '}' to close while body");
         }
 
         Ok(Stmt::While { condition, body })
@@ -795,42 +810,42 @@ impl Parser {
 
     fn parse_try_catch(&mut self) -> Result<Stmt, String> {
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' for try body".to_string());
+            return self.error("Expected '{' for try body");
         }
 
         let try_block = self.parse_block()?;
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close try body".to_string());
+            return self.error("Expected '}' to close try body");
         }
 
         self.skip_newlines();
 
         if !self.match_token(&Token::Catch) {
-            return Err("Expected 'catch' after try block".to_string());
+            return self.error("Expected 'catch' after try block");
         }
 
         if !self.match_token(&Token::LParen) {
-            return Err("Expected '(' after 'catch'".to_string());
+            return self.error("Expected '(' after 'catch'");
         }
 
         let catch_var = match self.advance() {
             Token::Identifier(n) => n,
-            _ => return Err("Expected identifier for catch variable".to_string()),
+            _ => return self.error("Expected identifier for catch variable"),
         };
 
         if !self.match_token(&Token::RParen) {
-            return Err("Expected ')' after catch variable".to_string());
+            return self.error("Expected ')' after catch variable");
         }
 
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' for catch body".to_string());
+            return self.error("Expected '{' for catch body");
         }
 
         let catch_block = self.parse_block()?;
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close catch body".to_string());
+            return self.error("Expected '}' to close catch body");
         }
 
         Ok(Stmt::TryCatch { try_block, catch_var, catch_block })
@@ -1054,7 +1069,7 @@ impl Parser {
                     span,
                 });
             } else {
-                return Err("Prefix increment operator requires a variable".to_string());
+                return self.error_expr("Prefix increment operator requires a variable");
             }
         }
 
@@ -1068,7 +1083,7 @@ impl Parser {
                     span,
                 });
             } else {
-                return Err("Prefix decrement operator requires a variable".to_string());
+                return self.error_expr("Prefix decrement operator requires a variable");
             }
         }
 
@@ -1092,7 +1107,7 @@ impl Parser {
                 let span = self.compute_span(self.pos - 1);
                 self.skip_newlines();
                 if !self.match_token(&Token::RParen) {
-                    return Err("Expected ')' after arguments".to_string());
+                    return self.error_expr("Expected ')' after arguments");
                 }
                 
                 // Check if this is a cast expression (str(x), int(x), float(x), bool(x))
@@ -1151,7 +1166,7 @@ impl Parser {
                 }
                 self.skip_newlines();
                 if !self.match_token(&Token::RBrace) {
-                    return Err("Expected '}' to close class instantiation".to_string());
+                    return self.error_expr("Expected '}' to close class instantiation");
                 }
                 // For now, class instantiation is just a Call with no args
                 let span = self.compute_span(self.pos - 1);
@@ -1163,7 +1178,7 @@ impl Parser {
             } else if self.match_token(&Token::Dot) {
                 let name = match self.advance() {
                     Token::Identifier(n) => n,
-                    _ => return Err("Expected identifier after '.'".to_string()),
+                    _ => return self.error_expr("Expected identifier after '.'"),
                 };
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Get {
@@ -1176,27 +1191,26 @@ impl Parser {
                 let span = self.compute_span(self.pos - 1);
                 if let Expr::Variable { name, span: var_span } = &expr {
                     expr = Expr::Unary {
-                        op: UnaryOp::PostfixIncrement,
-                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
-                        span,
+                    op: UnaryOp::PostfixIncrement,
+                    expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                    span,
                     };
-                } else {
-                    return Err("Increment operator requires a variable".to_string());
-                }
-            } else if self.match_token(&Token::MinusMinus) {
-                // Postfix decrement: var--
-                let span = self.compute_span(self.pos - 1);
-                if let Expr::Variable { name, span: var_span } = &expr {
+                    } else {
+                    return self.error_expr("Increment operator requires a variable");
+                    }
+                    } else if self.match_token(&Token::MinusMinus) {
+                    // Postfix decrement: var--
+                    let span = self.compute_span(self.pos - 1);
+                    if let Expr::Variable { name, span: var_span } = &expr {
                     expr = Expr::Unary {
-                        op: UnaryOp::PostfixDecrement,
-                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
-                        span,
+                    op: UnaryOp::PostfixDecrement,
+                    expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                    span,
                     };
-                } else {
-                    return Err("Decrement operator requires a variable".to_string());
-                }
-            } else {
-                break;
+                    } else {
+                    return self.error_expr("Decrement operator requires a variable");
+                    }
+                    } else {                break;
             }
         }
 
@@ -1234,7 +1248,7 @@ impl Parser {
             Token::LParen => {
                 let expr = self.parse_expression()?;
                 if !self.match_token(&Token::RParen) {
-                    return Err("Expected ')' after expression".to_string());
+                    return self.error_expr("Expected ')' after expression");
                 }
                 Ok(expr)
             },
@@ -1245,7 +1259,7 @@ impl Parser {
                     if let Token::Identifier(part) = self.advance() {
                         full_name.push_str(&part);
                     } else {
-                        return Err("Expected identifier after ::".to_string());
+                        return self.error_expr("Expected identifier after ::");
                     }
                 }
 
@@ -1276,20 +1290,20 @@ impl Parser {
                 Ok(Expr::Variable { name: "bool".to_string(), span })
             },
             Token::Dollar => self.parse_interpolated_string(),
-            token => Err(format!("Unexpected token: {:?}", token)),
+            token => self.error_expr(&format!("Unexpected token: {:?}", token)),
         }
     }
 
     fn parse_interpolated_string(&mut self) -> Result<Expr, String> {
         if !self.match_token(&Token::LBrace) {
-            return Err("Expected '{' after '$' in interpolated string".to_string());
+            return self.error_expr("Expected '{' after '$' in interpolated string");
         }
 
         let span = self.compute_span(self.pos - 1);
         let expr = self.parse_expression()?;
 
         if !self.match_token(&Token::RBrace) {
-            return Err("Expected '}' to close interpolated expression".to_string());
+            return self.error_expr("Expected '}' to close interpolated expression");
         }
 
         Ok(Expr::Interpolated {
@@ -1331,7 +1345,7 @@ impl Parser {
                 parts.push(InterpPart::Expr(expr));
                 last_pos = abs_start + 2 + interp_end + 1;
             } else {
-                return Err("Unclosed interpolation ${...}".to_string());
+                return self.error_expr("Unclosed interpolation ${...}");
             }
         }
 

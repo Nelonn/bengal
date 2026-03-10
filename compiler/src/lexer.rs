@@ -95,6 +95,21 @@ impl Lexer {
         ch
     }
 
+    fn get_pos(&self) -> (usize, usize) {
+        let source_up_to_pos = &self.chars[..self.pos.min(self.chars.len())];
+        let line = source_up_to_pos.iter().filter(|&&c| c == '\n').count() + 1;
+        
+        let mut last_newline = 0;
+        for (i, &c) in source_up_to_pos.iter().enumerate() {
+            if c == '\n' {
+                last_newline = i + 1;
+            }
+        }
+        let column = self.pos - last_newline + 1;
+        
+        (line, column)
+    }
+
     fn skip_whitespace(&mut self) {
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() && ch != '\n' {
@@ -249,11 +264,15 @@ impl Lexer {
             }
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
-            _ => Err(format!("Unexpected character: '{}'", ch)),
+            _ => {
+                let (line, col) = self.get_pos();
+                Err(format!("[{}:{}] Unexpected character: '{}'", line, col, ch))
+            },
         }
     }
 
     fn read_string(&mut self) -> Result<Token, String> {
+        let (line, col) = self.get_pos();
         self.advance(); // consume first "
         
         if self.peek() == Some('"') && self.peek_next() == Some('"') {
@@ -277,7 +296,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
                     Some(c) => s.push(c),
-                    None => return Err("Unterminated string escape".to_string()),
+                    None => return Err(format!("[{}:{}] Unterminated string escape", line, col)),
                 }
                 self.advance();
             } else {
@@ -285,10 +304,11 @@ impl Lexer {
                 self.advance();
             }
         }
-        Err("Unterminated string".to_string())
+        Err(format!("[{}:{}] Unterminated string", line, col))
     }
 
     fn read_multiline_string(&mut self) -> Result<Token, String> {
+        let (line, col) = self.get_pos();
         let mut s = String::new();
         while let Some(ch) = self.peek() {
             if ch == '"' && self.peek_next() == Some('"') && self.chars.get(self.pos + 2) == Some(&'"') {
@@ -308,7 +328,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
                     Some(c) => s.push(c),
-                    None => return Err("Unterminated multiline string escape".to_string()),
+                    None => return Err(format!("[{}:{}] Unterminated multiline string escape", line, col)),
                 }
                 self.advance();
             } else {
@@ -316,7 +336,7 @@ impl Lexer {
                 self.advance();
             }
         }
-        Err("Unterminated multiline string".to_string())
+        Err(format!("[{}:{}] Unterminated multiline string", line, col))
     }
 
     fn process_multiline_string(&self, s: &str) -> String {
@@ -433,13 +453,15 @@ impl Lexer {
         }
 
         if is_float {
+            let (line, col) = self.get_pos();
             s.parse::<f64>()
                 .map(Token::Float)
-                .map_err(|e| format!("Invalid float: {}", e))
+                .map_err(|e| format!("[{}:{}] Invalid float: {}", line, col, e))
         } else {
+            let (line, col) = self.get_pos();
             s.parse::<i64>()
                 .map(Token::Int)
-                .map_err(|e| format!("Invalid int: {}", e))
+                .map_err(|e| format!("[{}:{}] Invalid int: {}", line, col, e))
         }
     }
 

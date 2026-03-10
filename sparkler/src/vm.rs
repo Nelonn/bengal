@@ -742,7 +742,7 @@ impl VM {
             // No increment needed here
         }
 
-        Ok(RunResult::Finished(Some(self.registers[0].clone())))
+        Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -1145,16 +1145,16 @@ impl VM {
                         new_call_stack.push(CallFrame::new(
                             0,
                             new_frame_base,
-                            (arg_count - 1) as u8, // -1 because first arg is self
+                            arg_count,
                             method.register_count,
                             format!("{}.{}", class_name, name),
                             self.source_file.clone(),
                         ));
                         self.call_stack = new_call_stack;
 
-                        // Copy arguments (first is self)
+                        // Copy arguments (first is self, placed in R1..Rn)
                         for (i, arg) in args.iter().enumerate() {
-                            self.set_reg(i as u8, arg.clone());
+                            self.set_reg((i + 1) as u8, arg.clone());
                         }
 
                         let new_bytecode = method.bytecode.clone();

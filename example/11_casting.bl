@@ -1,22 +1,20 @@
-// Test str(exception)
 
-# int() casting
-let x = int(42.7) # 42
-let y = int("123") # 123
-let z = int(true) # 1
+// int() casting
+let x = int(42.7) // 42
+let y = int("123") // 123
+let z = int(true) // 1
 
-# float() casting
-let a = float(100) # 100.0
-let b = float("3.14") # 3.14
+// float() casting
+let a = float(100) // 100.0
+let b = float("3.14") // 3.14
 
-# str() casting
-let s = str(42) # "42"
-let t = str(exception) # "Exception: ..."
+// str() casting
+let s = str(42) // "42"
 
-# bool() casting
-let p = bool(1) # true
-let q = bool(0) # false
-let r = bool("") # false
+// bool() casting
+let p = bool(1) // true
+let q = bool(0) // false
+let r = bool("") // false
 
 try {
   throw "Test exception"

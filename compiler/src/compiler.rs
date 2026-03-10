@@ -265,6 +265,8 @@ impl Compiler {
 
         let mut function_source_files: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut function_sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut class_source_files: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut class_sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
         // Collect functions and classes from imported modules first
         if let Some(res) = &resolver {
@@ -280,8 +282,10 @@ impl Compiler {
                     } else if let Stmt::Class(class) = stmt {
                         let mut class_with_module = class.clone();
                         let full_name = format!("{}::{}", module_name, class.name);
-                        class_with_module.name = full_name;
+                        class_with_module.name = full_name.clone();
                         classes.push(class_with_module);
+                        class_source_files.insert(full_name.clone(), module_info.path.to_string_lossy().to_string());
+                        class_sources.insert(full_name, module_info.source.clone());
                     }
                 }
             }
@@ -303,6 +307,7 @@ impl Compiler {
         let mut vm_classes = Vec::new();
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
+            // ... (rest of field collection)
             for field in &c.fields {
                 let value = if let Some(default_expr) = &field.default {
                     match default_expr {
@@ -320,6 +325,9 @@ impl Compiler {
             }
 
             let mut vm_methods = std::collections::HashMap::new();
+            let class_source = class_sources.get(&c.name).unwrap_or(&self.source);
+            let class_source_file = class_source_files.get(&c.name).cloned().or_else(|| self._source_path.clone());
+
             for method in &c.methods {
                 let mut method_bytecode = Vec::new();
                 let mut method_strings: Vec<String> = Vec::new();
@@ -331,7 +339,11 @@ impl Compiler {
                 // Create compiler context for method with "self" as first param
                 let mut method_params = vec!["self".to_string()];
                 method_params.extend(method.params.iter().map(|p| p.name.clone()));
-                let mut method_compiler = Compiler::new("");
+                let mut method_compiler = if let Some(path) = &class_source_file {
+                    Compiler::with_path(class_source, path)
+                } else {
+                    Compiler::new(class_source)
+                };
                 method_compiler.current_ctx = CompileContext::with_params(method_params);
 
                 for stmt in &method.body {
