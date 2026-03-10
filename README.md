@@ -1,5 +1,7 @@
 # Bengal Language
 
+Statically typed scripting language
+
 ## Requirements
 
 ### Debian/Ubuntu:
