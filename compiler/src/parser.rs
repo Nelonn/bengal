@@ -117,6 +117,12 @@ pub struct ObjectField {
 }
 
 #[derive(Debug, Clone)]
+pub struct LambdaParam {
+    pub name: String,
+    pub type_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Literal(Literal),
     Variable { name: String, span: Span },
@@ -132,6 +138,7 @@ pub enum Expr {
     Array { elements: Vec<Expr>, span: Span },
     Index { object: Box<Expr>, index: Box<Expr>, span: Span },
     ObjectLiteral { fields: Vec<ObjectField>, span: Span, inferred_type: Option<String> },
+    Lambda { params: Vec<LambdaParam>, return_type: Option<String>, body: Block, span: Span, is_async: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -303,9 +310,25 @@ impl Parser {
         let mut is_native = false;
         let mut is_async = false;
 
+        // Only consume async/native if followed by fn (for function declarations)
+        // This allows async to be used for lambdas in expressions
         while self.check(&Token::Native) || self.check(&Token::Async) {
-            if self.match_token(&Token::Native) { is_native = true; }
-            else if self.match_token(&Token::Async) { is_async = true; }
+            let is_current_async = self.match_token(&Token::Async);
+            let is_current_native = self.match_token(&Token::Native);
+            
+            if is_current_async {
+                // Check if followed by fn
+                self.skip_newlines();
+                if self.check(&Token::Fn) {
+                    is_async = true;
+                } else {
+                    // Not followed by fn, put async back by not consuming it
+                    self.pos -= 1; // Go back to async token
+                    break;
+                }
+            } else if is_current_native {
+                is_native = true;
+            }
             self.skip_newlines();
         }
 
@@ -885,6 +908,12 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<(String, bool), String> {
         self.skip_newlines();
+        
+        // Check for function type: [async] (params) -> return_type
+        if self.check(&Token::LParen) || self.check(&Token::Async) {
+            return self.parse_function_type();
+        }
+        
         let token = self.advance();
         let type_name = match &token {
             Token::TypeInt => "int".to_string(),
@@ -931,6 +960,60 @@ impl Parser {
         let optional = self.match_token(&Token::Question);
 
         Ok((full_type, optional))
+    }
+
+    fn parse_function_type(&mut self) -> Result<(String, bool), String> {
+        // Check for async function type: async (params) -> return_type
+        let is_async = self.match_token(&Token::Async);
+        if is_async {
+            self.skip_newlines();
+        }
+        
+        // Parse function type: (param_types) -> return_type
+        let mut type_str = String::from("(");
+        
+        if !self.match_token(&Token::LParen) {
+            return self.error_generic("Expected '(' at start of function type");
+        }
+        self.skip_newlines();
+        
+        let mut first = true;
+        while !self.check(&Token::RParen) && !self.check(&Token::Eof) {
+            if !first {
+                type_str.push_str(", ");
+            }
+            first = false;
+            
+            let (param_type, _) = self.parse_type()?;
+            type_str.push_str(&param_type);
+            
+            if !self.match_token(&Token::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        
+        if !self.match_token(&Token::RParen) {
+            return self.error_generic("Expected ')' after function parameter types");
+        }
+        type_str.push(')');
+        
+        // Parse return type
+        self.skip_newlines();
+        if !self.match_token(&Token::Arrow) {
+            return self.error_generic("Expected '->' in function type");
+        }
+        self.skip_newlines();
+        
+        let (return_type, optional) = self.parse_type()?;
+        
+        if is_async {
+            type_str.insert_str(0, "async ");
+        }
+        type_str.push_str(" -> ");
+        type_str.push_str(&return_type);
+        
+        Ok((type_str, optional))
     }
 
     fn parse_let(&mut self) -> Result<Stmt, String> {
@@ -1608,6 +1691,172 @@ impl Parser {
         Ok(fields)
     }
 
+    fn parse_lambda_params(&mut self) -> Result<Vec<LambdaParam>, String> {
+        let mut params = Vec::new();
+        self.skip_newlines();
+
+        if self.check(&Token::RParen) {
+            return Ok(params);
+        }
+
+        loop {
+            self.skip_newlines();
+            if self.check(&Token::RParen) {
+                break;
+            }
+
+            // Parse parameter name
+            let name = match self.advance() {
+                Token::Identifier(n) => n,
+                _ => return self.error_generic("Expected parameter name in lambda"),
+            };
+
+            // Lambda parameters require type annotations
+            if !self.match_token(&Token::Colon) {
+                return self.error_generic(&format!("Expected ':' after parameter name '{}' in lambda. Lambda parameters require type annotations.", name));
+            }
+
+            let (mut t_name, optional) = self.parse_type()?;
+            if optional {
+                t_name = t_name + "?";
+            }
+
+            params.push(LambdaParam { name, type_name: Some(t_name) });
+
+            if !self.match_token(&Token::Comma) {
+                break;
+            }
+        }
+
+        Ok(params)
+    }
+
+    fn parse_lambda(&mut self, is_async: bool) -> Result<Expr, String> {
+        let span = self.compute_span(self.pos - 1);
+
+        // Parse parameters (already consumed LParen)
+        let params = self.parse_lambda_params()?;
+        self.skip_newlines();
+
+        if !self.match_token(&Token::RParen) {
+            return self.error_generic("Expected ')' after lambda parameters");
+        }
+
+        // Parse optional return type
+        let return_type = if self.match_token(&Token::Colon) {
+            let (t_name, optional) = self.parse_type()?;
+            if optional {
+                Some(t_name + "?")
+            } else {
+                Some(t_name)
+            }
+        } else {
+            None
+        };
+
+        // Parse body
+        if !self.match_token(&Token::LBrace) {
+            return self.error_generic("Expected '{' to start lambda body");
+        }
+
+        let body = self.parse_block()?;
+
+        if !self.match_token(&Token::RBrace) {
+            return self.error_generic("Expected '}' to close lambda body");
+        }
+
+        Ok(Expr::Lambda { params, return_type, body, span, is_async })
+    }
+
+    /// Check if the current position (after LParen) looks like a lambda
+    /// Lambda syntax: [async] (params): ReturnType { body }
+    fn is_lambda(&mut self) -> bool {
+        // Save position
+        let saved_pos = self.pos;
+
+        // Try to parse lambda parameters
+        let mut is_lambda = true;
+        let mut found_colon_after_params = false;
+
+        // Skip potential parameters
+        self.skip_newlines();
+        if !self.check(&Token::RParen) {
+            // There are parameters - they should have type annotations
+            loop {
+                // Parameter name - must be identifier
+                if !matches!(self.peek(), Token::Identifier(_)) {
+                    is_lambda = false;
+                    break;
+                }
+                self.advance();
+
+                // Must have colon for type annotation
+                if !self.match_token(&Token::Colon) {
+                    is_lambda = false;
+                    break;
+                }
+
+                // Type name
+                if !self.check_type_token() {
+                    is_lambda = false;
+                    break;
+                }
+                self.advance();
+
+                // Optional '?'
+                self.match_token(&Token::Question);
+
+                // Check for comma or end
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+
+        if is_lambda {
+            // Should have closing paren
+            if self.match_token(&Token::RParen) {
+                self.skip_newlines();
+                // Check for colon (return type) or brace (body without return type)
+                if self.check(&Token::Colon) || self.check(&Token::LBrace) {
+                    found_colon_after_params = true;
+                }
+            }
+        }
+
+        // Restore position
+        self.pos = saved_pos;
+
+        found_colon_after_params
+    }
+
+    /// Check if current position looks like an async lambda (called after 'async' was consumed)
+    /// Async lambda syntax: (params): ReturnType { body }
+    fn is_async_lambda(&mut self) -> bool {
+        // Save position - we're already past 'async'
+        let saved_pos = self.pos;
+        let mut result = false;
+
+        // Must have '(' at current position
+        if self.match_token(&Token::LParen) {
+            // Use is_lambda to check the rest
+            result = self.is_lambda();
+        }
+
+        // Restore position
+        self.pos = saved_pos;
+
+        result
+    }
+
+    fn check_type_token(&self) -> bool {
+        matches!(self.peek(), Token::TypeInt | Token::TypeFloat | Token::TypeStr | Token::TypeBool |
+            Token::TypeInt8 | Token::TypeUInt8 | Token::TypeInt16 | Token::TypeUInt16 |
+            Token::TypeInt32 | Token::TypeUInt32 | Token::TypeInt64 | Token::TypeUInt64 |
+            Token::TypeFloat32 | Token::TypeFloat64 | Token::Identifier(_) | Token::Null)
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, String> {
         let token_pos = self.pos;
         match self.advance() {
@@ -1616,11 +1865,29 @@ impl Parser {
             Token::Float(n) => Ok(Expr::Literal(Literal::Float(n))),
             Token::Null => Ok(Expr::Literal(Literal::Null)),
             Token::LParen => {
+                // Check if this is a lambda: (params): ReturnType { body }
+                // We need to peek ahead to see if this looks like a lambda
+                if self.is_lambda() {
+                    return self.parse_lambda(false);
+                }
+                // Otherwise it's a parenthesized expression
                 let expr = self.parse_expression()?;
                 if !self.match_token(&Token::RParen) {
                     return self.error_expr("Expected ')' after expression");
                 }
                 Ok(expr)
+            },
+            Token::Async => {
+                // Check if this is an async lambda: async (params): ReturnType { body }
+                // Note: self.advance() already consumed 'async', so we're now at the next token
+                if self.is_async_lambda() {
+                    // We're already past 'async', just need to match '(' and parse lambda
+                    if self.match_token(&Token::LParen) {
+                        return self.parse_lambda(true);
+                    }
+                }
+                // Not an async lambda, treat as identifier
+                Ok(Expr::Variable { name: "async".to_string(), span: self.compute_span(token_pos) })
             },
             Token::Identifier(name) => {
                 let mut full_name = name;

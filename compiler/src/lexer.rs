@@ -65,6 +65,7 @@ pub enum Token {
     GreaterEqual,
     Less,
     LessEqual,
+    Arrow,  // ->
 
     LParen,
     RParen,
@@ -261,6 +262,9 @@ impl Lexer {
                 if self.peek() == Some('-') {
                     self.advance();
                     Ok(Token::MinusMinus)
+                } else if self.peek() == Some('>') {
+                    self.advance();
+                    Ok(Token::Arrow)
                 } else {
                     Ok(Token::Minus)
                 }

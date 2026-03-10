@@ -33,6 +33,8 @@ pub enum Type {
     GenericInstance(String, Vec<Type>),       // ClassName<T1, T2, ...>
     // Type alias support
     TypeAlias(String, Vec<Type>),             // Alias name with optional type args
+    // Function type for lambdas
+    Function(Vec<Type>, Box<Type>),           // (param_types, return_type)
 }
 
 impl Type {
@@ -46,6 +48,33 @@ impl Type {
         if s.ends_with('?') {
             let inner = s.trim_end_matches('?');
             return Type::Optional(Box::new(Type::from_str(inner)));
+        }
+
+        // Handle function types: (param_types) -> return_type or async (params) -> return_type
+        let s_trimmed = s.trim_start_matches("async ");
+        let is_async = s.starts_with("async ");
+        
+        if s_trimmed.starts_with('(') {
+            if let Some(arrow_pos) = s_trimmed.find(") -> ") {
+                let params_str = &s_trimmed[1..arrow_pos];
+                let return_str = &s_trimmed[arrow_pos + 4..];
+
+                let param_types: Vec<Type> = if params_str.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    params_str.split(',')
+                        .map(|p| Type::from_str(p.trim()))
+                        .collect()
+                };
+
+                let inner_type = Type::from_str(return_str.trim());
+                let return_type = if is_async {
+                    Box::new(Type::Promise(Box::new(inner_type)))
+                } else {
+                    Box::new(inner_type)
+                };
+                return Type::Function(param_types, return_type);
+            }
         }
 
         // Handle generic types like ClassName<T1, T2>
@@ -149,6 +178,10 @@ impl Type {
                     format!("{}<{}>", name, args_str.join(", "))
                 }
             }
+            Type::Function(params, return_type) => {
+                let params_str: Vec<String> = params.iter().map(|p| p.to_str()).collect();
+                format!("({}) -> {}", params_str.join(", "), return_type.to_str())
+            }
         }
     }
 
@@ -159,6 +192,18 @@ impl Type {
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
             (Type::Array(a), Type::Array(b)) => a.is_assignable_to(b),
+            // Function type compatibility
+            (Type::Function(self_params, self_return), Type::Function(other_params, other_return)) => {
+                if self_params.len() != other_params.len() {
+                    return false;
+                }
+                // Parameters must match exactly
+                let params_match = self_params.iter().zip(other_params.iter())
+                    .all(|(s, o)| s == o || s == &Type::Unknown || o == &Type::Unknown);
+                // Return type must be compatible
+                let return_match = self_return.is_assignable_to(other_return);
+                params_match && return_match
+            }
             // Generic instance matching
             (Type::GenericInstance(a_name, a_args), Type::GenericInstance(b_name, b_args)) => {
                 if a_name != b_name || a_args.len() != b_args.len() {
@@ -1582,6 +1627,53 @@ impl TypeChecker {
                 }
                 Type::Unknown
             }
+            Expr::Lambda { params, return_type, body, is_async, .. } => {
+                // Infer lambda type: (param_types) -> return_type
+                let param_types: Vec<Type> = params.iter()
+                    .map(|p| p.type_name.as_ref()
+                        .map(|t| Type::from_str(t))
+                        .unwrap_or(Type::Unknown))
+                    .collect();
+
+                let ret_type = return_type.as_ref()
+                    .map(|t| Type::from_str(t))
+                    .unwrap_or(Type::Null);
+
+                // Type check the lambda body
+                // Add parameters as local variables
+                let mut added_vars = Vec::new();
+                for param in params {
+                    let param_type = param.type_name.as_ref()
+                        .map(|t| Type::from_str(t))
+                        .unwrap_or(Type::Unknown);
+                    self.context.add_variable(&param.name, param_type);
+                    added_vars.push(param.name.clone());
+                }
+
+                // Store expected return type
+                let old_return = self.context.current_method_return.clone();
+                self.context.current_method_return = Some(ret_type.clone());
+
+                // Check body
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+
+                // Clean up
+                for var in added_vars {
+                    self.context.variables.remove(&var);
+                }
+                self.context.current_method_return = old_return;
+
+                // For async lambdas, wrap return type in Promise
+                let final_ret_type = if *is_async {
+                    Type::Promise(Box::new(ret_type))
+                } else {
+                    ret_type
+                };
+
+                Type::Function(param_types, Box::new(final_ret_type))
+            }
         }
     }
 
@@ -1603,7 +1695,7 @@ impl TypeChecker {
                                     // Propagate expected type to field value for nested type deduction
                                     let expected_field_type = field_info.type_name.clone();
                                     let field_value_type = self.infer_expr_with_expected_type(&field.value, &Some(expected_field_type.clone()));
-                                    
+
                                     if !field_value_type.is_assignable_to(&expected_field_type) {
                                         self.context.add_error(
                                             format!(
@@ -1634,6 +1726,77 @@ impl TypeChecker {
                     self.infer_expr(&field.value);
                 }
                 Type::Unknown
+            }
+            Expr::Lambda { params, return_type: _, body, is_async, .. } => {
+                // Type check lambda with expected function type
+                if let Some(expected) = expected_type {
+                    if let Type::Function(expected_params, expected_return) = expected {
+                        // Verify parameter count matches
+                        if params.len() != expected_params.len() {
+                            self.context.add_error(
+                                format!(
+                                    "Lambda expects {} parameters, but {} were provided",
+                                    expected_params.len(),
+                                    params.len()
+                                ),
+                                0
+                            );
+                        }
+
+                        // Type check with expected types
+                        let param_types: Vec<Type> = params.iter()
+                            .zip(expected_params.iter())
+                            .map(|(_p, expected_t)| {
+                                expected_t.clone()
+                            })
+                            .collect();
+
+                        // For async lambdas, expected return should be Promise<T>
+                        // Extract inner type from Promise if async
+                        let ret_type = if *is_async {
+                            if let Type::Promise(inner) = expected_return.as_ref() {
+                                inner.as_ref().clone()
+                            } else {
+                                expected_return.as_ref().clone()
+                            }
+                        } else {
+                            expected_return.as_ref().clone()
+                        };
+
+                        // Add parameters as local variables with expected types
+                        let mut added_vars = Vec::new();
+                        for (param, param_type) in params.iter().zip(param_types.iter()) {
+                            self.context.add_variable(&param.name, param_type.clone());
+                            added_vars.push(param.name.clone());
+                        }
+
+                        // Store expected return type
+                        let old_return = self.context.current_method_return.clone();
+                        self.context.current_method_return = Some(ret_type.clone());
+
+                        // Check body
+                        for stmt in body {
+                            self.check_stmt(stmt);
+                        }
+
+                        // Clean up
+                        for var in added_vars {
+                            self.context.variables.remove(&var);
+                        }
+                        self.context.current_method_return = old_return;
+
+                        // Return function type with Promise wrapper for async
+                        let final_ret_type = if *is_async {
+                            Type::Promise(Box::new(ret_type))
+                        } else {
+                            ret_type.clone()
+                        };
+
+                        return Type::Function(param_types, Box::new(final_ret_type));
+                    }
+                }
+                // Fall back to regular inference
+                self.infer_expr(expr)
             }
             _ => self.infer_expr(expr),
         }

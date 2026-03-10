@@ -1439,6 +1439,23 @@ impl Compiler {
                 Ok(rd)
             }
 
+            Expr::Lambda { params: _, return_type: _, body: _, span, is_async } => {
+                // Lambda compilation - this requires closure support in the VM
+                // For now, we provide a helpful error message
+                // Full implementation would require:
+                // 1. Creating a closure object that captures outer scope variables
+                // 2. Generating a function that can be called through the closure
+                // 3. VM support for closure invocation
+                // 4. For async lambdas: Promise handling and await support
+
+                let lambda_kind = if *is_async { "async lambda" } else { "lambda" };
+                return Err(format!(
+                    "{} at line {} is not yet supported at runtime. \
+                    Lambda parsing and type checking work, but code generation requires VM closure support.",
+                    lambda_kind, span.line
+                ));
+            }
+
             _ => Err(format!("Unsupported expression: {:?}", expr)),
         }
     }

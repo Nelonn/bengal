@@ -4,7 +4,7 @@ native class str {
 
   fn trim(): str
 
-  fn split(delimiter: str): [str]
+  fn split(delimiter: str): str[]
 
   fn toInt(): int?
 

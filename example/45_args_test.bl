@@ -1,4 +1,4 @@
-#!/usr/bin/env bl
+#!/usr/bin/env bengal
 
 import std::args
 import std::io
