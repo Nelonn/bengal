@@ -1,0 +1,3 @@
+# Bengal language
+*.bl linguist-language=Bengal
+.github/Bengal.tmLanguage.json linguist-grammar=Bengal
