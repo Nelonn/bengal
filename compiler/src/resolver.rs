@@ -17,6 +17,7 @@ pub struct ModuleInfo {
     pub path: PathBuf,
     pub statements: Vec<Stmt>,
     pub classes: Vec<String>,
+    pub interfaces: Vec<String>,
     pub functions: Vec<String>,
     pub source: String,
 }
@@ -80,12 +81,16 @@ impl ModuleResolver {
 
         // Create module info
         let mut classes = Vec::new();
+        let mut interfaces = Vec::new();
         let functions = Vec::new();
 
         for stmt in &statements {
             match stmt {
                 Stmt::Class(class) => {
                     classes.push(class.name.clone());
+                }
+                Stmt::Interface(interface) => {
+                    interfaces.push(interface.name.clone());
                 }
                 _ => {}
             }
@@ -96,6 +101,7 @@ impl ModuleResolver {
             path: module_file,
             statements,
             classes,
+            interfaces,
             functions,
             source: source.clone(),
         };
@@ -253,6 +259,12 @@ impl ModuleResolver {
                     class_with_module.name = format!("{}::{}", module_name, class.name);
                     self.type_context.add_class(&class_with_module);
                     self.type_context.add_class(class); // Also add without module for now
+                }
+                Stmt::Interface(interface) => {
+                    let mut interface_with_module = interface.clone();
+                    interface_with_module.name = format!("{}::{}", module_name, interface.name);
+                    self.type_context.add_interface(&interface_with_module);
+                    self.type_context.add_interface(interface); // Also add without module for now
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);

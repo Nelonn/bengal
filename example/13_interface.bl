@@ -1,0 +1,19 @@
+interface Printable {
+  fn print(text: str)
+  fn log(text: str) {
+
+  }
+}
+
+interface Drawable : Printable {
+  fn draw(text: str)
+}
+
+class Circle : Drawable {
+  constructor() {}
+
+  fn print(text: str) {
+  }
+  fn draw(text: str) {
+  }
+}

@@ -113,6 +113,16 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
                     i += 3;
                 } else { i += 1; }
             }
+            // InvokeInterface: Rd, method_idx, arg_start, arg_count (5 bytes)
+            0x49 | 0x4A => {
+                if i + 4 < bytecode.len() {
+                    i += 1; // skip opcode
+                    i += 1; // skip Rd
+                    let idx = bytecode[i] as usize;
+                    bytecode[i] = (idx + offset) as u8;
+                    i += 3;
+                } else { i += 1; }
+            }
             // Jump: target (3 bytes)
             0x50 => {
                 i += 3;
@@ -338,6 +348,18 @@ impl Compiler {
                 Stmt::Class(class) => {
                     classes.push(class.clone());
                 }
+                Stmt::Interface(interface) => {
+                    // Interfaces are compiled into special classes with only methods
+                    let interface_as_class = ClassDef {
+                        name: interface.name.clone(),
+                        type_params: interface.type_params.clone(),
+                        parent_interfaces: interface.parent_interfaces.clone(),
+                        fields: vec![],
+                        methods: interface.methods.clone(),
+                        is_native: false,
+                    };
+                    classes.push(interface_as_class);
+                }
                 Stmt::Function(func) => {
                     functions.push(func.clone());
                 }
@@ -433,6 +455,9 @@ impl Compiler {
                 native_methods: std::collections::HashMap::new(),
                 native_create: None,
                 is_native: c.is_native,
+                parent_interfaces: c.parent_interfaces.clone(),
+                vtable: c.methods.iter().map(|m| m.name.clone()).collect(),
+                is_interface: c.fields.is_empty() && c.parent_interfaces.is_empty(),
             });
         }
 
@@ -518,9 +543,9 @@ impl Compiler {
         bytecode.extend_from_slice(&(line as u16).to_le_bytes());
 
         match stmt {
-            Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
+            Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Interface(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
 
-            Stmt::Let { name, expr } => {
+            Stmt::Let { name, expr, .. } => {
                 let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.get_local_reg(name);
                 bytecode.push(Opcode::Move as u8);
@@ -1101,7 +1126,21 @@ impl Compiler {
 
                         let idx = strings.len();
                         strings.push(func_name.clone());
-                        bytecode.push(Opcode::Invoke as u8);
+                        
+                        // Check if this is an interface method
+                        let is_interface_method = if let Some(ctx) = type_context {
+                            if let Some(current_class) = &ctx.current_class {
+                                if let Some(class_info) = ctx.get_class(current_class) {
+                                    class_info.is_interface || !class_info.parent_interfaces.is_empty()
+                                } else { false }
+                            } else { false }
+                        } else { false };
+                        
+                        if is_interface_method {
+                            bytecode.push(Opcode::InvokeInterface as u8);
+                        } else {
+                            bytecode.push(Opcode::Invoke as u8);
+                        }
                         bytecode.push(rd as u8);
                         bytecode.push(idx as u8);
                         bytecode.push(contiguous_start as u8);
@@ -1142,7 +1181,24 @@ impl Compiler {
 
                     let idx = strings.len();
                     strings.push(name.clone());
-                    bytecode.push(Opcode::Invoke as u8);
+                    
+                    // Check if this is an interface method call
+                    let is_interface_method = if let Some(ctx) = type_context {
+                        // Try to get the type of the object
+                        if let Expr::Variable { .. } = object.as_ref() {
+                            if let Some(current_class) = &ctx.current_class {
+                                if let Some(class_info) = ctx.get_class(current_class) {
+                                    class_info.is_interface || !class_info.parent_interfaces.is_empty()
+                                } else { false }
+                            } else { false }
+                        } else { false }
+                    } else { false };
+                    
+                    if is_interface_method {
+                        bytecode.push(Opcode::InvokeInterface as u8);
+                    } else {
+                        bytecode.push(Opcode::Invoke as u8);
+                    }
                     bytecode.push(rd as u8);
                     bytecode.push(idx as u8);
                     bytecode.push(contiguous_start as u8);
@@ -1302,6 +1358,84 @@ impl Compiler {
                     CastType::Float32 => bytecode.push(0x0D),
                     CastType::Float64 => bytecode.push(0x0E),
                 }
+                Ok(rd)
+            }
+
+            Expr::ObjectLiteral { fields, span, inferred_type } => {
+                // Object literal - determine class type from:
+                // 1. inferred_type field (for explicit ClassName { fields } syntax)
+                // 2. type context (for type-deduced object literals)
+                let class_name: Option<String> = if let Some(name) = inferred_type {
+                    Some(name.clone())
+                } else if let Some(ctx) = type_context {
+                    ctx.expr_types.get(&(span.line, span.column)).cloned()
+                } else {
+                    None
+                };
+
+                let class_name = match class_name {
+                    Some(name) => name,
+                    None => {
+                        return Err(format!(
+                            "Object literal at line {} cannot determine class type. Use explicit instantiation: ClassName {{ fields }}",
+                            span.line
+                        ));
+                    }
+                };
+                
+                // Compile as class instantiation: create instance and set fields
+                // 1. Create instance using Call opcode
+                let rd = self.current_ctx.allocate_reg();
+                let idx = strings.len();
+                strings.push(class_name.clone());
+                bytecode.push(Opcode::Call as u8);
+                bytecode.push(rd as u8);
+                bytecode.push(idx as u8);
+                bytecode.push(0); // arg_start
+                bytecode.push(0); // arg_count
+                
+                // 2. Call constructor if it exists
+                let has_constructor = if let Some(ctx) = type_context {
+                    if let Some(class_info) = ctx.get_class(&class_name) {
+                        class_info.methods.contains_key("constructor")
+                    } else { 
+                        false 
+                    }
+                } else { 
+                    false 
+                };
+                
+                if has_constructor {
+                    let contiguous_start = self.current_ctx.allocate_regs(1); // just self
+                    bytecode.push(Opcode::Move as u8);
+                    bytecode.push(contiguous_start as u8);
+                    bytecode.push(rd as u8);
+                    
+                    let constructor_idx = strings.len();
+                    strings.push("constructor".to_string());
+                    bytecode.push(Opcode::Invoke as u8);
+                    let r_unused = self.current_ctx.allocate_reg();
+                    bytecode.push(r_unused as u8);
+                    bytecode.push(constructor_idx as u8);
+                    bytecode.push(contiguous_start as u8);
+                    bytecode.push(1); // arg_count (only self)
+                }
+                
+                // 3. Set each field
+                for field in fields {
+                    let r_value = self.compile_expr(&field.value, bytecode, strings, classes, type_context)?;
+                    let r_obj = rd; // The object we just created
+                    
+                    let field_name_idx = strings.len();
+                    strings.push(field.name.clone());
+                    
+                    // SetProperty format: SetProperty robj idx rs
+                    bytecode.push(Opcode::SetProperty as u8);
+                    bytecode.push(r_obj as u8);  // robj - object register
+                    bytecode.push(field_name_idx as u8);  // idx - field name index
+                    bytecode.push(r_value as u8);  // rs - source value register
+                }
+                
                 Ok(rd)
             }
 

@@ -17,10 +17,11 @@ pub enum Stmt {
     Module { path: Vec<String> },
     Import { path: Vec<String> },
     Class(ClassDef),
+    Interface(InterfaceDef),
     Enum(EnumDef),
     Function(FunctionDef),
     TypeAlias(TypeAliasDef),
-    Let { name: String, expr: Expr },
+    Let { name: String, type_annotation: Option<String>, expr: Expr },
     Assign { name: String, expr: Expr, span: Span },
     Return(Option<Expr>),
     Expr(Expr),
@@ -69,9 +70,18 @@ pub struct FunctionDef {
 pub struct ClassDef {
     pub name: String,
     pub type_params: Vec<String>,
+    pub parent_interfaces: Vec<String>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
     pub is_native: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceDef {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub parent_interfaces: Vec<String>,
+    pub methods: Vec<Method>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +111,12 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone)]
+pub struct ObjectField {
+    pub name: String,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Literal(Literal),
     Variable { name: String, span: Span },
@@ -115,6 +131,7 @@ pub enum Expr {
     Cast { expr: Box<Expr>, target_type: CastType, span: Span },
     Array { elements: Vec<Expr>, span: Span },
     Index { object: Box<Expr>, index: Box<Expr>, span: Span },
+    ObjectLiteral { fields: Vec<ObjectField>, span: Span, inferred_type: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,10 +229,6 @@ impl Parser {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
     }
 
-    fn peek_next(&self) -> &Token {
-        self.tokens.get(self.pos + 1).unwrap_or(&Token::Eof)
-    }
-
     fn advance(&mut self) -> Token {
         let token = self.peek().clone();
         self.pos += 1;
@@ -302,6 +315,8 @@ impl Parser {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
             self.parse_class(is_native)?
+        } else if self.match_token(&Token::Interface) {
+            self.parse_interface()?
         } else if self.match_token(&Token::Enum) {
             self.parse_enum()?
         } else if self.match_token(&Token::Fn) {
@@ -423,6 +438,21 @@ impl Parser {
             Vec::new()
         };
 
+        // Parse parent interfaces (class MyClass : Interface1, Interface2)
+        let mut parent_interfaces = Vec::new();
+        if self.match_token(&Token::Colon) {
+            loop {
+                if let Token::Identifier(iface) = self.advance() {
+                    parent_interfaces.push(iface);
+                } else {
+                    return self.error_generic("Expected interface name after ':'");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+        }
+
         if !self.match_token(&Token::LBrace) {
             return self.error_generic("Expected '{' after class name");
         }
@@ -439,11 +469,11 @@ impl Parser {
             self.skip_newlines();
             while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) {
                 if self.match_token(&Token::Private) { is_private = true; }
-                else if self.match_token(&Token::Native) { 
+                else if self.match_token(&Token::Native) {
                     if !is_native_class {
                         return self.error_generic("Class member-functions can't have 'native' modifier. Use 'native class' instead.");
                     }
-                    is_native_method = true; 
+                    is_native_method = true;
                 }
                 else if self.match_token(&Token::Async) { is_async = true; }
                 self.skip_newlines();
@@ -472,7 +502,123 @@ impl Parser {
             return self.error_generic("Expected '}' to close class");
         }
 
-        Ok(Stmt::Class(ClassDef { name, type_params, fields, methods, is_native: is_native_class }))
+        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods, is_native: is_native_class }))
+    }
+
+    fn parse_interface(&mut self) -> Result<Stmt, String> {
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return self.error_generic("Expected interface name"),
+        };
+
+        // Parse generic type parameters if present
+        let type_params = if self.match_token(&Token::LAngle) {
+            let mut params = Vec::new();
+            loop {
+                if let Token::Identifier(param) = self.advance() {
+                    params.push(param);
+                } else {
+                    return self.error_generic("Expected type parameter name");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after type parameters");
+            }
+            params
+        } else {
+            Vec::new()
+        };
+
+        // Parse parent interfaces (interface MyInterface : ParentInterface1, ParentInterface2)
+        let mut parent_interfaces = Vec::new();
+        if self.match_token(&Token::Colon) {
+            loop {
+                if let Token::Identifier(iface) = self.advance() {
+                    parent_interfaces.push(iface);
+                } else {
+                    return self.error_generic("Expected interface name after ':'");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+        }
+
+        if !self.match_token(&Token::LBrace) {
+            return self.error_generic("Expected '{' after interface name");
+        }
+
+        let mut methods = Vec::new();
+
+        self.skip_newlines();
+        while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
+            let mut is_private = false;
+            let mut is_async = false;
+
+            self.skip_newlines();
+            while self.check(&Token::Private) || self.check(&Token::Async) {
+                if self.match_token(&Token::Private) { is_private = true; }
+                else if self.match_token(&Token::Async) { is_async = true; }
+                self.skip_newlines();
+            }
+
+            if self.match_token(&Token::Fn) {
+                let method = self.parse_interface_method(is_private, is_async)?;
+                methods.push(method);
+            } else {
+                return self.error_generic("Interfaces can only contain method declarations");
+            }
+            self.skip_newlines();
+        }
+
+        if !self.match_token(&Token::RBrace) {
+            return self.error_generic("Expected '}' to close interface");
+        }
+
+        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods }))
+    }
+
+    fn parse_interface_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return self.error_generic("Expected method name"),
+        };
+
+        if !self.match_token(&Token::LParen) {
+            return self.error_generic(&format!("Expected '(' after {} name", name));
+        }
+
+        let params = self.parse_params()?;
+        self.skip_newlines();
+
+        if !self.match_token(&Token::RParen) {
+            return self.error_generic("Expected ')' after parameters");
+        }
+
+        let (return_type, return_optional) = if self.match_token(&Token::Colon) {
+            let (type_name, optional) = self.parse_type()?;
+            (Some(type_name), optional)
+        } else {
+            (None, false)
+        };
+
+        // Interface methods can have optional default implementation
+        let body = if self.match_token(&Token::LBrace) {
+            let b = self.parse_block()?;
+            if !self.match_token(&Token::RBrace) {
+                return self.error_generic(&format!("Expected '}}' to close {}", name));
+            }
+            b
+        } else {
+            // Abstract method - no body
+            if self.match_token(&Token::Semicolon) {}
+            Vec::new()
+        };
+
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false })
     }
 
     fn parse_enum(&mut self) -> Result<Stmt, String> {
@@ -793,10 +939,16 @@ impl Parser {
             _ => return self.error("Expected variable name after 'let'"),
         };
 
-        if self.match_token(&Token::Colon) {
-            let (_type_name, _optional) = self.parse_type()?;
-            // For now we just consume it, TypeChecker handles it via inference or we could store it in AST
-        }
+        let type_annotation = if self.match_token(&Token::Colon) {
+            let (type_name, optional) = self.parse_type()?;
+            if optional {
+                Some(type_name + "?")
+            } else {
+                Some(type_name)
+            }
+        } else {
+            None
+        };
 
         if !self.match_token(&Token::Equal) {
             return self.error("Expected '=' in let statement");
@@ -806,7 +958,7 @@ impl Parser {
 
         if self.match_token(&Token::Semicolon) {}
 
-        Ok(Stmt::Let { name, expr })
+        Ok(Stmt::Let { name, type_annotation, expr })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, String> {
@@ -1329,44 +1481,21 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::LBrace) {
-                // Class instantiation with {} - for now we just consume the braces
-                // Full field initialization support would go here
-
-                // Check for empty braces first
-                if !self.check(&Token::RBrace) {
-                    // Try to parse field initializers (name: value pairs)
-                    loop {
-                        self.skip_newlines();
-                        if self.check(&Token::RBrace) {
-                            break;
-                        }
-                        // Skip field name
-                        self.advance();
-                        // Skip colon
-                        if self.match_token(&Token::Colon) {
-                            // Skip value expression
-                            self.parse_expression()?;
-                        }
-                        // Skip comma or semicolon
-                        if self.match_token(&Token::Comma) || self.match_token(&Token::Semicolon) {
-                            continue;
-                        }
-                        if self.check(&Token::RBrace) {
-                            break;
-                        }
-                    }
-                }
-                self.skip_newlines();
-                if !self.match_token(&Token::RBrace) {
-                    return self.error_expr("Expected '}' to close class instantiation");
-                }
-                // For now, class instantiation is just a Call with no args
+                // Class instantiation with {} or object literal
                 let span = self.compute_span(self.pos - 1);
-                expr = Expr::Call {
-                    callee: Box::new(expr),
-                    args: vec![],
-                    span,
-                };
+                let fields = self.parse_object_literal()?;
+                
+                // If expr is a Variable (class name), this is class instantiation
+                // Otherwise, it's a standalone object literal (type inferred from context)
+                if let Expr::Variable { name: class_name, .. } = &expr {
+                    // This is class instantiation: ClassName { field: value }
+                    // Store as ObjectLiteral with inferred_type set to the class name
+                    expr = Expr::ObjectLiteral { fields, span, inferred_type: Some(class_name.clone()) };
+                } else {
+                    // This is a standalone object literal: { field: value }
+                    // Type will be inferred from context (e.g., function parameter)
+                    expr = Expr::ObjectLiteral { fields, span, inferred_type: None };
+                }
             } else if self.match_token(&Token::Dot) {
                 let name = match self.advance() {
                     Token::Identifier(n) => n,
@@ -1430,6 +1559,55 @@ impl Parser {
         Ok(args)
     }
 
+    fn parse_object_literal(&mut self) -> Result<Vec<ObjectField>, String> {
+        let mut fields = Vec::new();
+        self.skip_newlines();
+        
+        // Check for empty object literal
+        if self.check(&Token::RBrace) {
+            self.advance(); // consume }
+            return Ok(fields);
+        }
+        
+        loop {
+            self.skip_newlines();
+            if self.check(&Token::RBrace) {
+                break;
+            }
+            
+            // Parse field name
+            let field_name = match self.advance() {
+                Token::Identifier(name) => name,
+                _ => return self.error_generic("Expected field name in object literal"),
+            };
+            
+            // Expect colon
+            if !self.match_token(&Token::Colon) {
+                return self.error_generic("Expected ':' after field name in object literal");
+            }
+            
+            // Parse field value
+            let value = self.parse_expression()?;
+            fields.push(ObjectField { name: field_name, value });
+            
+            // Check for comma/semicolon or end
+            if self.match_token(&Token::Comma) || self.match_token(&Token::Semicolon) {
+                continue;
+            }
+            
+            self.skip_newlines();
+            if self.check(&Token::RBrace) {
+                break;
+            }
+        }
+        
+        if !self.match_token(&Token::RBrace) {
+            return self.error_generic("Expected '}' to close object literal");
+        }
+        
+        Ok(fields)
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, String> {
         let token_pos = self.pos;
         match self.advance() {
@@ -1481,6 +1659,12 @@ impl Parser {
                     return self.error_expr("Expected ']' after array elements");
                 }
                 Ok(Expr::Array { elements, span })
+            },
+            Token::LBrace => {
+                // Object literal: { field: value, ... }
+                let span = self.compute_span(token_pos);
+                let fields = self.parse_object_literal()?;
+                Ok(Expr::ObjectLiteral { fields, span, inferred_type: None })
             },
             Token::TypeInt => {
                 let span = self.compute_span(token_pos);
