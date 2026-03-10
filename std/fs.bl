@@ -1,7 +1,6 @@
 module std::fs
 
-// File metadata class
-class FsMetadata {
+class FileInfo {
   is_file: bool = false
   is_dir: bool = false
   size: int = 0
@@ -22,102 +21,74 @@ class FsMetadata {
   }
 }
 
-// Read entire file as bytes (returns array of Int8)
-native fn read(str path): Array?;
+native fn read(path: str): Array?
 
-// Read entire file as string
-native fn read_string(str path): str?;
+native fn readString(path: str): str?
 
-// Write bytes to file
-native fn write(str path, Array data): null;
+native fn write(path: str, data: Array)
 
-// Write string to file
-native fn write_string(str path, str content): null;
+native fn writeString(str path, str content)
 
-// Append bytes to file
-native fn append(str path, Array data): null;
+native fn append(str path, Array data)
 
-// Append string to file
-native fn append_string(str path, str content): null;
+native fn appendString(str path, str content)
 
-// Remove file or directory
-native fn remove(str path): null;
+native fn remove(str path)
 
-// Remove file
-native fn remove_file(str path): null;
+native fn removeFile(str path)
 
-// Remove empty directory
-native fn remove_dir(str path): null;
+native fn removeDir(str path)
 
-// Remove directory and all contents
-native fn remove_dir_all(str path): null;
+native fn removeDirAll(str path)
 
-// Check if path exists
-native fn exists(str path): bool;
+native fn exists(str path): bool
 
-// Check if path is a file
-native fn is_file(str path): bool;
+native fn isFile(str path): bool
 
-// Check if path is a directory
-native fn is_dir(str path): bool;
+native fn isDir(str path): bool
 
-// Create directory
-native fn create_dir(str path): null;
+native fn createDir(str path)
 
-// Create directory and all parent directories
-native fn create_dir_all(str path): null;
+native fn createDirAll(str path)
 
-// Read directory contents (returns array of paths)
-native fn read_dir(str path): Array?;
+native fn readDir(str path): Array?
 
-// Copy file
-native fn copy(str from, str to): null;
+native fn copy(str from, str to)
 
-// Rename/move file or directory
-native fn rename(str from, str to): null;
+native fn rename(from: str, to: str)
 
-// Get file/directory metadata
-native fn metadata(str path): FsMetadata?;
+native fn stat(path: str): FileInfo?
 
-// Get canonical absolute path
-native fn canonicalize(str path): str?;
+native fn canonicalize(path: str): str?
 
-// Convenience functions
-
-// Read file content as string (alias for read_string)
-fn read_text(str path): str? {
-  return read_string(path)
+fn readText(path: str): str? {
+  return readString(path)
 }
 
-// Write text to file (alias for write_string)
-fn write_text(str path, str content): null {
-  write_string(path, content)
+fn writeText(str path, str content) {
+  writeString(path, content)
 }
 
-// Append text to file (alias for append_string)
-fn append_text(str path, str content): null {
-  append_string(path, content)
+fn appendText(str path, str content) {
+  appendString(path, content)
 }
 
-// Check if file exists
-fn file_exists(str path): bool {
+fn fileExists(str path): bool {
   if (!exists(path)) {
     return false
   }
   return is_file(path)
 }
 
-// Check if directory exists
-fn dir_exists(str path): bool {
+fn dirExists(str path): bool {
   if (!exists(path)) {
     return false
   }
   return is_dir(path)
 }
 
-// Ensure directory exists (create if not)
-fn ensure_dir(str path): null {
-  if (!dir_exists(path)) {
-    create_dir_all(path)
+fn ensureDir(str path) {
+  if (!dirExists(path)) {
+    createDirAll(path)
   }
 }

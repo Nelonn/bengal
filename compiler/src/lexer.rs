@@ -8,8 +8,10 @@ pub enum Token {
     Import,
     Module,
     Class,
+    Interface,
     Enum,
     Fn,
+    Type,
     Let,
     If,
     Else,
@@ -63,6 +65,7 @@ pub enum Token {
     GreaterEqual,
     Less,
     LessEqual,
+    Arrow,  // ->
 
     LParen,
     RParen,
@@ -70,6 +73,8 @@ pub enum Token {
     RBrace,
     LBracket,
     RBracket,
+    LAngle,
+    RAngle,
     Colon,
     DoubleColon,
     Comma,
@@ -84,13 +89,15 @@ pub enum Token {
 pub struct Lexer {
     chars: Vec<char>,
     pos: usize,
+    path: String,
 }
 
 impl Lexer {
-    pub fn new(source: &str) -> Self {
+    pub fn new(source: &str, path: &str) -> Self {
         Self {
             chars: source.chars().collect(),
             pos: 0,
+            path: path.to_string(),
         }
     }
 
@@ -111,7 +118,7 @@ impl Lexer {
     fn get_pos(&self) -> (usize, usize) {
         let source_up_to_pos = &self.chars[..self.pos.min(self.chars.len())];
         let line = source_up_to_pos.iter().filter(|&&c| c == '\n').count() + 1;
-        
+
         let mut last_newline = 0;
         for (i, &c) in source_up_to_pos.iter().enumerate() {
             if c == '\n' {
@@ -119,8 +126,17 @@ impl Lexer {
             }
         }
         let column = self.pos - last_newline + 1;
-        
+
         (line, column)
+    }
+
+    fn error(&self, message: &str) -> String {
+        let (line, col) = self.get_pos();
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        format!("{}:{}:{}: error: {}", filename, line, col, message)
     }
 
     fn skip_whitespace(&mut self) {
@@ -246,6 +262,9 @@ impl Lexer {
                 if self.peek() == Some('-') {
                     self.advance();
                     Ok(Token::MinusMinus)
+                } else if self.peek() == Some('>') {
+                    self.advance();
+                    Ok(Token::Arrow)
                 } else {
                     Ok(Token::Minus)
                 }
@@ -263,7 +282,7 @@ impl Lexer {
                     self.advance();
                     Ok(Token::GreaterEqual)
                 } else {
-                    Ok(Token::Greater)
+                    Ok(Token::RAngle)
                 }
             }
             '<' => {
@@ -271,21 +290,20 @@ impl Lexer {
                 if self.peek() == Some('=') {
                     self.advance();
                     Ok(Token::LessEqual)
-                } else {
+                } else if self.peek() == Some('.') {
+                    // This is a range operator <..
                     Ok(Token::Less)
+                } else {
+                    Ok(Token::LAngle)
                 }
             }
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
-            _ => {
-                let (line, col) = self.get_pos();
-                Err(format!("[{}:{}] Unexpected character: '{}'", line, col, ch))
-            },
+            _ => Err(self.error(&format!("Unexpected character: '{}'", ch))),
         }
     }
 
     fn read_string(&mut self) -> Result<Token, String> {
-        let (line, col) = self.get_pos();
         self.advance(); // consume first "
         
         if self.peek() == Some('"') && self.peek_next() == Some('"') {
@@ -309,7 +327,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
                     Some(c) => s.push(c),
-                    None => return Err(format!("[{}:{}] Unterminated string escape", line, col)),
+                    None => return Err(self.error("Unterminated string escape")),
                 }
                 self.advance();
             } else {
@@ -317,18 +335,17 @@ impl Lexer {
                 self.advance();
             }
         }
-        Err(format!("[{}:{}] Unterminated string", line, col))
+        Err(self.error("Unterminated string"))
     }
 
     fn read_multiline_string(&mut self) -> Result<Token, String> {
-        let (line, col) = self.get_pos();
         let mut s = String::new();
         while let Some(ch) = self.peek() {
             if ch == '"' && self.peek_next() == Some('"') && self.chars.get(self.pos + 2) == Some(&'"') {
                 self.advance();
                 self.advance();
                 self.advance();
-                
+
                 let processed = self.process_multiline_string(&s);
                 return Ok(Token::String(processed));
             }
@@ -341,7 +358,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
                     Some(c) => s.push(c),
-                    None => return Err(format!("[{}:{}] Unterminated multiline string escape", line, col)),
+                    None => return Err(self.error("Unterminated multiline string escape")),
                 }
                 self.advance();
             } else {
@@ -349,7 +366,7 @@ impl Lexer {
                 self.advance();
             }
         }
-        Err(format!("[{}:{}] Unterminated multiline string", line, col))
+        Err(self.error("Unterminated multiline string"))
     }
 
     fn process_multiline_string(&self, s: &str) -> String {
@@ -413,8 +430,10 @@ impl Lexer {
             "import" => Token::Import,
             "module" => Token::Module,
             "class" => Token::Class,
+            "interface" => Token::Interface,
             "enum" => Token::Enum,
             "fn" => Token::Fn,
+            "type" => Token::Type,
             "let" => Token::Let,
             "if" => Token::If,
             "else" => Token::Else,

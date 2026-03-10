@@ -1,3 +1,4 @@
+pub mod args;
 pub mod data;
 pub mod ffi;
 pub mod fs;
@@ -5,6 +6,7 @@ pub mod http;
 pub mod io;
 pub mod json;
 pub mod reflect;
+pub mod str;
 pub mod sys;
 
 use sparkler::{NativeModule, Value, VM};
@@ -64,8 +66,34 @@ pub fn register_all(vm: &mut VM) {
         .function("fields", reflect::native_reflect_fields)
         .register(vm);
 
+    NativeModule::new("")
+        .class_method("str", "length", str::native_str_length)
+        .class_method("str", "trim", str::native_str_trim)
+        .class_method("str", "split", str::native_str_split)
+        .class_method("str", "to_int", str::native_str_to_int)
+        .class_method("str", "to_float", str::native_str_to_float)
+        .class_method("str", "contains", str::native_str_contains)
+        .class_method("str", "starts_with", str::native_str_starts_with)
+        .class_method("str", "ends_with", str::native_str_ends_with)
+        .class_method("str", "substring", str::native_str_substring)
+        .class_method("str", "to_lowercase", str::native_str_to_lowercase)
+        .class_method("str", "to_uppercase", str::native_str_to_uppercase)
+        .class_method("str", "replace", str::native_str_replace)
+        .register(vm);
+
     NativeModule::new("std::sys")
         .function("env", sys::native_sys_env)
+        .function("set_pwd", sys::native_sys_set_pwd)
+        .class_native_create("Process", sys::native_process_native_create)
+        .class_method("Process", "start", sys::native_process_start)
+        .class_method("Process", "write_stdin", sys::native_process_write_stdin)
+        .class_method("Process", "close_stdin", sys::native_process_close_stdin)
+        .class_method("Process", "read_stdout", sys::native_process_read_stdout)
+        .class_method("Process", "read_stderr", sys::native_process_read_stderr)
+        .class_method("Process", "wait", sys::native_process_wait)
+        .class_method("Process", "exit_code", sys::native_process_exit_code)
+        .class_method("Process", "get_stdout", sys::native_process_get_stdout)
+        .class_method("Process", "get_stderr", sys::native_process_get_stderr)
         .register(vm);
 
     NativeModule::new("std::fs")
@@ -89,6 +117,10 @@ pub fn register_all(vm: &mut VM) {
         .function("rename", fs::native_fs_rename)
         .function("metadata", fs::native_fs_metadata)
         .function("canonicalize", fs::native_fs_canonicalize)
+        .register(vm);
+
+    NativeModule::new("std::args")
+        .function("get", args::native_args_get)
         .register(vm);
 
     // Fallback function that throws an error

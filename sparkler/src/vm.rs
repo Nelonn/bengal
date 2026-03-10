@@ -332,6 +332,9 @@ pub struct Class {
     pub native_methods: HashMap<String, NativeFn>,
     pub native_create: Option<NativeFn>,
     pub is_native: bool,
+    pub parent_interfaces: Vec<String>,
+    pub vtable: Vec<String>,  // Ordered list of virtual method names
+    pub is_interface: bool,
 }
 
 #[derive(Clone)]
@@ -1153,27 +1156,156 @@ impl VM {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
 
+                // Check if this is an array method call
+                if let Some(Value::Array(_)) = args.first() {
+                    // Handle array native methods directly
+                    let result = match name.as_str() {
+                        "length" => {
+                            if let Value::Array(arr) = &args[0] {
+                                let elements = arr.lock().unwrap();
+                                Ok(Value::Int64(elements.len() as i64))
+                            } else {
+                                Err(Value::String("length requires an array".to_string()))
+                            }
+                        }
+                        "add" => {
+                            if args.len() < 2 {
+                                Err(Value::String("add requires a value argument".to_string()))
+                            } else if let Value::Array(arr) = &args[0] {
+                                let mut elements = arr.lock().unwrap();
+                                elements.push(args[1].clone());
+                                Ok(Value::Null)
+                            } else {
+                                Err(Value::String("add requires an array".to_string()))
+                            }
+                        }
+                        _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
+                    };
+                    self.set_reg(rd, result?);
+                } else {
+                    let instance = if let Some(Value::Instance(instance)) = args.first() {
+                        instance.clone()
+                    } else {
+                        return Err(Value::String("Invoke requires an instance".to_string()));
+                    };
+
+                    let class_name = instance.lock().unwrap().class.clone();
+                    if let Some(class) = self.classes.get(&class_name).cloned() {
+                        if let Some(native_method) = class.native_methods.get(&name) {
+                            let mut method_args = args.clone();
+                            let result = native_method(&mut method_args)?;
+                            self.set_reg(rd, result);
+                        } else if let Some(method) = class.methods.get(&name) {
+                            // Set up method call frame
+                            let caller_pc = self.pc();
+                            let caller_frame_base = self.frame_base();
+
+                            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+                            if new_frame_base + method.register_count as usize > self.registers.len() {
+                                return Err(Value::String("Register overflow in method call".to_string()));
+                            }
+
+                            let mut new_call_stack = self.call_stack.clone();
+                            if let Some(last_frame) = new_call_stack.last_mut() {
+                                last_frame.line_number = self.current_line;
+                            }
+                            new_call_stack.push(CallFrame::new(
+                                0,
+                                new_frame_base,
+                                arg_count,
+                                method.register_count,
+                                format!("{}.{}", class_name, name),
+                                self.source_file.clone(),
+                            ));
+                            self.call_stack = new_call_stack;
+
+                            // Copy arguments (first is self, placed in R1..Rn)
+                            for (i, arg) in args.iter().enumerate() {
+                                self.set_reg((i + 1) as u8, arg.clone());
+                            }
+
+                            let new_bytecode = method.bytecode.clone();
+                            let new_strings = self.strings.clone();
+                            let new_classes = self.classes.clone();
+                            let new_native_functions = self.native_functions.clone();
+
+                            let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
+                            let old_strings = std::mem::replace(&mut self.strings, new_strings);
+                            let old_classes = std::mem::replace(&mut self.classes, new_classes);
+                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+
+                            let result = self.run().await;
+
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.classes = old_classes;
+                            self.native_functions = old_native_functions;
+
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;  // PC already points to next instruction
+                                frame.frame_base = caller_frame_base;
+                            }
+
+                            match result {
+                                Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
+                                Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                        }
+                    } else {
+                        return Err(Value::String(format!("Class '{}' not found", class_name)));
+                    }
+                }
+            }
+
+            // Invoke interface method via vtable
+            // Format: [InvokeInterface, Rd, vtable_idx, arg_start, arg_count]
+            // First argument (arg_start) is the receiver (self)
+            x if x == Opcode::InvokeInterface as u8 || x == Opcode::InvokeInterfaceAsync as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let method_idx = self.bytecode[self.pc()] as usize;
+                self.set_pc(self.pc() + 1);
+                let arg_start = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let arg_count = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);  // Advance PC past all operands
+
+                let name = self.strings.get(method_idx)
+                    .ok_or_else(|| Value::String(format!("Invalid method index: {}", method_idx)))?
+                    .clone();
+
+                let mut args = Vec::new();
+                for i in 0..arg_count {
+                    args.push(self.get_reg(arg_start + i).clone());
+                }
+
                 let instance = if let Some(Value::Instance(instance)) = args.first() {
                     instance.clone()
                 } else {
-                    return Err(Value::String("Invoke requires an instance".to_string()));
+                    return Err(Value::String("InvokeInterface requires an instance".to_string()));
                 };
 
                 let class_name = instance.lock().unwrap().class.clone();
+                
+                // Look up the method through the vtable
                 if let Some(class) = self.classes.get(&class_name).cloned() {
-                    if let Some(native_method) = class.native_methods.get(&name) {
-                        let mut method_args = args.clone();
-                        let result = native_method(&mut method_args)?;
-                        self.set_reg(rd, result);
-                    } else if let Some(method) = class.methods.get(&name) {
-                        // Set up method call frame
+                    // First check if the class itself has the method
+                    if let Some(method) = class.methods.get(&name) {
+                        // Found the method in the class, invoke it
                         let caller_pc = self.pc();
                         let caller_frame_base = self.frame_base();
 
                         let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-                        
+
                         if new_frame_base + method.register_count as usize > self.registers.len() {
-                            return Err(Value::String("Register overflow in method call".to_string()));
+                            return Err(Value::String("Register overflow in interface method call".to_string()));
                         }
 
                         let mut new_call_stack = self.call_stack.clone();
@@ -1190,7 +1322,6 @@ impl VM {
                         ));
                         self.call_stack = new_call_stack;
 
-                        // Copy arguments (first is self, placed in R1..Rn)
                         for (i, arg) in args.iter().enumerate() {
                             self.set_reg((i + 1) as u8, arg.clone());
                         }
@@ -1214,7 +1345,7 @@ impl VM {
 
                         self.call_stack.pop();
                         if let Some(frame) = self.call_stack.last_mut() {
-                            frame.pc = caller_pc;  // PC already points to next instruction
+                            frame.pc = caller_pc;
                             frame.frame_base = caller_frame_base;
                         }
 
@@ -1225,7 +1356,85 @@ impl VM {
                             Err(e) => return Err(e),
                         }
                     } else {
-                        return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                        // Check parent interfaces for the method (default implementation)
+                        let mut found = false;
+                        let mut found_method = None;
+                        let mut found_iface_name = None;
+                        
+                        for iface_name in &class.parent_interfaces {
+                            if let Some(iface) = self.classes.get(iface_name) {
+                                if let Some(method) = iface.methods.get(&name) {
+                                    found_method = Some(method.clone());
+                                    found_iface_name = Some(iface_name.clone());
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if found {
+                            let method = found_method.unwrap();
+                            let iface_name = found_iface_name.unwrap();
+                            
+                            // Found in parent interface, use default implementation
+                            let caller_pc = self.pc();
+                            let caller_frame_base = self.frame_base();
+                            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+                            if new_frame_base + method.register_count as usize > self.registers.len() {
+                                return Err(Value::String("Register overflow in interface method call".to_string()));
+                            }
+
+                            let mut new_call_stack = self.call_stack.clone();
+                            if let Some(last_frame) = new_call_stack.last_mut() {
+                                last_frame.line_number = self.current_line;
+                            }
+                            new_call_stack.push(CallFrame::new(
+                                0,
+                                new_frame_base,
+                                arg_count,
+                                method.register_count,
+                                format!("{}.{}", iface_name, name),
+                                self.source_file.clone(),
+                            ));
+                            self.call_stack = new_call_stack;
+
+                            for (i, arg) in args.iter().enumerate() {
+                                self.set_reg((i + 1) as u8, arg.clone());
+                            }
+
+                            let new_bytecode = method.bytecode.clone();
+                            let new_strings = self.strings.clone();
+                            let new_classes = self.classes.clone();
+                            let new_native_functions = self.native_functions.clone();
+
+                            let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
+                            let old_strings = std::mem::replace(&mut self.strings, new_strings);
+                            let old_classes = std::mem::replace(&mut self.classes, new_classes);
+                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+
+                            let result = self.run().await;
+
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.classes = old_classes;
+                            self.native_functions = old_native_functions;
+
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;
+                                frame.frame_base = caller_frame_base;
+                            }
+
+                            match result {
+                                Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
+                                Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            return Err(Value::String(format!("Interface method '{}' not found in class '{}' or its interfaces", name, class_name)));
+                        }
                     }
                 } else {
                     return Err(Value::String(format!("Class '{}' not found", class_name)));
@@ -1907,6 +2116,8 @@ pub enum Opcode {
     InvokeAsync = 0x46,
     Await = 0x47,
     Spawn = 0x48,
+    InvokeInterface = 0x49,  // Rd, vtable_idx, arg_start, arg_count
+    InvokeInterfaceAsync = 0x4A,  // Rd, vtable_idx, arg_start, arg_count
 
     // Control flow
     Jump = 0x50,         // target (2 bytes)

@@ -6,11 +6,11 @@ async fn main() {
 
     // Create HTTP client
     let client = HttpClient()
-    client.set_timeout(5000)
+    client.setTimeout(5000)
 
     // Add default headers
-    client.add_header("User-Agent", "Bengal/1.0")
-    client.add_header("Accept", "application/json")
+    client.addHeader("User-Agent", "Bengal/1.0")
+    client.addHeader("Accept", "application/json")
 
     println("HttpClient created and configured!")
     println("Ready to make HTTP requests!")

@@ -1,0 +1,9 @@
+import std::io
+
+let arr = [1, 2, 3]
+println("Initial length: " + arr.length())
+
+arr.add(4)
+arr.add(5)
+println("After add, length: " + arr.length())
+println("arr[4]: " + arr[4])

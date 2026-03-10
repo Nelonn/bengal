@@ -17,6 +17,7 @@ pub struct ModuleInfo {
     pub path: PathBuf,
     pub statements: Vec<Stmt>,
     pub classes: Vec<String>,
+    pub interfaces: Vec<String>,
     pub functions: Vec<String>,
     pub source: String,
 }
@@ -72,20 +73,24 @@ impl ModuleResolver {
         let source = fs::read_to_string(&module_file)
             .map_err(|e| format!("Failed to read module '{}': {}", module_file.display(), e))?;
 
-        let mut lexer = Lexer::new(&source);
+        let mut lexer = Lexer::new(&source, module_file.to_str().unwrap_or("unknown"));
         let (tokens, token_positions) = lexer.tokenize()?;
 
-        let mut parser = Parser::new(tokens, &source, token_positions);
+        let mut parser = Parser::new(tokens, &source, module_file.to_str().unwrap_or("unknown"), token_positions);
         let statements = parser.parse()?;
 
         // Create module info
         let mut classes = Vec::new();
+        let mut interfaces = Vec::new();
         let functions = Vec::new();
 
         for stmt in &statements {
             match stmt {
                 Stmt::Class(class) => {
                     classes.push(class.name.clone());
+                }
+                Stmt::Interface(interface) => {
+                    interfaces.push(interface.name.clone());
                 }
                 _ => {}
             }
@@ -96,6 +101,7 @@ impl ModuleResolver {
             path: module_file,
             statements,
             classes,
+            interfaces,
             functions,
             source: source.clone(),
         };
@@ -254,8 +260,17 @@ impl ModuleResolver {
                     self.type_context.add_class(&class_with_module);
                     self.type_context.add_class(class); // Also add without module for now
                 }
+                Stmt::Interface(interface) => {
+                    let mut interface_with_module = interface.clone();
+                    interface_with_module.name = format!("{}::{}", module_name, interface.name);
+                    self.type_context.add_interface(&interface_with_module);
+                    self.type_context.add_interface(interface); // Also add without module for now
+                }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
+                }
+                Stmt::TypeAlias(alias) => {
+                    self.type_context.add_type_alias(alias);
                 }
                 Stmt::Function(func) => {
                     let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {

@@ -28,6 +28,13 @@ pub enum Type {
     Array(Box<Type>),
     Null,
     Unknown,
+    // Generics support
+    TypeParameter(String),                    // T (type parameter)
+    GenericInstance(String, Vec<Type>),       // ClassName<T1, T2, ...>
+    // Type alias support
+    TypeAlias(String, Vec<Type>),             // Alias name with optional type args
+    // Function type for lambdas
+    Function(Vec<Type>, Box<Type>),           // (param_types, return_type)
 }
 
 impl Type {
@@ -42,7 +49,44 @@ impl Type {
             let inner = s.trim_end_matches('?');
             return Type::Optional(Box::new(Type::from_str(inner)));
         }
+
+        // Handle function types: (param_types) -> return_type or async (params) -> return_type
+        let s_trimmed = s.trim_start_matches("async ");
+        let is_async = s.starts_with("async ");
         
+        if s_trimmed.starts_with('(') {
+            if let Some(arrow_pos) = s_trimmed.find(") -> ") {
+                let params_str = &s_trimmed[1..arrow_pos];
+                let return_str = &s_trimmed[arrow_pos + 4..];
+
+                let param_types: Vec<Type> = if params_str.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    params_str.split(',')
+                        .map(|p| Type::from_str(p.trim()))
+                        .collect()
+                };
+
+                let inner_type = Type::from_str(return_str.trim());
+                let return_type = if is_async {
+                    Box::new(Type::Promise(Box::new(inner_type)))
+                } else {
+                    Box::new(inner_type)
+                };
+                return Type::Function(param_types, return_type);
+            }
+        }
+
+        // Handle generic types like ClassName<T1, T2>
+        if let Some(angle_start) = s.find('<') {
+            if s.ends_with('>') {
+                let class_name = &s[..angle_start];
+                let args_str = &s[angle_start + 1..s.len() - 1];
+                let args = Self::parse_generic_args(args_str);
+                return Type::GenericInstance(class_name.to_string(), args);
+            }
+        }
+
         match s {
             "int" => Type::Int,
             "float" => Type::Float,
@@ -60,6 +104,42 @@ impl Type {
             "float64" => Type::Float64,
             _ => Type::Class(s.to_string()),
         }
+    }
+
+    fn parse_generic_args(args_str: &str) -> Vec<Type> {
+        let mut args = Vec::new();
+        let mut depth = 0;
+        let mut current = String::new();
+
+        for ch in args_str.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    let arg = current.trim().to_string();
+                    if !arg.is_empty() {
+                        args.push(Type::from_str(&arg));
+                    }
+                    current.clear();
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+        }
+
+        let arg = current.trim().to_string();
+        if !arg.is_empty() {
+            args.push(Type::from_str(&arg));
+        }
+
+        args
     }
 
     pub fn to_str(&self) -> String {
@@ -85,6 +165,23 @@ impl Type {
             Type::Array(t) => format!("{}[]", t.to_str()),
             Type::Null => "null".to_string(),
             Type::Unknown => "unknown".to_string(),
+            Type::TypeParameter(name) => name.clone(),
+            Type::GenericInstance(name, args) => {
+                let args_str: Vec<String> = args.iter().map(|a| a.to_str()).collect();
+                format!("{}<{}>", name, args_str.join(", "))
+            }
+            Type::TypeAlias(name, args) => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let args_str: Vec<String> = args.iter().map(|a| a.to_str()).collect();
+                    format!("{}<{}>", name, args_str.join(", "))
+                }
+            }
+            Type::Function(params, return_type) => {
+                let params_str: Vec<String> = params.iter().map(|p| p.to_str()).collect();
+                format!("({}) -> {}", params_str.join(", "), return_type.to_str())
+            }
         }
     }
 
@@ -95,6 +192,34 @@ impl Type {
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
             (Type::Array(a), Type::Array(b)) => a.is_assignable_to(b),
+            // Function type compatibility
+            (Type::Function(self_params, self_return), Type::Function(other_params, other_return)) => {
+                if self_params.len() != other_params.len() {
+                    return false;
+                }
+                // Parameters must match exactly
+                let params_match = self_params.iter().zip(other_params.iter())
+                    .all(|(s, o)| s == o || s == &Type::Unknown || o == &Type::Unknown);
+                // Return type must be compatible
+                let return_match = self_return.is_assignable_to(other_return);
+                params_match && return_match
+            }
+            // Generic instance matching
+            (Type::GenericInstance(a_name, a_args), Type::GenericInstance(b_name, b_args)) => {
+                if a_name != b_name || a_args.len() != b_args.len() {
+                    return false;
+                }
+                a_args.iter().zip(b_args.iter()).all(|(a, b)| a.is_assignable_to(b))
+            }
+            // Type alias resolution
+            (Type::TypeAlias(_, _), _) => {
+                // For now, type aliases are transparent - they should be resolved before this check
+                false
+            }
+            (_, Type::TypeAlias(_, _)) => false,
+            // Type parameters - very permissive for now (will be refined in type checker)
+            (Type::TypeParameter(_), _) => true,
+            (_, Type::TypeParameter(_)) => true,
             (a, b) if a == b => true,
             // Numeric compatibility
             (Type::Int, Type::Float) => true,
@@ -145,9 +270,22 @@ pub struct ParamSignature {
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: HashMap<String, FieldInfo>,
     pub methods: HashMap<String, MethodSignature>,
+    pub parent_interfaces: Vec<String>,
+    pub vtable: Vec<String>,  // Ordered list of virtual method names
+    pub is_interface: bool,
     pub is_native: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub parent_interfaces: Vec<String>,
+    pub methods: HashMap<String, MethodSignature>,
+    pub vtable: Vec<String>,  // Ordered list of method names for vtable
 }
 
 #[derive(Debug, Clone)]
@@ -187,17 +325,29 @@ pub struct VariableInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeAliasInfo {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub aliased_type: Type,
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeContext {
     pub classes: HashMap<String, ClassInfo>,
+    pub interfaces: HashMap<String, InterfaceInfo>,
     pub functions: HashMap<String, FunctionSignature>,
     pub variables: HashMap<String, VariableInfo>,
     pub enums: HashMap<String, EnumInfo>,
+    pub type_aliases: HashMap<String, TypeAliasInfo>,
     pub current_class: Option<String>,
     pub current_method_return: Option<Type>,
     pub current_async_inner_return: Option<Type>,
     pub current_method_params: Vec<String>,
     pub imports: Vec<String>,
     pub errors: Vec<TypeError>,
+    // Type annotations for expressions (line -> column -> type)
+    // Used to store inferred types for object literals
+    pub expr_types: HashMap<(usize, usize), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,15 +363,18 @@ impl TypeContext {
     pub fn new() -> Self {
         let mut ctx = Self {
             classes: HashMap::new(),
+            interfaces: HashMap::new(),
             functions: HashMap::new(),
             variables: HashMap::new(),
             enums: HashMap::new(),
+            type_aliases: HashMap::new(),
             current_class: None,
             current_method_return: None,
             current_async_inner_return: None,
             current_method_params: Vec::new(),
             imports: Vec::new(),
             errors: Vec::new(),
+            expr_types: HashMap::new(),
         };
 
         // Register native classes
@@ -369,16 +522,73 @@ impl TypeContext {
             });
         }
 
+        // Build vtable: collect all virtual methods (methods that override interface methods)
+        let mut vtable = Vec::new();
+        for method_name in methods.keys() {
+            vtable.push(method_name.clone());
+        }
+
         self.classes.insert(class.name.clone(), ClassInfo {
             name: class.name.clone(),
+            type_params: class.type_params.clone(),
             fields,
             methods,
-            is_native: false,
+            parent_interfaces: class.parent_interfaces.clone(),
+            vtable,
+            is_interface: false,
+            is_native: class.is_native,
+        });
+    }
+
+    pub fn add_interface(&mut self, interface: &crate::parser::InterfaceDef) {
+        let mut methods = HashMap::new();
+        for method in &interface.methods {
+            let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
+                name: p.name.clone(),
+                type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
+            }).collect();
+
+            methods.insert(method.name.clone(), MethodSignature {
+                name: method.name.clone(),
+                params,
+                return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
+                return_optional: method.return_optional,
+                private: method.private,
+                is_async: method.is_async,
+                is_native: method.is_native,
+            });
+        }
+
+        // Build vtable: ordered list of method names
+        let mut vtable = Vec::new();
+        for method_name in methods.keys() {
+            vtable.push(method_name.clone());
+        }
+
+        self.interfaces.insert(interface.name.clone(), InterfaceInfo {
+            name: interface.name.clone(),
+            type_params: interface.type_params.clone(),
+            parent_interfaces: interface.parent_interfaces.clone(),
+            methods,
+            vtable,
         });
     }
 
     pub fn add_function(&mut self, name: &str, signature: FunctionSignature) {
         self.functions.insert(name.to_string(), signature);
+    }
+
+    pub fn add_type_alias(&mut self, alias: &crate::parser::TypeAliasDef) {
+        let aliased_type = Type::from_str(&alias.aliased_type);
+        self.type_aliases.insert(alias.name.clone(), TypeAliasInfo {
+            name: alias.name.clone(),
+            type_params: alias.type_params.clone(),
+            aliased_type,
+        });
+    }
+
+    pub fn get_type_alias(&self, name: &str) -> Option<&TypeAliasInfo> {
+        self.type_aliases.get(name)
     }
 
     pub fn add_enum(&mut self, enum_def: &crate::parser::EnumDef) {
@@ -433,6 +643,10 @@ impl TypeContext {
 
     pub fn get_class(&self, name: &str) -> Option<&ClassInfo> {
         self.classes.get(name)
+    }
+
+    pub fn get_interface(&self, name: &str) -> Option<&InterfaceInfo> {
+        self.interfaces.get(name)
     }
 
     pub fn get_function(&self, name: &str) -> Option<&FunctionSignature> {
@@ -571,8 +785,14 @@ impl TypeChecker {
                 Stmt::Class(class) => {
                     self.context.add_class(class);
                 }
+                Stmt::Interface(interface) => {
+                    self.context.add_interface(interface);
+                }
                 Stmt::Enum(enum_def) => {
                     self.context.add_enum(enum_def);
+                }
+                Stmt::TypeAlias(alias) => {
+                    self.context.add_type_alias(alias);
                 }
                 Stmt::Function(func) => {
                     if !skip_functions {
@@ -611,27 +831,43 @@ impl TypeChecker {
             Stmt::Class(class) => {
                 self.check_class(class);
             }
+            Stmt::Interface(_) => {
+                // Interface definitions are already processed in collect_definitions
+            }
             Stmt::Enum(_) => {
                 // Enum definitions are already processed in collect_definitions
+            }
+            Stmt::TypeAlias(_) => {
+                // Type aliases are already processed in collect_definitions
             }
             Stmt::Function(func) => {
                 self.check_function(func);
             }
-            Stmt::Let { name, expr } => {
-                let expr_type = self.infer_expr(expr);
+            Stmt::Let { name, type_annotation, expr } => {
+                // If there's a type annotation, use it for type deduction
+                let expr_type = if let Some(ref type_name) = type_annotation {
+                    let expected_type = Type::from_str(type_name);
+                    self.infer_expr_with_expected_type(expr, &Some(expected_type))
+                } else {
+                    self.infer_expr(expr)
+                };
                 self.context.add_variable(name, expr_type);
             }
             Stmt::Assign { name, expr, span } => {
                 let expr_type = self.infer_expr(expr);
 
                 if let Some(var_info) = self.context.get_variable(name) {
-                    if !expr_type.is_assignable_to(&var_info.type_name) {
+                    // Use expected type for type deduction
+                    let expected_type = var_info.type_name.clone();
+                    let deduced_type = self.infer_expr_with_expected_type(expr, &Some(expected_type.clone()));
+                    
+                    if !deduced_type.is_assignable_to(&expected_type) {
                         self.context.add_error(
                             format!(
                                 "Type mismatch: cannot assign {} to variable '{}' of type {}",
-                                expr_type.to_str(),
+                                deduced_type.to_str(),
                                 name,
-                                var_info.type_name.to_str()
+                                expected_type.to_str()
                             ),
                             0
                         );
@@ -677,7 +913,8 @@ impl TypeChecker {
 
                 if let Some(expected) = &expected_return {
                     if let Some(e) = expr {
-                        let expr_type = self.infer_expr(e);
+                        // Use expected type for type deduction
+                        let expr_type = self.infer_expr_with_expected_type(e, &expected_return);
                         if !expr_type.is_assignable_to(expected) {
                             self.context.add_error(
                                 format!(
@@ -1189,7 +1426,7 @@ impl TypeChecker {
             }
             Expr::Set { object, name, value, span } => {
                 let object_type = self.infer_expr(object);
-                let value_type = self.infer_expr(value);
+                let _value_type = self.infer_expr(value);
 
                 if let Type::Class(class_name) = object_type {
                     let field_info = self.context.get_class(&class_name)
@@ -1212,13 +1449,17 @@ impl TypeChecker {
                             self.context.add_error_with_location(err, span.line, span.column, None, None);
                         }
 
-                        if !value_type.is_assignable_to(&field.type_name) {
+                        // Use expected type for type deduction
+                        let expected_field_type = &field.type_name;
+                        let deduced_type = self.infer_expr_with_expected_type(value, &Some(expected_field_type.clone()));
+                        
+                        if !deduced_type.is_assignable_to(expected_field_type) {
                             self.context.add_error_with_location(
                                 format!(
                                     "Cannot assign {} to field '{}' of type {}",
-                                    value_type.to_str(),
+                                    deduced_type.to_str(),
                                     name,
-                                    field.type_name.to_str()
+                                    expected_field_type.to_str()
                                 ),
                                 span.line,
                                 span.column,
@@ -1357,14 +1598,14 @@ impl TypeChecker {
             Expr::Index { object, index, .. } => {
                 let object_type = self.infer_expr(object);
                 let index_type = self.infer_expr(index);
-                
+
                 if index_type != Type::Int && index_type != Type::Unknown {
                     self.context.add_error(
                         format!("Array index must be an integer, got {}", index_type.to_str()),
                         0
                     );
                 }
-                
+
                 match object_type {
                     Type::Array(inner) => *inner,
                     Type::Str => Type::Str,
@@ -1378,6 +1619,186 @@ impl TypeChecker {
                     }
                 }
             }
+            Expr::ObjectLiteral { fields, .. } => {
+                // Object literal without expected type - return Unknown
+                // Type will be inferred from context when called with infer_expr_with_expected_type
+                for field in fields {
+                    self.infer_expr(&field.value);
+                }
+                Type::Unknown
+            }
+            Expr::Lambda { params, return_type, body, is_async, .. } => {
+                // Infer lambda type: (param_types) -> return_type
+                let param_types: Vec<Type> = params.iter()
+                    .map(|p| p.type_name.as_ref()
+                        .map(|t| Type::from_str(t))
+                        .unwrap_or(Type::Unknown))
+                    .collect();
+
+                let ret_type = return_type.as_ref()
+                    .map(|t| Type::from_str(t))
+                    .unwrap_or(Type::Null);
+
+                // Type check the lambda body
+                // Add parameters as local variables
+                let mut added_vars = Vec::new();
+                for param in params {
+                    let param_type = param.type_name.as_ref()
+                        .map(|t| Type::from_str(t))
+                        .unwrap_or(Type::Unknown);
+                    self.context.add_variable(&param.name, param_type);
+                    added_vars.push(param.name.clone());
+                }
+
+                // Store expected return type
+                let old_return = self.context.current_method_return.clone();
+                self.context.current_method_return = Some(ret_type.clone());
+
+                // Check body
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+
+                // Clean up
+                for var in added_vars {
+                    self.context.variables.remove(&var);
+                }
+                self.context.current_method_return = old_return;
+
+                // For async lambdas, wrap return type in Promise
+                let final_ret_type = if *is_async {
+                    Type::Promise(Box::new(ret_type))
+                } else {
+                    ret_type
+                };
+
+                Type::Function(param_types, Box::new(final_ret_type))
+            }
+        }
+    }
+
+    /// Infer expression type with an expected type hint (for type deduction)
+    fn infer_expr_with_expected_type(&mut self, expr: &Expr, expected_type: &Option<Type>) -> Type {
+        match expr {
+            Expr::ObjectLiteral { fields, span, .. } => {
+                // Try to infer the class type from the expected type
+                if let Some(expected) = expected_type {
+                    if let Type::Class(class_name) = expected {
+                        // Verify the object literal matches the class structure
+                        // First, collect field info to avoid borrow issues
+                        let class_info_opt = self.context.get_class(class_name).cloned();
+
+                        if let Some(class_info) = class_info_opt {
+                            // Check that all provided fields exist and have correct types
+                            for field in fields {
+                                if let Some(field_info) = class_info.fields.get(&field.name) {
+                                    // Propagate expected type to field value for nested type deduction
+                                    let expected_field_type = field_info.type_name.clone();
+                                    let field_value_type = self.infer_expr_with_expected_type(&field.value, &Some(expected_field_type.clone()));
+
+                                    if !field_value_type.is_assignable_to(&expected_field_type) {
+                                        self.context.add_error(
+                                            format!(
+                                                "Field '{}' has wrong type: expected {}, got {}",
+                                                field.name,
+                                                expected_field_type.to_str(),
+                                                field_value_type.to_str()
+                                            ),
+                                            0
+                                        );
+                                    }
+                                } else {
+                                    self.context.add_error(
+                                        format!("Unknown field '{}' for class '{}'", field.name, class_name),
+                                        0
+                                    );
+                                }
+                            }
+                            // Store the inferred type for code generation
+                            self.context.expr_types.insert((span.line, span.column), class_name.clone());
+                            // Return the class type
+                            return Type::Class(class_name.clone());
+                        }
+                    }
+                }
+                // No expected type or not a class - infer from fields
+                for field in fields {
+                    self.infer_expr(&field.value);
+                }
+                Type::Unknown
+            }
+            Expr::Lambda { params, return_type: _, body, is_async, .. } => {
+                // Type check lambda with expected function type
+                if let Some(expected) = expected_type {
+                    if let Type::Function(expected_params, expected_return) = expected {
+                        // Verify parameter count matches
+                        if params.len() != expected_params.len() {
+                            self.context.add_error(
+                                format!(
+                                    "Lambda expects {} parameters, but {} were provided",
+                                    expected_params.len(),
+                                    params.len()
+                                ),
+                                0
+                            );
+                        }
+
+                        // Type check with expected types
+                        let param_types: Vec<Type> = params.iter()
+                            .zip(expected_params.iter())
+                            .map(|(_p, expected_t)| {
+                                expected_t.clone()
+                            })
+                            .collect();
+
+                        // For async lambdas, expected return should be Promise<T>
+                        // Extract inner type from Promise if async
+                        let ret_type = if *is_async {
+                            if let Type::Promise(inner) = expected_return.as_ref() {
+                                inner.as_ref().clone()
+                            } else {
+                                expected_return.as_ref().clone()
+                            }
+                        } else {
+                            expected_return.as_ref().clone()
+                        };
+
+                        // Add parameters as local variables with expected types
+                        let mut added_vars = Vec::new();
+                        for (param, param_type) in params.iter().zip(param_types.iter()) {
+                            self.context.add_variable(&param.name, param_type.clone());
+                            added_vars.push(param.name.clone());
+                        }
+
+                        // Store expected return type
+                        let old_return = self.context.current_method_return.clone();
+                        self.context.current_method_return = Some(ret_type.clone());
+
+                        // Check body
+                        for stmt in body {
+                            self.check_stmt(stmt);
+                        }
+
+                        // Clean up
+                        for var in added_vars {
+                            self.context.variables.remove(&var);
+                        }
+                        self.context.current_method_return = old_return;
+
+                        // Return function type with Promise wrapper for async
+                        let final_ret_type = if *is_async {
+                            Type::Promise(Box::new(ret_type))
+                        } else {
+                            ret_type.clone()
+                        };
+
+                        return Type::Function(param_types, Box::new(final_ret_type));
+                    }
+                }
+                // Fall back to regular inference
+                self.infer_expr(expr)
+            }
+            _ => self.infer_expr(expr),
         }
     }
 
@@ -1398,8 +1819,8 @@ impl TypeChecker {
 
         // Check argument types
         for (i, (arg, param)) in args.iter().zip(func_sig.params.iter()).enumerate() {
-            let arg_type = self.infer_expr(arg);
-            
+            let arg_type = self.infer_expr_with_expected_type(arg, &param.type_name);
+
             if let Some(expected_type) = &param.type_name {
                 if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
                     self.context.add_error(
@@ -1435,8 +1856,8 @@ impl TypeChecker {
 
         // Check argument types
         for (i, (arg, param)) in args.iter().zip(method_sig.params.iter()).enumerate() {
-            let arg_type = self.infer_expr(arg);
-            
+            let arg_type = self.infer_expr_with_expected_type(arg, &param.type_name);
+
             if let Some(expected_type) = &param.type_name {
                 if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
                     self.context.add_error(
