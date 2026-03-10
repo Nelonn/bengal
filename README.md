@@ -1,6 +1,8 @@
 # Bengal Language
+
 ## Requirements
-### Ubuntu:
+
+### Debian/Ubuntu:
 ```bash
 sudo apt install libssl-dev
 ```
