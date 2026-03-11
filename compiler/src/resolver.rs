@@ -180,13 +180,15 @@ impl ModuleResolver {
             .iter()
             .map(|(name, info)| (name.clone(), info.statements.clone()))
             .collect();
-        
+
         for (module_name, statements) in &module_statements {
             self.register_module_types(module_name, statements);
         }
 
-        // Register native functions from std::io
-        self.register_native_functions();
+        // Register native functions only if std::io was imported
+        if self.loaded_modules.contains_key("std::io") {
+            self.register_native_functions();
+        }
 
         // Now type check all loaded modules (skip function registration since they're already registered with qualified names)
         for (module_name, statements) in &module_statements {
