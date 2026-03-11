@@ -148,19 +148,19 @@ jobs:
           rpmbuild -bb rpm-package/SPECS/bengal.spec \
             --define "_topdir $(pwd)/rpm-package" \
             --define "_rpmdir $(pwd)/rpm-package/RPMS"
-          
-          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/ \;
+
+          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${VERSION#v}_amd64.rpm \;
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
           name: bengal-rpm
-          path: rpm-package/*.rpm
+          path: rpm-package/bengal_*.rpm
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: rpm-package/*.rpm
+          files: rpm-package/bengal_*.rpm
 
   build-arch:
     name: Build Arch Linux Package
@@ -224,7 +224,7 @@ jobs:
           pkgrel = 1
           pkgdesc = Bengal language CLI
           url = https://github.com/${{ github.repository }}
-          arch = x86_64
+          arch = amd64
           license = MIT
           provides = bengal
           EOF
