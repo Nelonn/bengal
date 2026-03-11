@@ -1,9 +1,13 @@
 # Bengal Language
 
 Statically typed scripting language
+
 # Auto installation script
+
+Linux:
+
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Nelonn/bengal/add-linux-builds/autoinstall.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/Nelonn/bengal/refs/heads/main/install.sh)
 ```
 
 ## Requirements
