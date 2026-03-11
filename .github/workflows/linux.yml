@@ -99,9 +99,9 @@ jobs:
             target
           key: fedora-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install RPM build tools
+      - name: Install build dependencies
         run: |
-          dnf install -y rpm-build fakeroot
+          dnf install -y rpm-build fakeroot gcc clang make pkgconfig
 
       - name: Build release binary
         run: cargo build --release --bin bengal
