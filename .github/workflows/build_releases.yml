@@ -291,7 +291,19 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf install -y rpm-build fakeroot gcc clang make pkgconfig openssl openssl-devel \
-          gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+          libgcc glibc-devel perl perl-IPC-Cmd
+
+      - name: Install aarch64 sysroot headers
+        continue-on-error: true
+        run: |
+          # Install cross-compilation sysroot so ring/cc-rs can find stdint.h
+          dnf install -y glibc-devel.aarch64 libgcc.aarch64 || true
+          # Symlink sysroot for the cross compiler
+          SYSROOT=/usr/aarch64-linux-gnu/sys-root
+          mkdir -p $SYSROOT/usr/include
+          cp -r /usr/include/bits $SYSROOT/usr/include/ 2>/dev/null || true
+          cp -r /usr/include/sys $SYSROOT/usr/include/ 2>/dev/null || true
 
       - name: Build OpenSSL for aarch64
         continue-on-error: true
@@ -303,7 +315,7 @@ jobs:
           --prefix=/usr/local/aarch64-openssl \
           no-shared
           make -j$(nproc)
-          make install_sw
+          make install
 
       - name: Build release binary
         env:
