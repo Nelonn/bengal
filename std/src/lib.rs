@@ -16,16 +16,27 @@ pub fn register_all(vm: &mut VM) {
     vm.native("print", io::native_print)
         .description("Print without newline")
         .register(vm);
-    vm.native("println", io::native_println)
-        .description("Print with newline")
+    
+    // Register println with multiple overloads for different types
+    vm.native("println(str)", io::native_println)
+        .description("Print with newline (str)")
+        .register(vm);
+    vm.native("println(int)", io::native_println)
+        .description("Print with newline (int)")
+        .register(vm);
+    vm.native("println(float)", io::native_println)
+        .description("Print with newline (float)")
+        .register(vm);
+    vm.native("println(bool)", io::native_println)
+        .description("Print with newline (bool)")
         .register(vm);
 
-    NativeModule::new("std::io")
+    NativeModule::new("std.io")
         .function("print", io::native_print)
         .function("println", io::native_println)
         .register(vm);
 
-    NativeModule::new("std::data")
+    NativeModule::new("std.data")
         .class_native_create("ByteBuffer", data::native_byte_buffer_native_create)
         .class_method("ByteBuffer", "constructor", data::native_byte_buffer_constructor)
         .class_method("ByteBuffer", "reserve", data::native_byte_buffer_reserve)
@@ -34,7 +45,7 @@ pub fn register_all(vm: &mut VM) {
         .class_method("ByteBuffer", "length", data::native_byte_buffer_length)
         .register(vm);
 
-    NativeModule::new("std::http")
+    NativeModule::new("std.http")
         .function("get", http::native_http_get)
         .function("post", http::native_http_post)
         .class_method(
@@ -56,12 +67,12 @@ pub fn register_all(vm: &mut VM) {
         .class_method("HttpClient", "post", http::native_http_client_post)
         .register(vm);
 
-    NativeModule::new("std::json")
+    NativeModule::new("std.json")
         .function("stringify", json::native_json_stringify)
         .function("parse", json::native_json_parse)
         .register(vm);
 
-    NativeModule::new("std::reflect")
+    NativeModule::new("std.reflect")
         .function("type_of", reflect::native_reflect_typeof)
         .function("class_name", reflect::native_reflect_class_name)
         .function("fields", reflect::native_reflect_fields)
@@ -82,7 +93,7 @@ pub fn register_all(vm: &mut VM) {
         .class_method("str", "replace", str::native_str_replace)
         .register(vm);
 
-    NativeModule::new("std::sys")
+    NativeModule::new("std.sys")
         .function("env", sys::native_sys_env)
         .function("set_pwd", sys::native_sys_set_pwd)
         .class_native_create("Process", sys::native_process_native_create)
@@ -97,7 +108,7 @@ pub fn register_all(vm: &mut VM) {
         .class_method("Process", "get_stderr", sys::native_process_get_stderr)
         .register(vm);
 
-    NativeModule::new("std::fs")
+    NativeModule::new("std.fs")
         .function("read", fs::native_fs_read)
         .function("read_string", fs::native_fs_read_string)
         .function("write", fs::native_fs_write)
@@ -120,12 +131,12 @@ pub fn register_all(vm: &mut VM) {
         .function("canonicalize", fs::native_fs_canonicalize)
         .register(vm);
 
-    NativeModule::new("std::args")
+    NativeModule::new("std.args")
         .function("get", args::native_args_get)
         .register(vm);
 
     // Register math constants and functions
-    NativeModule::new("std::math")
+    NativeModule::new("std.math")
         .function("sin", math::native_math_sin)
         .function("cos", math::native_math_cos)
         .function("tan", math::native_math_tan)

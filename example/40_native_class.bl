@@ -1,5 +1,5 @@
-import std::data;
-import std::io;
+import std.data;
+import std.io;
 
 native class MyBuffer {
     constructor(size: int)

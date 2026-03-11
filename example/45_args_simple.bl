@@ -1,5 +1,5 @@
-import std::args
-import std::io
+import std.args
+import std.io
 
-let allArgs = args::get()
+let allArgs = args.get()
 println("Args count: " + allArgs.length())

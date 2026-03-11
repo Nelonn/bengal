@@ -1,6 +1,6 @@
-import std::sys
+import std.sys
 
-println("PATH: " + std::sys::env("PATH"))
+println("PATH: " + std.sys.env("PATH"))
 
 native fn exception_test()
 

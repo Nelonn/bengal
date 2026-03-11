@@ -259,12 +259,33 @@ pub struct FunctionSignature {
     pub is_method: bool,
     pub is_async: bool,
     pub is_native: bool,
+    /// Mangled name for VM lookup (includes type information for overloading)
+    pub mangled_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ParamSignature {
     pub name: String,
     pub type_name: Option<Type>,
+}
+
+/// Generate a mangled name for a function based on its parameter types
+/// This enables function overloading by creating unique names for each signature
+/// Format: <name>(<type1>,<type2>,...) - simple and readable mangling
+pub fn mangle_function_name(name: &str, param_types: &[Type]) -> String {
+    let mut mangled = String::new();
+    mangled.push_str(name);
+    mangled.push('(');
+    
+    for (i, ty) in param_types.iter().enumerate() {
+        if i > 0 {
+            mangled.push(',');
+        }
+        mangled.push_str(&ty.to_str());
+    }
+    
+    mangled.push(')');
+    mangled
 }
 
 #[derive(Debug, Clone)]
@@ -335,7 +356,10 @@ pub struct TypeAliasInfo {
 pub struct TypeContext {
     pub classes: HashMap<String, ClassInfo>,
     pub interfaces: HashMap<String, InterfaceInfo>,
+    /// Functions stored by mangled name (e.g., "foo@i_s" for foo(int, str))
     pub functions: HashMap<String, FunctionSignature>,
+    /// Map from base function name to list of mangled names (for overload resolution)
+    pub function_overloads: HashMap<String, Vec<String>>,
     pub variables: HashMap<String, VariableInfo>,
     pub enums: HashMap<String, EnumInfo>,
     pub type_aliases: HashMap<String, TypeAliasInfo>,
@@ -365,6 +389,7 @@ impl TypeContext {
             classes: HashMap::new(),
             interfaces: HashMap::new(),
             functions: HashMap::new(),
+            function_overloads: HashMap::new(),
             variables: HashMap::new(),
             enums: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -384,12 +409,12 @@ impl TypeContext {
     }
 
     fn register_native_classes(&mut self) {
-        // Register std::io module functions (only when std::io is imported)
+        // Register std.io module functions (only when std.io is imported)
         // These are registered in ModuleResolver::register_native_functions()
 
         // JSON
         let json_stringify = FunctionSignature {
-            name: "std::json::stringify".to_string(),
+            name: "std.json.stringify".to_string(),
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
@@ -399,10 +424,12 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         };
+        self.add_function("std.json.stringify", json_stringify);
 
         let json_parse = FunctionSignature {
-            name: "std::json::parse".to_string(),
+            name: "std.json.parse".to_string(),
             params: vec![ParamSignature {
                 name: "json".to_string(),
                 type_name: Some(Type::Str),
@@ -412,15 +439,15 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         };
+        self.add_function("std.json.parse", json_parse);
 
-        self.functions.insert("std::json::stringify".to_string(), json_stringify);
-        self.functions.insert("std::json::parse".to_string(), json_parse);
-        self.imports.push("std::json".to_string());
+        self.imports.push("std.json".to_string());
 
         // Reflection
         let reflect_typeof = FunctionSignature {
-            name: "std::reflect::type_of".to_string(),
+            name: "std.reflect.type_of".to_string(),
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
@@ -430,10 +457,12 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         };
+        self.add_function("std.reflect.type_of", reflect_typeof);
 
         let reflect_class_name = FunctionSignature {
-            name: "std::reflect::class_name".to_string(),
+            name: "std.reflect.class_name".to_string(),
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
@@ -443,10 +472,12 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         };
+        self.add_function("std.reflect.class_name", reflect_class_name);
 
         let reflect_fields = FunctionSignature {
-            name: "std::reflect::fields".to_string(),
+            name: "std.reflect.fields".to_string(),
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
@@ -456,12 +487,11 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         };
+        self.add_function("std.reflect.fields", reflect_fields);
 
-        self.functions.insert("std::reflect::type_of".to_string(), reflect_typeof);
-        self.functions.insert("std::reflect::class_name".to_string(), reflect_class_name);
-        self.functions.insert("std::reflect::fields".to_string(), reflect_fields);
-        self.imports.push("std::reflect".to_string());
+        self.imports.push("std.reflect".to_string());
     }
 
     pub fn add_class(&mut self, class: &ClassDef) {
@@ -544,8 +574,22 @@ impl TypeContext {
         });
     }
 
-    pub fn add_function(&mut self, name: &str, signature: FunctionSignature) {
-        self.functions.insert(name.to_string(), signature);
+    pub fn add_function(&mut self, name: &str, mut signature: FunctionSignature) {
+        // Generate mangled name from parameter types
+        let param_types: Vec<Type> = signature.params.iter()
+            .filter_map(|p| p.type_name.clone())
+            .collect();
+        let mangled = mangle_function_name(name, &param_types);
+        signature.mangled_name = Some(mangled.clone());
+        
+        // Track overload by base name
+        self.function_overloads
+            .entry(name.to_string())
+            .or_insert_with(Vec::new)
+            .push(mangled.clone());
+        
+        // Store by mangled name
+        self.functions.insert(mangled, signature);
     }
 
     pub fn add_type_alias(&mut self, alias: &crate::parser::TypeAliasDef) {
@@ -620,26 +664,163 @@ impl TypeContext {
     }
 
     pub fn get_function(&self, name: &str) -> Option<&FunctionSignature> {
-        self.functions.get(name)
+        // First try exact match (for mangled names or non-overloaded functions)
+        if let Some(sig) = self.functions.get(name) {
+            return Some(sig);
+        }
+        None
+    }
+
+    /// Get all overloaded versions of a function by base name
+    pub fn get_function_overloads(&self, name: &str) -> Vec<&FunctionSignature> {
+        let mut result = Vec::new();
+        if let Some(mangled_names) = self.function_overloads.get(name) {
+            for mangled in mangled_names {
+                if let Some(sig) = self.functions.get(mangled) {
+                    result.push(sig);
+                }
+            }
+        }
+        result
     }
 
     /// Try to resolve a function name, including searching for unqualified names
     /// in qualified functions (e.g., "foo" matches "std::sys::foo")
+    /// For overloaded functions, returns the first match (full resolution requires type checking)
     pub fn resolve_function(&self, name: &str) -> Option<&FunctionSignature> {
-        // First try exact match
+        // First try exact match (mangled name)
         if let Some(sig) = self.functions.get(name) {
             return Some(sig);
         }
 
-        // Try to find a function that ends with ::<name>
+        // Try to find overloads by base name
+        if let Some(mangled_names) = self.function_overloads.get(name) {
+            if let Some(first_mangled) = mangled_names.first() {
+                return self.functions.get(first_mangled);
+            }
+        }
+
+        // Try to find a function that ends with ::<name> or .<name>
         // Prefer exact module match if we're in a module context
         for (func_name, sig) in &self.functions {
-            if func_name.ends_with(&format!("::{}", name)) {
+            if func_name.ends_with(&format!("::{}", name)) || func_name.ends_with(&format!(".{}", name)) {
                 return Some(sig);
             }
         }
 
         None
+    }
+
+    /// Try to resolve a module-qualified function name (e.g., "math.sin" with import "std.math")
+    pub fn resolve_qualified_function(&self, module_alias: &str, member_name: &str) -> Option<&FunctionSignature> {
+        // First try direct lookup
+        let direct_name = format!("{}.{}", module_alias, member_name);
+        if let Some(sig) = self.functions.get(&direct_name) {
+            return Some(sig);
+        }
+
+        // Try to find an import that ends with the module alias
+        // e.g., if we have "import std.math" and access "math.sin", look for "std.math.sin"
+        for import_path in &self.imports {
+            // Get the last component of the import path
+            if let Some(last_dot) = import_path.rfind('.') {
+                let import_alias = &import_path[last_dot + 1..];
+                if import_alias == module_alias {
+                    // This import matches the alias, look for the full qualified name
+                    let qualified_name = format!("{}.{}", import_path, member_name);
+                    if let Some(sig) = self.functions.get(&qualified_name) {
+                        return Some(sig);
+                    }
+                }
+            } else if import_path == module_alias {
+                // Import is exactly the alias (no dots)
+                let qualified_name = format!("{}.{}", import_path, member_name);
+                if let Some(sig) = self.functions.get(&qualified_name) {
+                    return Some(sig);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Resolve a function call with argument types for overload resolution
+    /// Returns the best matching function signature based on argument types
+    pub fn resolve_function_call(&self, name: &str, arg_types: &[Type]) -> Option<&FunctionSignature> {
+        // First try exact match with mangled name (if already resolved)
+        if let Some(sig) = self.functions.get(name) {
+            return Some(sig);
+        }
+
+        // Get all overloads for this function name
+        let overloads = self.get_function_overloads(name);
+        
+        if overloads.is_empty() {
+            // Try qualified lookup
+            for (func_name, sig) in &self.functions {
+                if func_name.ends_with(&format!("::{}", name)) {
+                    // Check if this signature matches
+                    if self.signature_matches(sig, arg_types) {
+                        return Some(sig);
+                    }
+                }
+            }
+            return None;
+        }
+
+        // Find the best matching overload
+        let mut best_match: Option<&FunctionSignature> = None;
+        let mut best_score = usize::MAX;
+
+        for sig in &overloads {
+            if self.signature_matches(sig, arg_types) {
+                let score = self.calculate_match_score(sig, arg_types);
+                if score < best_score {
+                    best_score = score;
+                    best_match = Some(sig);
+                }
+            }
+        }
+
+        best_match
+    }
+
+    /// Check if a function signature matches the given argument types
+    fn signature_matches(&self, sig: &FunctionSignature, arg_types: &[Type]) -> bool {
+        if sig.params.len() != arg_types.len() {
+            return false;
+        }
+
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                // Allow Unknown types to match anything
+                if param_type != &Type::Unknown && arg_type != &Type::Unknown {
+                    if !arg_type.is_assignable_to(param_type) {
+                        return false;
+                    }
+                }
+            }
+            // If param has no type, it matches anything
+        }
+
+        true
+    }
+
+    /// Calculate a match score (lower is better) for overload resolution
+    fn calculate_match_score(&self, sig: &FunctionSignature, arg_types: &[Type]) -> usize {
+        let mut score = 0;
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                if param_type == arg_type {
+                    score += 0; // Exact match
+                } else if arg_type.is_assignable_to(param_type) {
+                    score += 1; // Conversion needed
+                } else {
+                    score += 100; // Bad match (should have been filtered)
+                }
+            }
+        }
+        score
     }
 
     /// Try to resolve a class name, including searching for unqualified names
@@ -779,6 +960,7 @@ impl TypeChecker {
                             is_method: false,
                             is_async: func.is_async,
                             is_native: func.is_native,
+                            mangled_name: None,
                         });
                     }
                 }
@@ -1259,10 +1441,16 @@ impl TypeChecker {
             }
             Expr::Call { callee, args, span } => {
                 if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
-                    // Check if it's a function call
-                    let func_sig = self.context.get_function(func_name).cloned();
-                    if let Some(ref sig) = func_sig {
-                        self.check_function_call(sig, args, func_name);
+                    // Check if it's a function call - use overload resolution
+                    // First, infer argument types for overload resolution
+                    let arg_types: Vec<Type> = args.iter()
+                        .map(|arg| self.infer_expr(arg))
+                        .collect();
+                    
+                    // Use resolve_function_call for proper overload resolution
+                    let func_sig = self.context.resolve_function_call(func_name, &arg_types);
+                    if let Some(sig) = func_sig.cloned() {
+                        self.check_function_call(&sig, args, func_name);
                         let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
                         // If calling an async function, return type is Promise<T>
                         if sig.is_async {
@@ -1295,10 +1483,11 @@ impl TypeChecker {
                         Type::Unknown
                     }
                 } else if let Expr::Get { object, name, span: method_span } = callee.as_ref() {
-                    // Method call
+                    // Could be method call OR module.function() call
                     let object_type = self.infer_expr(object);
 
                     if let Type::Class(class_name) = object_type {
+                        // This is a method call on a class instance
                         let method_sig = self.context.get_class(&class_name)
                             .and_then(|c| c.methods.get(name).cloned());
 
@@ -1333,6 +1522,30 @@ impl TypeChecker {
                         } else {
                             self.context.add_error_with_location(
                                 format!("Method '{}' not found on class '{}'", name, class_name),
+                                method_span.line, method_span.column, None, None
+                            );
+                            Type::Unknown
+                        }
+                    } else if let Expr::Variable { name: module_name, .. } = object.as_ref() {
+                        // This is module.function() call - look up qualified name
+                        // Try to resolve as a qualified module function
+                        let func_sig = self.context.resolve_qualified_function(module_name, name);
+                        if let Some(sig) = func_sig.cloned() {
+                            let arg_types: Vec<Type> = args.iter()
+                                .map(|arg| self.infer_expr(arg))
+                                .collect();
+                            self.check_function_call(&sig, args, &sig.name);
+                            let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
+                            if sig.is_async {
+                                if let Type::Promise(_) = return_type {
+                                } else {
+                                    return_type = Type::Promise(Box::new(return_type));
+                                }
+                            }
+                            return_type
+                        } else {
+                            self.context.add_error_with_location(
+                                format!("Undefined function: '{}.{}'", module_name, name),
                                 method_span.line, method_span.column, None, None
                             );
                             Type::Unknown
@@ -1394,6 +1607,37 @@ impl TypeChecker {
                     } else {
                         Type::Unknown
                     }
+                } else if let Expr::Variable { name: module_name, .. } = object.as_ref() {
+                    // Module-level variable access (e.g., math.PI)
+                    // Check if module_name is an imported module alias
+                    for import_path in &self.context.imports {
+                        if let Some(last_dot) = import_path.rfind('.') {
+                            let import_alias = &import_path[last_dot + 1..];
+                            if import_alias == module_name {
+                                // This import matches, look for the variable
+                                let full_qualified = format!("{}.{}", import_path, name);
+                                if let Some(var_info) = self.context.variables.get(&full_qualified) {
+                                    return var_info.type_name.clone();
+                                }
+                                // Variable not found in module, but module exists - return Unknown
+                                return Type::Unknown;
+                            }
+                        } else if import_path == module_name {
+                            // Import is exactly the alias (no dots)
+                            let full_qualified = format!("{}.{}", import_path, name);
+                            if let Some(var_info) = self.context.variables.get(&full_qualified) {
+                                return var_info.type_name.clone();
+                            }
+                            // Variable not found in module, but module exists - return Unknown
+                            return Type::Unknown;
+                        }
+                    }
+                    
+                    self.context.add_error_with_location(
+                        format!("Undeclared variable '{}'", module_name),
+                        span.line, span.column, None, None
+                    );
+                    Type::Unknown
                 } else {
                     Type::Unknown
                 }

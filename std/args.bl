@@ -1,4 +1,4 @@
-module std::args
+module std.args
 
 native fn get(): str[]
 

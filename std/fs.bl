@@ -1,4 +1,4 @@
-module std::fs
+module std.fs
 
 class FileInfo {
   is_file: bool = false

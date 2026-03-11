@@ -402,7 +402,7 @@ impl Parser {
                 return self.error("Expected identifier in import path");
             }
 
-            if self.match_token(&Token::DoubleColon) {
+            if self.match_token(&Token::Dot) {
                 continue;
             } else {
                 break;
@@ -425,7 +425,7 @@ impl Parser {
                 return self.error("Expected identifier in module path");
             }
 
-            if self.match_token(&Token::DoubleColon) {
+            if self.match_token(&Token::Dot) {
                 continue;
             } else {
                 break;
@@ -1935,23 +1935,13 @@ impl Parser {
                 Ok(Expr::Variable { name: "async".to_string(), span: self.compute_span(token_pos) })
             },
             Token::Identifier(name) => {
-                let mut full_name = name;
-                while self.match_token(&Token::DoubleColon) {
-                    full_name.push_str("::");
-                    if let Token::Identifier(part) = self.advance() {
-                        full_name.push_str(&part);
-                    } else {
-                        return self.error_expr("Expected identifier after ::");
-                    }
-                }
-
-                if full_name == "true" {
+                let span = self.compute_span(token_pos);
+                if name == "true" {
                     Ok(Expr::Literal(Literal::Bool(true)))
-                } else if full_name == "false" {
+                } else if name == "false" {
                     Ok(Expr::Literal(Literal::Bool(false)))
                 } else {
-                    let span = self.compute_span(token_pos);
-                    Ok(Expr::Variable { name: full_name, span })
+                    Ok(Expr::Variable { name, span })
                 }
             },
             // Handle type keywords as potential cast functions

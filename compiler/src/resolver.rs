@@ -59,7 +59,7 @@ impl ModuleResolver {
     }
 
     pub fn resolve_and_load(&mut self, module_path: &[String]) -> Result<(), String> {
-        let module_name = module_path.join("::");
+        let module_name = module_path.join(".");
 
         // Check if already loaded
         if self.loaded_modules.contains_key(&module_name) {
@@ -162,6 +162,9 @@ impl ModuleResolver {
         for stmt in statements {
             if let Stmt::Import { path } = stmt {
                 self.resolve_and_load(path)?;
+                // Register the import in the type context
+                let import_path = path.join(".");
+                self.type_context.imports.push(import_path);
             }
         }
         Ok(())
@@ -185,8 +188,8 @@ impl ModuleResolver {
             self.register_module_types(module_name, statements);
         }
 
-        // Register native functions only if std::io was imported
-        if self.loaded_modules.contains_key("std::io") {
+        // Register native functions only if std.io was imported
+        if self.loaded_modules.contains_key("std.io") {
             self.register_native_functions();
         }
 
@@ -258,13 +261,13 @@ impl ModuleResolver {
             match stmt {
                 Stmt::Class(class) => {
                     let mut class_with_module = class.clone();
-                    class_with_module.name = format!("{}::{}", module_name, class.name);
+                    class_with_module.name = format!("{}.{}", module_name, class.name);
                     self.type_context.add_class(&class_with_module);
                     self.type_context.add_class(class); // Also add without module for now
                 }
                 Stmt::Interface(interface) => {
                     let mut interface_with_module = interface.clone();
-                    interface_with_module.name = format!("{}::{}", module_name, interface.name);
+                    interface_with_module.name = format!("{}.{}", module_name, interface.name);
                     self.type_context.add_interface(&interface_with_module);
                     self.type_context.add_interface(interface); // Also add without module for now
                 }
@@ -280,7 +283,7 @@ impl ModuleResolver {
                         type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
                     }).collect();
 
-                    let full_name = format!("{}::{}", module_name, func.name);
+                    let full_name = format!("{}.{}", module_name, func.name);
                     self.type_context.add_function(&full_name, FunctionSignature {
                         name: full_name.clone(),
                         params,
@@ -289,6 +292,21 @@ impl ModuleResolver {
                         is_method: false,
                         is_async: func.is_async,
                         is_native: func.is_native,
+                        mangled_name: None,
+                    });
+                }
+                Stmt::Let { name, type_annotation, expr } => {
+                    // Register module-level variables (e.g., math.PI)
+                    let var_type = if let Some(ref ty) = type_annotation {
+                        Type::from_str(ty)
+                    } else {
+                        // Infer type from expression (simplified - default to Unknown)
+                        Type::Unknown
+                    };
+                    let qualified_name = format!("{}.{}", module_name, name);
+                    self.type_context.variables.insert(qualified_name, crate::types::VariableInfo {
+                        name: name.clone(),
+                        type_name: var_type,
                     });
                 }
                 _ => {}
@@ -297,8 +315,8 @@ impl ModuleResolver {
     }
 
     fn register_native_functions(&mut self) {
-        // std::io functions
-        self.type_context.functions.insert("print".to_string(), FunctionSignature {
+        // std.io functions
+        self.type_context.add_function("print", FunctionSignature {
             name: "print".to_string(),
             params: vec![ParamSignature {
                 name: "text".to_string(),
@@ -309,9 +327,11 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
 
-        self.type_context.functions.insert("println".to_string(), FunctionSignature {
+        // println with multiple overloads for different types
+        self.type_context.add_function("println", FunctionSignature {
             name: "println".to_string(),
             params: vec![ParamSignature {
                 name: "line".to_string(),
@@ -322,9 +342,38 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
 
-        self.type_context.functions.insert("breakpoint".to_string(), FunctionSignature {
+        self.type_context.add_function("println", FunctionSignature {
+            name: "println".to_string(),
+            params: vec![ParamSignature {
+                name: "line".to_string(),
+                type_name: Some(Type::Int),
+            }],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+
+        self.type_context.add_function("println", FunctionSignature {
+            name: "println".to_string(),
+            params: vec![ParamSignature {
+                name: "line".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+
+        self.type_context.add_function("breakpoint", FunctionSignature {
             name: "breakpoint".to_string(),
             params: vec![],
             return_type: None,
@@ -332,6 +381,93 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
+        });
+
+        // Register std.math native functions
+        self.type_context.add_function("std.math.sin", FunctionSignature {
+            name: "std.math.sin".to_string(),
+            params: vec![ParamSignature {
+                name: "x".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.math.cos", FunctionSignature {
+            name: "std.math.cos".to_string(),
+            params: vec![ParamSignature {
+                name: "x".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.math.tan", FunctionSignature {
+            name: "std.math.tan".to_string(),
+            params: vec![ParamSignature {
+                name: "x".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.math.sqrt", FunctionSignature {
+            name: "std.math.sqrt".to_string(),
+            params: vec![ParamSignature {
+                name: "x".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.math.min", FunctionSignature {
+            name: "std.math.min".to_string(),
+            params: vec![ParamSignature {
+                name: "a".to_string(),
+                type_name: Some(Type::Float),
+            }, ParamSignature {
+                name: "b".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.math.max", FunctionSignature {
+            name: "std.math.max".to_string(),
+            params: vec![ParamSignature {
+                name: "a".to_string(),
+                type_name: Some(Type::Float),
+            }, ParamSignature {
+                name: "b".to_string(),
+                type_name: Some(Type::Float),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            mangled_name: None,
         });
     }
 

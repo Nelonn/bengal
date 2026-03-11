@@ -1,4 +1,4 @@
-module std::data
+module std.data
 
 native class ByteBuffer {
   constructor()

@@ -1,4 +1,4 @@
-import std::io
+import std.io
 
 println("Continue in for loop (skip 3):")
 for (i in 1..5) {
