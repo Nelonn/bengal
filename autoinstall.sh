@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Detect OS
+OS="$(uname -s)"
+
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     DISTRO_ID="${ID}"
@@ -27,7 +30,7 @@ cat << "EOF"
 ██████╔╝███████╗██║ ╚████║╚██████╔╝██║  ██║███████╗
 ╚═════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
 EOF
-echo -e "\033[0;32mWelcome to bengal installation scirpt\033[0m"
+echo -e "\033[0;32mWelcome to bengal installation script\033[0m"
 
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
