@@ -284,6 +284,7 @@ jobs:
           dnf install -y \
             gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
+            glibc-headers-aarch64 \
             perl \
             perl-FindBin \
             perl-IPC-Cmd \
@@ -304,16 +305,17 @@ jobs:
           key: fedora-cargo-arm64-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binary (arm64)
-        # Set all cross-compilation env vars inline here so they are guaranteed
-        # to be present in the same shell that invokes cargo build.
-        # OPENSSL_VENDORED=1 compiles OpenSSL from source, avoiding the need for
-        # arm64 OpenSSL headers on the host. CC_aarch64_unknown_linux_gnu tells
-        # the openssl-sys build script to use the cross-compiler, not the host gcc.
+        # All cross-compilation env vars are set inline in the same shell as
+        # cargo build to ensure they are present for all build scripts (ring,
+        # openssl-sys etc). OPENSSL_VENDORED=1 compiles OpenSSL from source so
+        # no arm64 OpenSSL headers are needed on the host. glibc-headers-aarch64
+        # provides stdint.h and other libc headers required by ring's C sources.
         run: |
           export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
           export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
           export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+          export CFLAGS_aarch64_unknown_linux_gnu="--sysroot=/usr/aarch64-linux-gnu/sys-root"
           export OPENSSL_STATIC=1
           export OPENSSL_VENDORED=1
           export PKG_CONFIG_ALLOW_CROSS=1
