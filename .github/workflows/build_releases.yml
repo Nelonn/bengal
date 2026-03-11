@@ -59,6 +59,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
+          Depends: libssl3
           Maintainer: Bengal Language Team
           Description: Bengal language CLI
            Bengal programming language command-line interface
@@ -134,6 +135,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: arm64
+          Depends: libssl3
           Maintainer: Bengal Language Team
           Description: Bengal language CLI
            Bengal programming language command-line interface
@@ -202,6 +204,7 @@ jobs:
           Summary:        Bengal language CLI
           License:        MIT
           URL:            https://github.com/${{ github.repository }}
+          Requires:       openssl-libs
 
           %description
           Bengal programming language command-line interface
@@ -294,6 +297,7 @@ jobs:
           License:        MIT
           URL:            https://github.com/${{ github.repository }}
           Arch:           aarch64
+          Requires:       openssl-libs
 
           %description
           Bengal programming language command-line interface
@@ -406,14 +410,14 @@ jobs:
         with:
           name: bengal-arch-amd64
           path: |
-            bengal-*.tar.gz
+            bengal_*.tar.gz
             PKGBUILD
             .SRCINFO
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: bengal-*.tar.gz
+          files: bengal_*.tar.gz
 
   build-arch-arm64:
     name: Build Arch Linux Package (arm64)
@@ -498,14 +502,14 @@ jobs:
         with:
           name: bengal-arch-arm64
           path: |
-            bengal-*.tar.gz
+            bengal_*.tar.gz
             PKGBUILD
             .SRCINFO
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: bengal-*.tar.gz
+          files: bengal_*.tar.gz
 
   # ========== MACOS ==========
   build-macos-amd64:
