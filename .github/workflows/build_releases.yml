@@ -294,6 +294,7 @@ jobs:
           gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Build OpenSSL for aarch64
+        continue-on-error: true
         run: |
           curl -fsSL https://www.openssl.org/source/openssl-3.3.2.tar.gz | tar -xz
           cd openssl-3.3.2
