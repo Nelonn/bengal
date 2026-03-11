@@ -1,4 +1,4 @@
-import std::io
+import std.io
 
 println("Postfix test:")
 let a = 5

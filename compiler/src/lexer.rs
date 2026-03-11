@@ -76,7 +76,6 @@ pub enum Token {
     LAngle,
     RAngle,
     Colon,
-    DoubleColon,
     Comma,
     Semicolon,
     Dot,
@@ -210,12 +209,7 @@ impl Lexer {
             ']' => { self.advance(); Ok(Token::RBracket) }
             ':' => {
                 self.advance();
-                if self.peek() == Some(':') {
-                    self.advance();
-                    Ok(Token::DoubleColon)
-                } else {
-                    Ok(Token::Colon)
-                }
+                Ok(Token::Colon)
             }
             ',' => { self.advance(); Ok(Token::Comma) }
             ';' => { self.advance(); Ok(Token::Semicolon) }

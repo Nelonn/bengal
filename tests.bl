@@ -1,6 +1,6 @@
 #!/usr/bin/env bengal
 
-import std::shell
-import std::fs
+import std.shell
+import std.fs
 
 

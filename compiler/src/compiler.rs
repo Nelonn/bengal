@@ -480,9 +480,9 @@ impl Compiler {
 
             // Check if bytecode already ends with a Return instruction
             // Return is a 2-byte instruction: [opcode, register]
-            let ends_with_return = func_bytecode.len() >= 2 && 
+            let ends_with_return = func_bytecode.len() >= 2 &&
                 func_bytecode[func_bytecode.len() - 2] == Opcode::Return as u8;
-            
+
             if !ends_with_return {
                 func_bytecode.push(Opcode::LoadNull as u8);
                 func_bytecode.push(0); // R0
@@ -492,14 +492,32 @@ impl Compiler {
 
             let source_file = function_source_files.get(&f.name).cloned();
             let register_count = func_compiler.current_ctx.register_count();
-            
+
             // Adjust string indices in function bytecode to match global string table
             let string_offset = strings.len();
             strings.extend(func_strings);
             adjust_string_indices(&mut func_bytecode, string_offset);
 
+            // Use mangled name from type context if available (for overloaded functions)
+            let function_name = if let Some(ctx) = &type_context {
+                // Try to find the mangled name for this function
+                let param_types: Vec<crate::types::Type> = f.params.iter()
+                    .filter_map(|p| p.type_name.as_ref().map(|t| crate::types::Type::from_str(t)))
+                    .collect();
+                let mangled = crate::types::mangle_function_name(&f.name, &param_types);
+                
+                // Check if this mangled name exists in the context
+                if ctx.functions.contains_key(&mangled) {
+                    mangled
+                } else {
+                    f.name.clone()
+                }
+            } else {
+                f.name.clone()
+            };
+
             vm_functions.push(Function {
-                name: f.name.clone(),
+                name: function_name,
                 bytecode: func_bytecode,
                 param_count: f.params.len() as u8,
                 register_count,
@@ -1022,11 +1040,20 @@ impl Compiler {
                 }
             }
 
-            Expr::Call { callee, args, .. } => {
-                // First, compile all argument expressions
+            Expr::Call { callee, args, span: _ } => {
+                // First, compile all argument expressions and collect their types
                 let mut arg_regs = Vec::new();
+                let mut arg_types = Vec::new();
                 for arg in args {
-                    arg_regs.push(self.compile_expr(arg, bytecode, strings, classes, type_context)?);
+                    let reg = self.compile_expr(arg, bytecode, strings, classes, type_context)?;
+                    arg_regs.push(reg);
+                    // Infer argument type from expression
+                    let arg_type = if let Some(ctx) = type_context {
+                        self.infer_expr_type(arg, ctx)
+                    } else {
+                        Type::Unknown
+                    };
+                    arg_types.push(arg_type);
                 }
 
                 let rd = self.current_ctx.allocate_reg();
@@ -1047,8 +1074,9 @@ impl Compiler {
                         if let Some(resolved_class) = ctx.resolve_class(func_name) {
                             resolved_name = resolved_class;
                             is_class = true;
-                        } else if let Some(sig) = ctx.resolve_function(func_name) {
-                            resolved_name = sig.name.clone();
+                        } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
+                            // Use mangled name for overloaded function resolution
+                            resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
                         } else if let Some(current_class) = &ctx.current_class {
                             // Check if it's a method on current class
                             if let Some(class_info) = ctx.get_class(current_class) {
@@ -1457,6 +1485,136 @@ impl Compiler {
             }
 
             _ => Err(format!("Unsupported expression: {:?}", expr)),
+        }
+    }
+
+    /// Infer the type of an expression for overload resolution
+    fn infer_expr_type(&self, expr: &Expr, ctx: &TypeContext) -> Type {
+        match expr {
+            Expr::Literal(lit) => {
+                match lit {
+                    Literal::String(_) => Type::Str,
+                    Literal::Int(_) => Type::Int,
+                    Literal::Float(_) => Type::Float,
+                    Literal::Bool(_) => Type::Bool,
+                    Literal::Null => Type::Null,
+                }
+            }
+            Expr::Variable { name, .. } => {
+                // Check local variables first
+                if let Some(var_info) = ctx.get_variable(name) {
+                    return var_info.type_name.clone();
+                }
+                // Check class fields
+                if let Some(current_class_name) = &ctx.current_class {
+                    if let Some(class_info) = ctx.get_class(current_class_name) {
+                        if let Some(field_info) = class_info.fields.get(name) {
+                            return field_info.type_name.clone();
+                        }
+                    }
+                }
+                // Check enums
+                if ctx.get_enum(name).is_some() {
+                    return Type::Enum(name.clone());
+                }
+                Type::Unknown
+            }
+            Expr::Binary { left, op, right, .. } => {
+                match op {
+                    BinaryOp::Equal | BinaryOp::NotEqual |
+                    BinaryOp::And | BinaryOp::Or |
+                    BinaryOp::Greater | BinaryOp::GreaterEqual |
+                    BinaryOp::Less | BinaryOp::LessEqual => Type::Bool,
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply |
+                    BinaryOp::Divide | BinaryOp::Modulo => {
+                        // Try to get type from left operand
+                        let left_type = self.infer_expr_type(left, ctx);
+                        if left_type != Type::Unknown {
+                            return left_type;
+                        }
+                        self.infer_expr_type(right, ctx)
+                    }
+                }
+            }
+            Expr::Unary { op: _, expr: inner, .. } => {
+                self.infer_expr_type(inner, ctx)
+            }
+            Expr::Call { .. } => {
+                // Function call return type - would need full resolution
+                Type::Unknown
+            }
+            Expr::Get { object, name, .. } => {
+                // Property access - try to get type from class
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if let Some(var_info) = ctx.get_variable(obj_name) {
+                        if let Type::Class(class_name) = &var_info.type_name {
+                            if let Some(class_info) = ctx.get_class(class_name) {
+                                if let Some(field_info) = class_info.fields.get(name) {
+                                    return field_info.type_name.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                Type::Unknown
+            }
+            Expr::Array { elements, .. } => {
+                if let Some(first) = elements.first() {
+                    let inner_type = self.infer_expr_type(first, ctx);
+                    Type::Array(Box::new(inner_type))
+                } else {
+                    Type::Array(Box::new(Type::Unknown))
+                }
+            }
+            Expr::Cast { target_type, .. } => {
+                match target_type {
+                    CastType::Int => Type::Int,
+                    CastType::Float => Type::Float,
+                    CastType::Str => Type::Str,
+                    CastType::Bool => Type::Bool,
+                    CastType::Int8 => Type::Int8,
+                    CastType::UInt8 => Type::UInt8,
+                    CastType::Int16 => Type::Int16,
+                    CastType::UInt16 => Type::UInt16,
+                    CastType::Int32 => Type::Int32,
+                    CastType::UInt32 => Type::UInt32,
+                    CastType::Int64 => Type::Int64,
+                    CastType::UInt64 => Type::UInt64,
+                    CastType::Float32 => Type::Float32,
+                    CastType::Float64 => Type::Float64,
+                }
+            }
+            Expr::Lambda { params: _, return_type, body: _, span: _, is_async } => {
+                if let Some(ret) = return_type {
+                    let ty = Type::from_str(ret);
+                    if *is_async {
+                        Type::Promise(Box::new(ty))
+                    } else {
+                        Type::Function(vec![], Box::new(ty))
+                    }
+                } else {
+                    Type::Unknown
+                }
+            }
+            Expr::Await { expr, .. } => {
+                let inner_type = self.infer_expr_type(expr, ctx);
+                if let Type::Promise(inner) = inner_type {
+                    *inner
+                } else {
+                    Type::Unknown
+                }
+            }
+            Expr::ObjectLiteral { inferred_type, .. } => {
+                if let Some(ty) = inferred_type {
+                    Type::Class(ty.clone())
+                } else {
+                    Type::Unknown
+                }
+            }
+            Expr::Interpolated { .. } => Type::Str,
+            Expr::Range { .. } => Type::Unknown,
+            Expr::Index { .. } => Type::Unknown,
+            Expr::Set { .. } => Type::Null,
         }
     }
 

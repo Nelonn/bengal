@@ -1,5 +1,5 @@
-import std::data;
-import std::io;
+import std.data;
+import std.io;
 
 fn main() {
     let b: int8 = int8(127);

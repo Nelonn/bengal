@@ -1,6 +1,6 @@
-module std::test
+module std.test
 
-import std::io
+import std.io
 
 class Test {
   value: int = 42

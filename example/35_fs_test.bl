@@ -1,6 +1,6 @@
 module test_fs
 
-import std::fs
+import std.fs
 
 println("=== Bengal FS Module Tests ===")
 
@@ -8,22 +8,22 @@ let testPath = "test_simple.txt"
 let testContent = "Hello, Bengal!"
 
 println("Testing write_string...")
-fs::write_string(testPath, testContent)
+fs.write_string(testPath, testContent)
 
 println("Testing exists...")
-if (fs::exists(testPath)) {
+if (fs.exists(testPath)) {
   println("File exists: true")
 }
 
 println("Testing read_string...")
-let content = fs::read_string(testPath)
+let content = fs.read_string(testPath)
 println("Content: ${content}")
 
 println("Testing remove_file...")
-fs::remove_file(testPath)
+fs.remove_file(testPath)
 
 println("Testing exists after delete...")
-if (!fs::exists(testPath)) {
+if (!fs.exists(testPath)) {
   println("File removed: true")
 }
 

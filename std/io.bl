@@ -1,4 +1,4 @@
-module std::io
+module std.io
 
 native fn print(text: str) {}
 

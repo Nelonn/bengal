@@ -1,5 +1,5 @@
 use bengal_compiler::Compiler;
-use sparkler::Executor;
+use sparkler::{Executor, vm::VmState};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
@@ -9,16 +9,22 @@ pub struct ReplState {
     source_history: String,
     /// Executor with registered native functions
     executor: Executor,
+    /// Last known good VM state for rollback on errors
+    last_good_state: Option<VmState>,
 }
 
 impl ReplState {
     pub fn new() -> Self {
         let mut executor = Executor::new();
         bengal_std::register_all(&mut executor.vm);
-        
+
+        // Save initial state after native functions are registered
+        let last_good_state = Some(executor.vm.snapshot());
+
         Self {
             source_history: String::new(),
             executor,
+            last_good_state,
         }
     }
 
@@ -26,7 +32,7 @@ impl ReplState {
     pub async fn evaluate(&mut self, input: &str) -> Result<Option<String>, String> {
         let trimmed = input.trim();
         let is_expr = self.is_expression(trimmed);
-        
+
         // For expressions, we need to include history to have access to previous variables
         // For statements, we also include history for the same reason
         // But we need to handle the return value differently
@@ -44,9 +50,13 @@ impl ReplState {
             }
         };
 
+        // Snapshot current VM state before attempting to compile/run
+        let state_before = self.executor.vm.snapshot();
+
         match self.compile_and_run(&test_source, is_expr).await {
             Ok(result) => {
-                // Success - commit the input
+                // Success - update the last good state and commit the input
+                self.last_good_state = Some(self.executor.vm.snapshot());
                 if !self.source_history.is_empty() {
                     self.source_history.push('\n');
                 }
@@ -54,6 +64,9 @@ impl ReplState {
                 Ok(result)
             }
             Err(e) => {
+                // Error - rollback to state before this command
+                self.executor.vm.restore(&state_before);
+                
                 // Check if it might be an incomplete statement
                 if self.is_incomplete_statement(input) {
                     return Err(format!("incomplete: {}", e));
@@ -200,6 +213,8 @@ impl ReplState {
         // Reinitialize executor to clear any variable bindings
         let mut executor = Executor::new();
         bengal_std::register_all(&mut executor.vm);
+        // Save initial state after native functions are registered
+        self.last_good_state = Some(executor.vm.snapshot());
         self.executor = executor;
     }
 }
@@ -217,6 +232,7 @@ pub async fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Bengal REPL v0.1.0");
     println!("Type 'exit' or Ctrl+D to quit, 'clear' to reset state");
+    println!("Errors will rollback to the state before the command");
     println!();
 
     loop {

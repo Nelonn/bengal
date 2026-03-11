@@ -1,4 +1,4 @@
-module std::ffi
+module std.ffi
 
 class CProc {
   native fn call(any...): any?

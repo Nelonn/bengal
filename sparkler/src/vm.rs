@@ -418,20 +418,20 @@ impl NativeModule {
     }
 
     pub fn class_method(mut self, class_name: &str, method_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains("::") {
+        let full_class_name = if class_name.contains('.') {
             class_name.to_string()
         } else {
-            format!("{}::{}", self.name, class_name)
+            format!("{}.{}", self.name, class_name)
         };
         self.class_methods.push((full_class_name, method_name.to_string(), func));
         self
     }
 
     pub fn class_native_create(mut self, class_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains("::") {
+        let full_class_name = if class_name.contains('.') {
             class_name.to_string()
         } else {
-            format!("{}::{}", self.name, class_name)
+            format!("{}.{}", self.name, class_name)
         };
         self.class_native_create_callbacks.push((full_class_name, func));
         self
@@ -439,7 +439,7 @@ impl NativeModule {
 
     pub fn register(self, vm: &mut VM) {
         for (name, func) in self.functions {
-            let full_name = format!("{}::{}", self.name, name);
+            let full_name = format!("{}.{}", self.name, name);
             vm.register_native(&full_name, func);
         }
         for (class_name, method_name, func) in self.class_methods {
@@ -2359,5 +2359,31 @@ impl<'de> Deserialize<'de> for Value {
         }
 
         deserializer.deserialize_any(ValueVisitor)
+    }
+}
+
+/// Snapshot of VM state for REPL rollback support
+#[derive(Clone)]
+pub struct VmState {
+    pub locals: HashMap<String, Value>,
+    pub classes: HashMap<String, Class>,
+    pub functions: HashMap<String, Function>,
+}
+
+impl VM {
+    /// Create a snapshot of the current VM state
+    pub fn snapshot(&self) -> VmState {
+        VmState {
+            locals: self.locals.clone(),
+            classes: self.classes.clone(),
+            functions: self.functions.clone(),
+        }
+    }
+
+    /// Restore the VM to a previous state
+    pub fn restore(&mut self, state: &VmState) {
+        self.locals = state.locals.clone();
+        self.classes = state.classes.clone();
+        self.functions = state.functions.clone();
     }
 }

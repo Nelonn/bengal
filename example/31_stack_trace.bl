@@ -1,6 +1,6 @@
 // Test stack traces in exceptions
 
-import std::sys
+import std.sys
 
 fn check_result(number: int) {
     if (number > 25) {
@@ -14,7 +14,7 @@ try {
     let x = 10
     let y = 20
     let result = x + y
-    std::sys::just_throw()
+    std.sys.just_throw()
     check_result(result)
 } catch (e) {
     println("Caught exception:")

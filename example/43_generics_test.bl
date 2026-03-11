@@ -1,4 +1,4 @@
-module test::generics
+module test.generics
 
 class tvec2<T> {
   x: T

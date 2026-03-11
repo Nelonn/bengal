@@ -1,0 +1,44 @@
+// Test function overloading with type mangling
+// Functions with the same name but different parameter types
+
+import std.io
+
+// Overloaded function: add with int parameters
+fn add(a: int, b: int): int {
+    return a + b
+}
+
+// Overloaded function: add with float parameters
+fn add(a: float, b: float): float {
+    return a + b
+}
+
+// Overloaded function: add with string parameters
+fn add(a: str, b: str): str {
+    return a + b
+}
+
+// Overloaded function: multiply
+fn multiply(a: int, b: int): int {
+    return a * b
+}
+
+fn multiply(a: float, b: float): float {
+    return a * b
+}
+
+// Test the overloaded functions
+let int_result = add(5, 10)
+println(int_result)  // Should print: 15
+
+let float_result = add(3.14, 2.86)
+println(float_result)  // Should print: 6.0
+
+let str_result = add("Hello, ", "World!")
+println(str_result)  // Should print: Hello, World!
+
+let int_mul = multiply(4, 5)
+println(int_mul) // Should print: 20
+
+let float_mul = multiply(2.5, 4.0)
+println(float_mul) // Should print: 10.0

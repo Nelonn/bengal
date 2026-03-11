@@ -1,45 +1,45 @@
 #!/usr/bin/env bengal
 
-import std::args
-import std::io
+import std.args
+import std.io
 
 // Get all arguments
-let allArgs = args::get()
+let allArgs = args.get()
 println("All arguments: " + allArgs.length() + " total")
 
 // Print program name
-println("Program: " + args::program())
+println("Program: " + args.program())
 
 // Print argument count
-println("Argument count: " + args::count())
+println("Argument count: " + args.count())
 
 // Print each argument
 println("\nAll arguments:")
 let i = 0
-while (i < args::count()) {
-    println("  [" + i + "]: " + args::at(i))
+while (i < args.count()) {
+    println("  [" + i + "]: " + args.at(i))
     i = i + 1
 }
 
 // Check for specific flags
 println("\nFlag checks:")
-let hasHelp = args::hasFlag("help")
+let hasHelp = args.hasFlag("help")
 if (hasHelp) {
     println("  --help flag detected")
 }
 
-let hasVerbose = args::hasFlag("verbose")
+let hasVerbose = args.hasFlag("verbose")
 if (hasVerbose) {
     println("  --verbose flag detected")
 }
 
 // Get flag values
-let nameValue = args::getFlag("name")
+let nameValue = args.getFlag("name")
 if (nameValue) {
     println("  --name value: " + nameValue)
 }
 
-let outputValue = args::getFlag("output")
+let outputValue = args.getFlag("output")
 if (outputValue) {
     println("  --output value: " + outputValue)
 }

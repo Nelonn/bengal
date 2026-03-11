@@ -1,21 +1,21 @@
-import std::io
-import std::math
+import std.io
+import std.math
 
 println("Testing math functions")
 
-let result = std::math::sin(0.0)
+let result = math.sin(0.0)
 println("sin(0) = " + result)
 
-let result2 = std::math::cos(0.0)
+let result2 = math.cos(0.0)
 println("cos(0) = " + result2)
 
-let result3 = std::math::sqrt(16.0)
+let result3 = math.sqrt(16.0)
 println("sqrt(16) = " + result3)
 
-let result4 = std::math::min(5.0, 3.0)
+let result4 = math.min(5.0, 3.0)
 println("min(5, 3) = " + result4)
 
-let result5 = std::math::max(5.0, 3.0)
+let result5 = math.max(5.0, 3.0)
 println("max(5, 3) = " + result5)
 
 println("All math tests passed!")
