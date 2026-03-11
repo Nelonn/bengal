@@ -314,13 +314,17 @@ impl Parser {
         // This allows async to be used for lambdas in expressions
         while self.check(&Token::Native) || self.check(&Token::Async) {
             let is_current_async = self.match_token(&Token::Async);
-            let is_current_native = self.match_token(&Token::Native);
-            
+            let is_current_native = if !is_current_async { self.match_token(&Token::Native) } else { false };
+
             if is_current_async {
-                // Check if followed by fn
+                // Check if followed by fn (possibly with native in between: async native fn)
                 self.skip_newlines();
                 if self.check(&Token::Fn) {
                     is_async = true;
+                } else if self.check(&Token::Native) {
+                    // async native fn pattern
+                    is_async = true;
+                    // Continue loop to consume native on next iteration
                 } else {
                     // Not followed by fn, put async back by not consuming it
                     self.pos -= 1; // Go back to async token
