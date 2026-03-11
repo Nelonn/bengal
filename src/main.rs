@@ -1,22 +1,43 @@
 use bengal_compiler::Compiler;
 use sparkler::Executor;
-use std::env;
 use std::fs;
+use clap::Parser;
+
+mod repl;
+
+#[derive(Parser, Debug)]
+#[command(name = "bengal")]
+#[command(about = "Bengal Language CLI", long_about = None)]
+struct Args {
+    /// Source file to run (omit to enter REPL mode)
+    source_file: Option<String>,
+
+    /// Dump bytecode information
+    #[arg(long)]
+    dump_bytecode: bool,
+
+    /// Enable debug mode with breakpoints
+    #[arg(long)]
+    debug: bool,
+}
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    if args.len() < 2 {
-        eprintln!("Usage: {} <source_file> [--dump-bytecode]", args[0]);
-        std::process::exit(1);
+    // REPL mode - default when no source file is provided
+    if args.source_file.is_none() {
+        if let Err(e) = repl::run_repl().await {
+            eprintln!("REPL error: {}", e);
+            std::process::exit(1);
+        }
+        return;
     }
 
-    let source_file = &args[1];
-    let dump_bytecode = args.iter().any(|arg| arg == "--dump-bytecode");
-    let debug_mode = args.iter().any(|arg| arg == "--debug");
+    // File execution mode
+    let source_file = args.source_file.unwrap();
 
-    let source = match fs::read_to_string(source_file) {
+    let source = match fs::read_to_string(&source_file) {
         Ok(content) => content,
         Err(e) => {
             eprintln!("Error reading file: {}", e);
@@ -24,7 +45,7 @@ async fn main() {
         }
     };
 
-    let mut compiler = Compiler::with_path(&source, source_file);
+    let mut compiler = Compiler::with_path(&source, &source_file);
     let bytecode = match compiler.compile() {
         Ok(bc) => bc,
         Err(e) => {
@@ -33,7 +54,7 @@ async fn main() {
         }
     };
 
-    if dump_bytecode {
+    if args.dump_bytecode {
         println!("--- BYTECODE DUMP ---");
         println!("Bytecode data ({} bytes):", bytecode.data.len());
         let mut i = 0;
@@ -41,7 +62,7 @@ async fn main() {
             let byte = bytecode.data[i];
             let name = get_opcode_name(byte);
             print!("{:04X}: 0x{:02X} ({})", i, byte, name);
-            
+
             // Basic operand display for some common opcodes
             match byte {
                 0x10 | 0x20 | 0x21 | 0x30 | 0x31 | 0x40 | 0x41 | 0x43 | 0x44 | 0x45 | 0x50 | 0x51 | 0x52 | 0x65 => {
@@ -98,13 +119,13 @@ async fn main() {
     let mut executor = Executor::new();
     bengal_std::register_all(&mut executor.vm);
 
-    if debug_mode {
+    if args.debug {
         executor.vm.is_debugging = true;
         // For testing, add a breakpoint at line 3 of the source file
         executor.vm.breakpoints.insert((source_file.clone(), 3));
     }
 
-    if let Err(e) = executor.run_to_completion(bytecode, Some(source_file)).await {
+    if let Err(e) = executor.run_to_completion(bytecode, Some(&source_file)).await {
         eprintln!("Runtime error: {}", e);
         std::process::exit(1);
     }
