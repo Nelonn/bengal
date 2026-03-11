@@ -96,18 +96,37 @@ jobs:
 
       - name: Install cross-compilation tools
         run: |
+          sudo dpkg --add-architecture arm64
+
+          # Rewrite sources to pin amd64 to azure mirror, arm64 to ports.ubuntu.com
+          sudo tee /etc/apt/sources.list << 'EOF'
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+          EOF
+
+          # Disable the Azure mirrorlist which overrides sources.list and has no arm64
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
+          sudo rm -f /etc/apt/apt-mirrors.txt
+
           sudo apt update
           sudo apt install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
-            libssl-dev
+            libssl-dev:arm64 \
+            fakeroot \
+            dpkg-dev
 
       - name: Set pkg-config for cross-compilation
         run: |
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -117,10 +136,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-arm64-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install packaging tools
-        run: |
-          sudo apt install -y fakeroot dpkg-dev
 
       - name: Build release binary (arm64)
         run: |
@@ -267,18 +282,24 @@ jobs:
       - name: Install cross-compilation tools
         run: |
           dnf install -y \
-            gcc \
             gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
+            perl \
+            perl-FindBin \
+            perl-IPC-Cmd \
+            make \
+            rpm-build \
+            fakeroot \
+            pkgconfig \
+            openssl \
             openssl-devel
 
       - name: Set cross-compilation env
         run: |
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib64/pkgconfig" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_VENDORED=1" >> $GITHUB_ENV
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -288,10 +309,6 @@ jobs:
             ~/.cargo/git
             target
           key: fedora-cargo-arm64-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install build dependencies
-        run: |
-          dnf install -y rpm-build fakeroot make pkgconfig openssl openssl-devel
 
       - name: Build release binary (arm64)
         run: |
@@ -453,18 +470,35 @@ jobs:
 
       - name: Install cross-compilation tools
         run: |
+          sudo dpkg --add-architecture arm64
+
+          # Rewrite sources to pin amd64 to azure mirror, arm64 to ports.ubuntu.com
+          sudo tee /etc/apt/sources.list << 'EOF'
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+          EOF
+
+          # Disable the Azure mirrorlist which overrides sources.list and has no arm64
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
+          sudo rm -f /etc/apt/apt-mirrors.txt
+
           sudo apt update
           sudo apt install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
-            libssl-dev
+            libssl-dev:arm64
 
       - name: Set pkg-config for cross-compilation
         run: |
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
