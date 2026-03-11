@@ -1,0 +1,818 @@
+# Build Bengal CLI for all platforms on release
+# Creates packages for:
+# - Linux (.deb, .rpm, .tar.gz) - amd64, arm64
+# - macOS (.tar.gz, .pkg) - amd64, arm64
+# - Windows (.exe, .msi) - amd64, arm64
+
+name: Build Releases
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: bengal
+
+# ========== LINUX ==========
+jobs:
+  # ========== DEBIAN/UBUNTU (.deb) ==========
+  build-deb-amd64:
+    name: Build Debian Package (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-amd64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install packaging tools
+        run: |
+          sudo apt update
+          sudo apt install -y fakeroot dpkg-dev
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal
+
+      - name: Create DEB package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p debian-package/DEBIAN
+          mkdir -p debian-package/usr/bin
+          mkdir -p debian-package/usr/share/doc/bengal
+
+          cp target/release/bengal debian-package/usr/bin/
+          chmod 755 debian-package/usr/bin/bengal
+
+          cat > debian-package/DEBIAN/control << EOF
+          Package: bengal
+          Version: ${VERSION#v}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libssl3
+          Maintainer: Bengal Language Team
+          Description: Bengal language CLI
+           Bengal programming language command-line interface
+          EOF
+
+          cp README.md debian-package/usr/share/doc/bengal/
+
+      - name: Build DEB package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          fakeroot dpkg-deb --build debian-package bengal_${VERSION#v}_amd64.deb
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-deb-amd64
+          path: bengal_*.deb
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bengal_*.deb
+
+  build-deb-arm64:
+    name: Build Debian Package (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: aarch64-unknown-linux-gnu
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo dpkg --add-architecture arm64
+
+          # Rewrite sources to pin amd64 to azure mirror, arm64 to ports.ubuntu.com
+          sudo tee /etc/apt/sources.list << 'EOF'
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+          EOF
+
+          # Disable the Azure mirrorlist which overrides sources.list and has no arm64
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
+          sudo rm -f /etc/apt/apt-mirrors.txt
+
+          sudo apt update
+          sudo apt install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libssl-dev:arm64 \
+            fakeroot \
+            dpkg-dev
+
+      - name: Set pkg-config for cross-compilation
+        run: |
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-arm64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary (arm64)
+        run: |
+          cargo build --release --bin bengal --target aarch64-unknown-linux-gnu
+          mkdir -p target/release-arm64
+          cp target/aarch64-unknown-linux-gnu/release/bengal target/release-arm64/bengal
+
+      - name: Create DEB package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p debian-package/DEBIAN
+          mkdir -p debian-package/usr/bin
+          mkdir -p debian-package/usr/share/doc/bengal
+
+          cp target/release-arm64/bengal debian-package/usr/bin/
+          chmod 755 debian-package/usr/bin/bengal
+
+          cat > debian-package/DEBIAN/control << EOF
+          Package: bengal
+          Version: ${VERSION#v}
+          Section: utils
+          Priority: optional
+          Architecture: arm64
+          Depends: libssl3
+          Maintainer: Bengal Language Team
+          Description: Bengal language CLI
+           Bengal programming language command-line interface
+          EOF
+
+          cp README.md debian-package/usr/share/doc/bengal/
+
+      - name: Build DEB package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          fakeroot dpkg-deb --build debian-package bengal_${VERSION#v}_arm64.deb
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-deb-arm64
+          path: bengal_*.deb
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bengal_*.deb
+
+  # ========== FEDORA/RHEL (.rpm) ==========
+  build-rpm-amd64:
+    name: Build RPM Package (amd64)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: fedora-cargo-amd64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build fakeroot gcc clang make pkgconfig openssl openssl-devel
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal
+
+      - name: Create RPM package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p rpm-package/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          mkdir -p rpm-package/SOURCES/bengal-${VERSION#v}
+
+          cp target/release/bengal rpm-package/SOURCES/bengal-${VERSION#v}/
+          chmod 755 rpm-package/SOURCES/bengal-${VERSION#v}/bengal
+
+          tar -czf rpm-package/SOURCES/bengal-${VERSION#v}.tar.gz -C rpm-package/SOURCES/ bengal-${VERSION#v}
+
+          cat > rpm-package/SPECS/bengal.spec << EOF
+          Name:           bengal
+          Version:        ${VERSION#v}
+          Release:        1%{?dist}
+          Summary:        Bengal language CLI
+          License:        MIT
+          URL:            https://github.com/${{ github.repository }}
+          Requires:       openssl-libs
+
+          %description
+          Bengal programming language command-line interface
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          cp %{_sourcedir}/bengal-${VERSION#v}/bengal %{buildroot}/usr/bin/
+          chmod 755 %{buildroot}/usr/bin/bengal
+
+          %files
+          /usr/bin/bengal
+
+          %preun
+          if [ \$1 -eq 0 ]; then
+            rm -f /usr/bin/bengal
+          fi
+          EOF
+
+      - name: Build RPM package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          rpmbuild -bb rpm-package/SPECS/bengal.spec \
+            --define "_topdir $(pwd)/rpm-package" \
+            --define "_rpmdir $(pwd)/rpm-package/RPMS"
+
+          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${VERSION#v}_amd64.rpm \;
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-rpm-amd64
+          path: rpm-package/bengal_*.rpm
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rpm-package/bengal_*.rpm
+
+  build-rpm-arm64:
+    name: Build RPM Package (arm64)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: fedora-cargo-arm64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build fakeroot gcc clang make pkgconfig openssl openssl-devel \
+          gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+          libgcc glibc-devel perl perl-IPC-Cmd
+
+      - name: Install aarch64 sysroot headers
+        continue-on-error: true
+        run: |
+          # Install cross-compilation sysroot so ring/cc-rs can find stdint.h
+          dnf install -y glibc-devel.aarch64 libgcc.aarch64 || true
+          # Symlink sysroot for the cross compiler
+          SYSROOT=/usr/aarch64-linux-gnu/sys-root
+          mkdir -p $SYSROOT/usr/include
+          cp -r /usr/include/bits $SYSROOT/usr/include/ 2>/dev/null || true
+          cp -r /usr/include/sys $SYSROOT/usr/include/ 2>/dev/null || true
+
+      - name: Build OpenSSL for aarch64
+        continue-on-error: true
+        run: |
+          curl -fsSL https://www.openssl.org/source/openssl-3.3.2.tar.gz | tar -xz
+          cd openssl-3.3.2
+          ./Configure linux-aarch64 \
+          --cross-compile-prefix=aarch64-linux-gnu- \
+          --prefix=/usr/local/aarch64-openssl \
+          no-shared
+          make -j$(nproc)
+          make install
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          OPENSSL_STATIC: "1"
+          OPENSSL_DIR: /usr/local/aarch64-openssl
+        run: cargo build --release --bin bengal --target aarch64-unknown-linux-gnu
+
+      - name: Create RPM package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p rpm-package/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          mkdir -p rpm-package/SOURCES/bengal-${VERSION#v}
+
+          cp target/aarch64-unknown-linux-gnu/release/bengal rpm-package/SOURCES/bengal-${VERSION#v}/
+          chmod 755 rpm-package/SOURCES/bengal-${VERSION#v}/bengal
+
+          tar -czf rpm-package/SOURCES/bengal-${VERSION#v}.tar.gz -C rpm-package/SOURCES/ bengal-${VERSION#v}
+
+          cat > rpm-package/SPECS/bengal.spec << EOF
+          Name:           bengal
+          Version:        ${VERSION#v}
+          Release:        1%{?dist}
+          Summary:        Bengal language CLI
+          License:        MIT
+          URL:            https://github.com/${{ github.repository }}
+          Requires:       openssl-libs
+
+          %description
+          Bengal programming language command-line interface
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          cp %{_sourcedir}/bengal-${VERSION#v}/bengal %{buildroot}/usr/bin/
+          chmod 755 %{buildroot}/usr/bin/bengal
+
+          %files
+          /usr/bin/bengal
+
+          %preun
+          if [ \$1 -eq 0 ]; then
+            rm -f /usr/bin/bengal
+          fi
+          EOF
+
+      - name: Build RPM package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          rpmbuild -bb rpm-package/SPECS/bengal.spec \
+            --define "_topdir $(pwd)/rpm-package" \
+            --define "_rpmdir $(pwd)/rpm-package/RPMS" \
+            --target aarch64
+
+          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${VERSION#v}_arm64.rpm \;
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-rpm-arm64
+          path: rpm-package/bengal_*.rpm
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rpm-package/bengal_*.rpm
+  # ========== ARCH LINUX (.tar.gz) ==========
+  build-arch-amd64:
+    name: Build Arch Linux Package (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-arch-amd64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal
+
+      - name: Create Arch package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p arch-package/usr/bin
+          mkdir -p arch-package/usr/share/doc/bengal
+
+          cp target/release/bengal arch-package/usr/bin/
+          chmod 755 arch-package/usr/bin/bengal
+          cp README.md arch-package/usr/share/doc/bengal/
+
+          tar -czf bengal_${VERSION#v}_amd64.tar.gz -C arch-package usr
+
+      - name: Create PKGBUILD
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cat > PKGBUILD << EOF
+          pkgname=bengal
+          pkgver=${VERSION#v}
+          pkgrel=1
+          pkgdesc="Bengal language CLI"
+          arch=('amd64')
+          url="https://github.com/${{ github.repository }}"
+          license=('MIT')
+          provides=('bengal')
+
+          package() {
+            cd "\${srcdir}"
+            install -Dm755 bengal "\${pkgdir}/usr/bin/bengal"
+            install -Dm644 README.md "\${pkgdir}/usr/share/doc/bengal/README.md"
+          }
+          EOF
+
+      - name: Create .SRCINFO
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cat > .SRCINFO << EOF
+          pkgbase = bengal
+          pkgver = ${VERSION#v}
+          pkgrel = 1
+          pkgdesc = Bengal language CLI
+          url = https://github.com/${{ github.repository }}
+          arch = amd64
+          license = MIT
+          provides = bengal
+          EOF
+
+      - name: Upload Arch artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-arch-amd64
+          path: |
+            bengal_*.tar.gz
+            PKGBUILD
+            .SRCINFO
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bengal_*.tar.gz
+
+  build-arch-arm64:
+    name: Build Arch Linux Package (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: aarch64-unknown-linux-gnu
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo dpkg --add-architecture arm64
+
+          # Rewrite sources to pin amd64 to azure mirror, arm64 to ports.ubuntu.com
+          sudo tee /etc/apt/sources.list << 'EOF'
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+          EOF
+
+          # Disable the Azure mirrorlist which overrides sources.list and has no arm64
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
+          sudo rm -f /etc/apt/apt-mirrors.txt
+
+          sudo apt update
+          sudo apt install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libssl-dev:arm64
+
+      - name: Set pkg-config for cross-compilation
+        run: |
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-arch-arm64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary (arm64)
+        run: |
+          cargo build --release --bin bengal --target aarch64-unknown-linux-gnu
+          mkdir -p target/release-arm64
+          cp target/aarch64-unknown-linux-gnu/release/bengal target/release-arm64/bengal
+
+      - name: Create Arch package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p arch-package/usr/bin
+          mkdir -p arch-package/usr/share/doc/bengal
+
+          cp target/release-arm64/bengal arch-package/usr/bin/
+          chmod 755 arch-package/usr/bin/bengal
+          cp README.md arch-package/usr/share/doc/bengal/
+
+          tar -czf bengal_${VERSION#v}_arm64.tar.gz -C arch-package usr
+
+      - name: Create PKGBUILD
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cat > PKGBUILD << EOF
+          pkgname=bengal
+          pkgver=${VERSION#v}
+          pkgrel=1
+          pkgdesc="Bengal language CLI"
+          arch=('arm64' 'aarch64')
+          url="https://github.com/${{ github.repository }}"
+          license=('MIT')
+          provides=('bengal')
+
+          package() {
+            cd "\${srcdir}"
+            install -Dm755 bengal "\${pkgdir}/usr/bin/bengal"
+            install -Dm644 README.md "\${pkgdir}/usr/share/doc/bengal/README.md"
+          }
+          EOF
+
+      - name: Create .SRCINFO
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cat > .SRCINFO << EOF
+          pkgbase = bengal
+          pkgver = ${VERSION#v}
+          pkgrel = 1
+          pkgdesc = Bengal language CLI
+          url = https://github.com/${{ github.repository }}
+          arch = arm64
+          arch = aarch64
+          license = MIT
+          provides = bengal
+          EOF
+
+      - name: Upload Arch artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-arch-arm64
+          path: |
+            bengal_*.tar.gz
+            PKGBUILD
+            .SRCINFO
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bengal_*.tar.gz
+
+  # ========== MACOS ==========
+  build-macos-amd64:
+    name: Build macOS Package (amd64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-apple-darwin
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-macos-amd64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal --target x86_64-apple-darwin
+
+      - name: Create macOS package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p macos-package/bin
+          mkdir -p macos-package/share/doc/bengal
+
+          cp target/x86_64-apple-darwin/release/bengal macos-package/bin/
+          chmod 755 macos-package/bin/bengal
+          cp README.md macos-package/share/doc/bengal/
+
+          tar -czf bengal_${VERSION#v}_macos_amd64.tar.gz -C macos-package bin share
+
+      - name: Create installer package (.pkg)
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p pkg-root/usr/bin
+          cp target/x86_64-apple-darwin/release/bengal pkg-root/usr/bin/
+          chmod 755 pkg-root/usr/bin/bengal
+
+          pkgbuild --root pkg-root \
+                   --identifier io.github.cubekii.bengal \
+                   --version ${VERSION#v} \
+                   --install-location / \
+                   bengal_${VERSION#v}_macos_amd64.pkg
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-macos-amd64
+          path: |
+            bengal_*_macos_amd64.tar.gz
+            bengal_*_macos_amd64.pkg
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bengal_*_macos_amd64.tar.gz
+            bengal_*_macos_amd64.pkg
+
+  build-macos-arm64:
+    name: Build macOS Package (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: aarch64-apple-darwin
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-macos-arm64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal --target aarch64-apple-darwin
+
+      - name: Create macOS package structure
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p macos-package/bin
+          mkdir -p macos-package/share/doc/bengal
+
+          cp target/aarch64-apple-darwin/release/bengal macos-package/bin/
+          chmod 755 macos-package/bin/bengal
+          cp README.md macos-package/share/doc/bengal/
+
+          tar -czf bengal_${VERSION#v}_macos_arm64.tar.gz -C macos-package bin share
+
+      - name: Create installer package (.pkg)
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mkdir -p pkg-root/usr/bin
+          cp target/aarch64-apple-darwin/release/bengal pkg-root/usr/bin/
+          chmod 755 pkg-root/usr/bin/bengal
+
+          pkgbuild --root pkg-root \
+                   --identifier io.github.cubekii.bengal \
+                   --version ${VERSION#v} \
+                   --install-location / \
+                   bengal_${VERSION#v}_macos_arm64.pkg
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-macos-arm64
+          path: |
+            bengal_*_macos_arm64.tar.gz
+            bengal_*_macos_arm64.pkg
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bengal_*_macos_arm64.tar.gz
+            bengal_*_macos_arm64.pkg
+
+  # ========== WINDOWS ==========
+  build-windows-amd64:
+    name: Build Windows Package (amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-windows-amd64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal --target x86_64-pc-windows-msvc
+
+      - name: Create Windows package
+        run: |
+          $VERSION = "${env:GITHUB_REF}".Replace("refs/tags/", "")
+          New-Item -ItemType Directory -Path windows-package\bin -Force
+          Copy-Item target\x86_64-pc-windows-msvc\release\bengal.exe windows-package\bin\
+          Copy-Item README.md windows-package\
+          Compress-Archive -Path windows-package\* -DestinationPath bengal_${VERSION}_windows_amd64.zip -Force
+
+      - name: Create Windows installer (.msi)
+        run: |
+          $VERSION = "${env:GITHUB_REF}".Replace("refs/tags/", "").Replace("v", "")
+          New-Item -ItemType Directory -Path msi-root\ProgramFiles\bengal -Force
+          Copy-Item target\x86_64-pc-windows-msvc\release\bengal.exe msi-root\ProgramFiles\bengal\
+
+          $wix = "C:\Program Files (x86)\WiX Toolset v3.14\bin"
+          if (Test-Path $wix) {
+            & "$wix\heat.exe" dir msi-root\ProgramFiles\bengal -gg -sfrag -sreg -srd -dr INSTALLFOLDER -cg BengalFiles -var var.BengalSource -o Product.wxs
+            # Note: Full MSI build requires additional wix configuration
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-windows-amd64
+          path: |
+            bengal_*_windows_amd64.zip
+            bengal_*_windows_amd64.exe
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bengal_*_windows_amd64.zip
+            bengal_*_windows_amd64.exe
+
+  build-windows-arm64:
+    name: Build Windows Package (arm64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: aarch64-pc-windows-msvc
+
+      - name: Install LLVM for cross-compilation
+        run: choco install llvm -y
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-windows-arm64-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin bengal --target aarch64-pc-windows-msvc
+
+      - name: Create Windows package
+        run: |
+          $VERSION = "${env:GITHUB_REF}".Replace("refs/tags/", "")
+          New-Item -ItemType Directory -Path windows-package\bin -Force
+          Copy-Item target\aarch64-pc-windows-msvc\release\bengal.exe windows-package\bin\
+          Copy-Item README.md windows-package\
+          Compress-Archive -Path windows-package\* -DestinationPath bengal_${VERSION}_windows_arm64.zip -Force
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-windows-arm64
+          path: |
+            bengal_*_windows_arm64.zip
+            bengal_*_windows_arm64.exe
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bengal_*_windows_arm64.zip
+            bengal_*_windows_arm64.exe
