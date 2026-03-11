@@ -12,8 +12,8 @@ println("Original object:")
 println(u.name)
 
 // Reflection
-let type = std::reflect::type_of(u)
-println("Type: ${type}")
+let u_type = std::reflect::type_of(u)
+println("Type: ${u_type}")
 
 let className = std::reflect::class_name(u)
 println("Class: ${className}")

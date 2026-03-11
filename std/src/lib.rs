@@ -5,6 +5,7 @@ pub mod fs;
 pub mod http;
 pub mod io;
 pub mod json;
+pub mod math;
 pub mod reflect;
 pub mod str;
 pub mod sys;
@@ -121,6 +122,47 @@ pub fn register_all(vm: &mut VM) {
 
     NativeModule::new("std::args")
         .function("get", args::native_args_get)
+        .register(vm);
+
+    // Register math constants and functions
+    NativeModule::new("std::math")
+        .function("sin", math::native_math_sin)
+        .function("cos", math::native_math_cos)
+        .function("tan", math::native_math_tan)
+        .function("asin", math::native_math_asin)
+        .function("acos", math::native_math_acos)
+        .function("atan", math::native_math_atan)
+        .function("atan2", math::native_math_atan2)
+        .function("sinh", math::native_math_sinh)
+        .function("cosh", math::native_math_cosh)
+        .function("tanh", math::native_math_tanh)
+        .function("asinh", math::native_math_asinh)
+        .function("acosh", math::native_math_acosh)
+        .function("atanh", math::native_math_atanh)
+        .function("floor", math::native_math_floor)
+        .function("ceil", math::native_math_ceil)
+        .function("round", math::native_math_round)
+        .function("trunc", math::native_math_trunc)
+        .function("fract", math::native_math_fract)
+        .function("min", math::native_math_min)
+        .function("max", math::native_math_max)
+        .function("clamp", math::native_math_clamp)
+        .function("abs", math::native_math_abs)
+        .function("sign", math::native_math_sign)
+        .function("sqrt", math::native_math_sqrt)
+        .function("cbrt", math::native_math_cbrt)
+        .function("pow", math::native_math_pow)
+        .function("exp", math::native_math_exp)
+        .function("ln", math::native_math_ln)
+        .function("log10", math::native_math_log10)
+        .function("log2", math::native_math_log2)
+        .function("log", math::native_math_log)
+        .function("hypot", math::native_math_hypot)
+        .function("lerp", math::native_math_lerp)
+        .function("step", math::native_math_step)
+        .function("smoothstep", math::native_math_smoothstep)
+        .function("toRadians", math::native_math_to_radians)
+        .function("toDegrees", math::native_math_to_degrees)
         .register(vm);
 
     // Fallback function that throws an error

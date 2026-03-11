@@ -1,0 +1,8 @@
+fn main() {
+  println("Hello from simple test")
+  
+  let x = 5.0
+  let y = 3.0
+  let result = x + y
+  println("5 + 3 = " + result)
+}

@@ -384,35 +384,8 @@ impl TypeContext {
     }
 
     fn register_native_classes(&mut self) {
-        // Register std::io module functions
-        let io_print = FunctionSignature {
-            name: "print".to_string(),
-            params: vec![ParamSignature {
-                name: "text".to_string(),
-                type_name: Some(Type::Unknown),
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-        };
-
-        let io_println = FunctionSignature {
-            name: "println".to_string(),
-            params: vec![ParamSignature {
-                name: "line".to_string(),
-                type_name: Some(Type::Unknown),
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-        };
-
-        self.functions.insert("print".to_string(), io_print);
-        self.functions.insert("println".to_string(), io_println);
+        // Register std::io module functions (only when std::io is imported)
+        // These are registered in ModuleResolver::register_native_functions()
 
         // JSON
         let json_stringify = FunctionSignature {
@@ -489,9 +462,6 @@ impl TypeContext {
         self.functions.insert("std::reflect::class_name".to_string(), reflect_class_name);
         self.functions.insert("std::reflect::fields".to_string(), reflect_fields);
         self.imports.push("std::reflect".to_string());
-
-        // Mark std::io as imported by default for native functions
-        self.imports.push("std::io".to_string());
     }
 
     pub fn add_class(&mut self, class: &ClassDef) {
@@ -1287,7 +1257,7 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, span } => {
                 if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
                     // Check if it's a function call
                     let func_sig = self.context.get_function(func_name).cloned();
@@ -1310,17 +1280,21 @@ impl TypeChecker {
                             self.check_method_call(sig, args, "constructor", func_name);
                         } else if !args.is_empty() {
                             // No explicit constructor but args were provided
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Class '{}' does not accept constructor arguments", func_name),
-                                0
+                                span.line, span.column, None, None
                             );
                         }
                         // Return type is the class type
                         Type::Class(func_name.clone())
                     } else {
+                        self.context.add_error_with_location(
+                            format!("Undefined function: '{}'", func_name),
+                            span.line, span.column, None, None
+                        );
                         Type::Unknown
                     }
-                } else if let Expr::Get { object, name, .. } = callee.as_ref() {
+                } else if let Expr::Get { object, name, span: method_span } = callee.as_ref() {
                     // Method call
                     let object_type = self.infer_expr(object);
 
@@ -1342,7 +1316,7 @@ impl TypeChecker {
                             }
 
                             if let Some(err) = visibility_error {
-                                self.context.add_error(err, 0);
+                                self.context.add_error_with_location(err, method_span.line, method_span.column, None, None);
                             }
 
                             self.check_method_call(sig, args, name, &class_name);
@@ -1357,9 +1331,9 @@ impl TypeChecker {
                             }
                             return_type
                         } else {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Method '{}' not found on class '{}'", name, class_name),
-                                0
+                                method_span.line, method_span.column, None, None
                             );
                             Type::Unknown
                         }
@@ -1370,7 +1344,7 @@ impl TypeChecker {
                     Type::Unknown
                 }
             }
-            Expr::Get { object, name, .. } => {
+            Expr::Get { object, name, span } => {
                 let object_type = self.infer_expr(object);
 
                 if let Type::Class(class_name) = object_type {
@@ -1391,14 +1365,14 @@ impl TypeChecker {
                             let type_name = field_info.type_name.clone();
 
                             if let Some(err) = visibility_error {
-                                self.context.add_error(err, 0);
+                                self.context.add_error_with_location(err, span.line, span.column, None, None);
                             }
 
                             type_name
                         } else {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Field '{}' not found on class '{}'", name, class_name),
-                                0
+                                span.line, span.column, None, None
                             );
                             Type::Unknown
                         }
@@ -1411,9 +1385,9 @@ impl TypeChecker {
                         if let Some(_variant) = enum_info.variants.get(name) {
                             Type::Int  // Enum variants are integers
                         } else {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Variant '{}' not found on enum '{}'", name, enum_name),
-                                0
+                                span.line, span.column, None, None
                             );
                             Type::Unknown
                         }
@@ -1490,27 +1464,27 @@ impl TypeChecker {
                 }
                 Type::Str
             }
-            Expr::Range { start, end, .. } => {
+            Expr::Range { start, end, span } => {
                 let start_type = self.infer_expr(start);
                 let end_type = self.infer_expr(end);
                 if start_type != Type::Int && start_type != Type::Unknown {
-                    self.context.add_error(format!("Range start must be an integer, got {}", start_type.to_str()), 0);
+                    self.context.add_error_with_location(format!("Range start must be an integer, got {}", start_type.to_str()), span.line, span.column, None, None);
                 }
                 if end_type != Type::Int && end_type != Type::Unknown {
-                    self.context.add_error(format!("Range end must be an integer, got {}", end_type.to_str()), 0);
+                    self.context.add_error_with_location(format!("Range end must be an integer, got {}", end_type.to_str()), span.line, span.column, None, None);
                 }
                 Type::Int
             }
-            Expr::Await { expr, .. } => {
+            Expr::Await { expr, span } => {
                 let inner_type = self.infer_expr(expr);
                 // Await unwraps Promise<T> to T
                 match inner_type {
                     Type::Promise(t) => *t,
                     Type::Unknown => Type::Unknown,
                     _ => {
-                        self.context.add_error(
+                        self.context.add_error_with_location(
                             format!("Can only await Promise values, got {}", inner_type.to_str()),
-                            0
+                            span.line, span.column, None, None
                         );
                         Type::Unknown
                     }
