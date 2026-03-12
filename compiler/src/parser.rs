@@ -90,6 +90,7 @@ pub struct Field {
     pub type_name: String,
     pub default: Option<Expr>,
     pub private: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +103,7 @@ pub struct Method {
     pub private: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -513,9 +515,10 @@ impl Parser {
             let mut is_private = false;
             let mut is_native_method = false;
             let mut is_async = false;
+            let mut is_static = false;
 
             self.skip_newlines();
-            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) {
+            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) || self.check(&Token::Static) {
                 if self.match_token(&Token::Private) { is_private = true; }
                 else if self.match_token(&Token::Native) {
                     if !is_native_class {
@@ -524,14 +527,18 @@ impl Parser {
                     is_native_method = true;
                 }
                 else if self.match_token(&Token::Async) { is_async = true; }
+                else if self.match_token(&Token::Static) { is_static = true; }
                 self.skip_newlines();
             }
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_method(is_private, is_async, is_native_method || is_native_class)?;
+                let method = self.parse_method(is_private, is_async, is_native_method || is_native_class, is_static)?;
                 methods.push(method);
             } else if self.match_token(&Token::Constructor) {
-                let method = self.parse_method_named("constructor", is_private, false, is_native_class)?;
+                if is_static {
+                    return self.error_generic("Constructor cannot be static");
+                }
+                let method = self.parse_method_named("constructor", is_private, false, is_native_class, is_static)?;
                 if is_native_class && !method.body.is_empty() {
                     return self.error_generic("Constructor in native classes cannot have implementation.");
                 }
@@ -540,7 +547,7 @@ impl Parser {
                 if is_native_class {
                     return self.error_generic("Native classes cannot have member-fields.");
                 }
-                let field = self.parse_field(is_private)?;
+                let field = self.parse_field(is_private, is_static)?;
                 fields.push(field);
             }
             self.skip_newlines();
@@ -564,6 +571,7 @@ impl Parser {
                 private: false,
                 is_async: false,
                 is_native: false,
+                is_static: false,
             });
 
             // Constructor with all fields as parameters
@@ -581,6 +589,7 @@ impl Parser {
                     private: false,
                     is_async: false,
                     is_native: false,
+                    is_static: false,
                 });
             }
         }
@@ -701,7 +710,7 @@ impl Parser {
             Vec::new()
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false, is_static: false })
     }
 
     fn parse_enum(&mut self) -> Result<Stmt, String> {
@@ -842,7 +851,7 @@ impl Parser {
         }))
     }
 
-    fn parse_field(&mut self, private: bool) -> Result<Field, String> {
+    fn parse_field(&mut self, private: bool, is_static: bool) -> Result<Field, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             t => return self.error_generic(&format!("Expected field name, got {:?}", t)),
@@ -865,18 +874,18 @@ impl Parser {
             None
         };
 
-        Ok(Field { name, type_name, default, private })
+        Ok(Field { name, type_name, default, private, is_static })
     }
 
-    fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
+    fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected method name"),
         };
-        self.parse_method_named(&name, private, is_async, is_native)
+        self.parse_method_named(&name, private, is_async, is_native, is_static)
     }
 
-    fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
+    fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
         if !self.match_token(&Token::LParen) {
             return self.error_generic(&format!("Expected '(' after {} name", name));
         }
@@ -921,7 +930,7 @@ impl Parser {
             body
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native, is_static })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {

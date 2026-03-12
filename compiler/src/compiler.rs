@@ -370,6 +370,7 @@ impl Compiler {
 
         // Compile classes with methods
         let mut vm_classes = Vec::new();
+        let mut static_methods = Vec::new();  // Collect static methods to add to global functions
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
             // ... (rest of field collection)
@@ -409,8 +410,12 @@ impl Compiler {
                     continue;
                 }
 
-                // Create compiler context for method with "self" as first param
-                let mut method_params = vec!["self".to_string()];
+                // Static methods don't need "self" parameter
+                let mut method_params = if method.is_static {
+                    Vec::new()
+                } else {
+                    vec!["self".to_string()]
+                };
                 method_params.extend(method.params.iter().map(|p| p.name.clone()));
                 let mut method_compiler = if let Some(path) = &class_source_file {
                     Compiler::with_path(class_source, path)
@@ -489,7 +494,13 @@ impl Compiler {
                     }
                     format!("{}({})", method.name, params.join(","))
                 };
-                
+
+                // For static methods, also add to global functions list with ClassName::methodName
+                if method.is_static {
+                    let static_method_name = format!("{}::{}", c.name, mangled_name);
+                    static_methods.push((static_method_name, method_bytecode.clone(), register_count, method.params.len()));
+                }
+
                 vm_methods.insert(mangled_name.clone(), Method {
                     name: mangled_name,
                     bytecode: method_bytecode,
@@ -572,6 +583,21 @@ impl Compiler {
                 param_count: f.params.len() as u8,
                 register_count,
                 source_file,
+            });
+        }
+
+        // Add static methods to global functions
+        for (name, mut bytecode, register_count, param_count) in static_methods {
+            // Adjust string indices in static method bytecode
+            let string_offset = strings.len();
+            adjust_string_indices(&mut bytecode, string_offset);
+            
+            vm_functions.push(Function {
+                name,
+                bytecode,
+                param_count: param_count as u8,
+                register_count,
+                source_file: None,
             });
         }
 
@@ -1317,61 +1343,143 @@ impl Compiler {
                         }
                     }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
-                    let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
-                    let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
+                    // Check if this is a static method call: ClassName.method()
+                    let (is_static_call, obj_name) = if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                        if let Some(ctx) = type_context {
+                            if let Some(class_info) = ctx.get_class(obj_name) {
+                                // Check if the method exists and is static
+                                let mangled_method = if args.is_empty() {
+                                    format!("{}()", name)
+                                } else {
+                                    let mut params = Vec::new();
+                                    for _ in 0..args.len() {
+                                        params.push("T".to_string());
+                                    }
+                                    format!("{}({})", name, params.join(","))
+                                };
+                                (class_info.methods.get(&mangled_method)
+                                    .map(|m| m.is_static)
+                                    .unwrap_or(false), obj_name.clone())
+                            } else { (false, String::new()) }
+                        } else { (false, String::new()) }
+                    } else { (false, String::new()) };
 
-                    // First arg for Invoke is the object (self)
-                    bytecode.push(Opcode::Move as u8);
-                    bytecode.push(contiguous_start as u8);
-                    bytecode.push(r_obj as u8);
-
-                    for (i, &r) in arg_regs.iter().enumerate() {
-                        let r_arg = contiguous_start + 1 + i;
-                        bytecode.push(Opcode::Move as u8);
-                        bytecode.push(r_arg as u8);
-                        bytecode.push(r as u8);
-                    }
-
-                    // Generate mangled method name based on argument count
-                    let mangled_method = if args.is_empty() {
-                        format!("{}()", name)
-                    } else {
-                        let mut params = Vec::new();
-                        for _ in 0..args.len() {
-                            params.push("T".to_string());
+                    if is_static_call {
+                        // Static method call - no self parameter needed
+                        let contiguous_start = self.current_ctx.allocate_regs(args.len());
+                        for (i, &r) in arg_regs.iter().enumerate() {
+                            let r_arg = contiguous_start + i;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_arg as u8);
+                            bytecode.push(r as u8);
                         }
-                        format!("{}({})", name, params.join(","))
-                    };
-                    
-                    let idx = strings.len();
-                    strings.push(mangled_method);
 
-                    // Check if this is an interface method call
-                    let is_interface_method = if let Some(ctx) = type_context {
-                        // Try to get the type of the object
-                        if let Expr::Variable { .. } = object.as_ref() {
-                            if let Some(current_class) = &ctx.current_class {
-                                if let Some(class_info) = ctx.get_class(current_class) {
-                                    class_info.is_interface || !class_info.parent_interfaces.is_empty()
+                        // Generate mangled method name (same as stored in class)
+                        let mangled_method = if args.is_empty() {
+                            format!("{}()", name)
+                        } else {
+                            let mut params = Vec::new();
+                            for _ in 0..args.len() {
+                                params.push("T".to_string());
+                            }
+                            format!("{}({})", name, params.join(","))
+                        };
+
+                        // Static methods are looked up by ClassName::mangled_name
+                        let full_method_name = format!("{}::{}", obj_name, mangled_method);
+                        let idx = strings.len();
+                        strings.push(full_method_name);
+
+                        // Use Call for static methods
+                        bytecode.push(Opcode::Call as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push(args.len() as u8);
+                    } else {
+                        // Instance method call
+                        let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                        let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
+
+                        // First arg for Invoke is the object (self)
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push(r_obj as u8);
+
+                        for (i, &r) in arg_regs.iter().enumerate() {
+                            let r_arg = contiguous_start + 1 + i;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_arg as u8);
+                            bytecode.push(r as u8);
+                        }
+
+                        // Generate mangled method name based on argument count
+                        let mangled_method = if args.is_empty() {
+                            format!("{}()", name)
+                        } else {
+                            let mut params = Vec::new();
+                            for _ in 0..args.len() {
+                                params.push("T".to_string());
+                            }
+                            format!("{}({})", name, params.join(","))
+                        };
+
+                        let idx = strings.len();
+                        strings.push(mangled_method);
+
+                        // Check if this is an interface method call
+                        let is_interface_method = if let Some(ctx) = type_context {
+                            // Try to get the type of the object
+                            if let Expr::Variable { .. } = object.as_ref() {
+                                if let Some(current_class) = &ctx.current_class {
+                                    if let Some(class_info) = ctx.get_class(current_class) {
+                                        class_info.is_interface || !class_info.parent_interfaces.is_empty()
+                                    } else { false }
                                 } else { false }
                             } else { false }
-                        } else { false }
-                    } else { false };
+                        } else { false };
 
-                    if is_interface_method {
-                        bytecode.push(Opcode::InvokeInterface as u8);
-                    } else {
-                        bytecode.push(Opcode::Invoke as u8);
+                        if is_interface_method {
+                            bytecode.push(Opcode::InvokeInterface as u8);
+                        } else {
+                            bytecode.push(Opcode::Invoke as u8);
+                        }
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push((args.len() + 1) as u8);
                     }
-                    bytecode.push(rd as u8);
-                    bytecode.push(idx as u8);
-                    bytecode.push(contiguous_start as u8);
-                    bytecode.push((args.len() + 1) as u8);
                 }
                 Ok(rd)
             }
 
             Expr::Get { object, name, .. } => {
+                // Check if this is static member access: ClassName.member
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if let Some(ctx) = type_context {
+                        // Check if obj_name is a class
+                        if ctx.get_class(obj_name).is_some() || ctx.get_interface(obj_name).is_some() {
+                            // This is static member access
+                            if let Some(class_info) = ctx.get_class(obj_name) {
+                                if let Some(field_info) = class_info.fields.get(name) {
+                                    if field_info.is_static {
+                                        // Load static field value - treat as global variable
+                                        let rd = self.current_ctx.allocate_reg();
+                                        let idx = strings.len();
+                                        strings.push(format!("static_{}.{}", obj_name, name));
+                                        bytecode.push(Opcode::LoadLocal as u8);
+                                        bytecode.push(rd as u8);
+                                        bytecode.push(idx as u8);
+                                        return Ok(rd);
+                                    }
+                                }
+                            }
+                            // For static methods, they'll be handled when the Call is processed
+                            // Just return a placeholder for now
+                        }
+                    }
+                }
+                
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.allocate_reg();
                 let idx = strings.len();
@@ -1384,6 +1492,26 @@ impl Compiler {
             }
 
             Expr::Set { object, name, value, .. } => {
+                // Check if this is static field assignment: ClassName.field = value
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if let Some(ctx) = type_context {
+                        if let Some(class_info) = ctx.get_class(obj_name) {
+                            if let Some(field_info) = class_info.fields.get(name) {
+                                if field_info.is_static {
+                                    // Static field assignment - treat as global variable
+                                    let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
+                                    let idx = strings.len();
+                                    strings.push(format!("static_{}.{}", obj_name, name));
+                                    bytecode.push(Opcode::StoreLocal as u8);
+                                    bytecode.push(idx as u8);
+                                    bytecode.push(r_val as u8);
+                                    return Ok(r_val);
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
                 let idx = strings.len();

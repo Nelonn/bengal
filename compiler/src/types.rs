@@ -326,6 +326,7 @@ pub struct FieldInfo {
     pub name: String,
     pub type_name: Type,
     pub private: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +338,7 @@ pub struct MethodSignature {
     pub private: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub is_static: bool,
     pub mangled_name: Option<String>,
 }
 
@@ -517,6 +519,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
             mangled_name: None,
         });
         str_methods.insert("trim".to_string(), MethodSignature {
@@ -527,6 +530,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
             mangled_name: None,
         });
         str_methods.insert("split".to_string(), MethodSignature {
@@ -537,6 +541,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
             mangled_name: None,
         });
         let mut str_method_overloads = HashMap::new();
@@ -565,6 +570,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
             mangled_name: None,
         });
         array_methods.insert("add".to_string(), MethodSignature {
@@ -575,6 +581,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
             mangled_name: None,
         });
         let mut array_method_overloads = HashMap::new();
@@ -600,13 +607,14 @@ impl TypeContext {
                 name: field.name.clone(),
                 type_name: Type::from_str(&field.type_name),
                 private: field.private,
+                is_static: field.is_static,
             });
         }
 
         let mut methods = HashMap::new();
         let mut method_overloads: HashMap<String, Vec<String>> = HashMap::new();
         let mut has_constructor = false;
-        
+
         for method in &class.methods {
             if method.name == "constructor" {
                 has_constructor = true;
@@ -633,6 +641,7 @@ impl TypeContext {
                 private: method.private,
                 is_async: method.is_async,
                 is_native: method.is_native,
+                is_static: method.is_static,
                 mangled_name: Some(mangled.clone()),
             });
         }
@@ -652,6 +661,7 @@ impl TypeContext {
                 private: false,
                 is_async: false,
                 is_native: false,
+                is_static: false,
                 mangled_name: Some(empty_ctor_mangled),
             });
 
@@ -666,7 +676,7 @@ impl TypeContext {
                     .collect();
                 let field_ctor_mangled = mangle_function_name("constructor", &field_param_types);
                 overloads.push(field_ctor_mangled.clone());
-                
+
                 methods.insert(field_ctor_mangled.clone(), MethodSignature {
                     name: "constructor".to_string(),
                     params: field_params,
@@ -675,6 +685,7 @@ impl TypeContext {
                     private: false,
                     is_async: false,
                     is_native: false,
+                    is_static: false,
                     mangled_name: Some(field_ctor_mangled),
                 });
             }
@@ -726,6 +737,7 @@ impl TypeContext {
                 private: method.private,
                 is_async: method.is_async,
                 is_native: method.is_native,
+                is_static: method.is_static,
                 mangled_name: Some(mangled.clone()),
             });
         }
@@ -1690,7 +1702,12 @@ impl TypeChecker {
                             return field_type;
                         }
                     }
-                    // Variable not found in class context - report as undeclared
+                    // Variable not found in class context - check if it's a class name (for static access)
+                    if self.context.get_class(name).is_some() {
+                        // Class name reference - will be handled in Get expression
+                        return Type::Class(name.clone());
+                    }
+                    // Variable not found - report as undeclared
                     self.context.add_error_with_location(
                         format!("Undeclared variable '{}'", name),
                         span.line,
@@ -1702,6 +1719,9 @@ impl TypeChecker {
                 } else if self.context.get_enum(name).is_some() {
                     // Enum type access
                     Type::Enum(name.clone())
+                } else if self.context.get_class(name).is_some() {
+                    // Class name reference (for static access) - will be handled in Get expression
+                    Type::Class(name.clone())
                 } else {
                     // Variable not found in global/function context - check if it's a module alias
                     let mut is_module_alias = false;
@@ -1717,7 +1737,7 @@ impl TypeChecker {
                             break;
                         }
                     }
-                    
+
                     if is_module_alias {
                         return Type::Unknown;
                     }
@@ -2012,6 +2032,66 @@ impl TypeChecker {
                 }
             }
             Expr::Get { object, name, span } => {
+                // Check for static member access: ClassName.member
+                if let Expr::Variable { name: obj_name, span: _ } = object.as_ref() {
+                    // Check if obj_name is a class name
+                    if let Some(class_info) = self.context.get_class(obj_name) {
+                        // This is static member access
+                        if let Some(field_info) = class_info.fields.get(name) {
+                            if field_info.is_static {
+                                // Check visibility
+                                let mut visibility_error = None;
+                                if field_info.private {
+                                    if let Some(current) = &self.context.current_class {
+                                        if current != obj_name {
+                                            visibility_error = Some(format!("Static field '{}' on class '{}' is private and cannot be accessed from class '{}'", name, obj_name, current));
+                                        }
+                                    } else {
+                                        visibility_error = Some(format!("Static field '{}' on class '{}' is private and cannot be accessed from global scope", name, obj_name));
+                                    }
+                                }
+
+                                let type_name = field_info.type_name.clone();
+
+                                if let Some(err) = visibility_error {
+                                    self.context.add_error_with_location(err, span.line, span.column, None, None);
+                                }
+
+                                return type_name;
+                            } else {
+                                self.context.add_error_with_location(
+                                    format!("Cannot access instance field '{}' on class '{}' without an instance. Use 'self.{}' or make the field static.", name, obj_name, name),
+                                    span.line, span.column, None, None
+                                );
+                                return Type::Unknown;
+                            }
+                        } else if let Some(method_sig) = class_info.methods.get(&format!("{}()", name)) {
+                            // Static method reference (not call) - return function type
+                            if method_sig.is_static {
+                                let param_types: Vec<Type> = method_sig.params.iter()
+                                    .filter_map(|p| p.type_name.clone())
+                                    .collect();
+                                let return_type = method_sig.return_type.clone().unwrap_or(Type::Unknown);
+                                return Type::Function(param_types, Box::new(return_type));
+                            }
+                        }
+                        // Member not found as static - check if it's an instance member
+                        if class_info.fields.contains_key(name) || 
+                           class_info.methods.values().any(|m| m.name == *name) {
+                            self.context.add_error_with_location(
+                                format!("Cannot access instance member '{}' on class '{}' without an instance. Use 'self.{}' or make the member static.", name, obj_name, name),
+                                span.line, span.column, None, None
+                            );
+                            return Type::Unknown;
+                        }
+                        self.context.add_error_with_location(
+                            format!("Member '{}' not found on class '{}'", name, obj_name),
+                            span.line, span.column, None, None
+                        );
+                        return Type::Unknown;
+                    }
+                }
+                
                 let object_type = self.infer_expr(object);
 
                 if let Type::Class(class_name) = object_type {
