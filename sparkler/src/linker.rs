@@ -311,14 +311,14 @@ impl RuntimeLinker {
     }
 
     /// Link bytecode to native functions
-    /// 
+    ///
     /// This converts string-based native calls to indexed calls
     pub fn link_bytecode(&mut self, bytecode: &mut [u8], strings: &[String]) -> Vec<PatchLocation> {
-        use crate::vm::Opcode;
-        
+        use crate::opcodes::Opcode;
+
         let mut patches = Vec::new();
         let registry = self.registry.read().unwrap();
-        
+
         let mut i = 0;
         while i < bytecode.len() {
             let opcode = bytecode[i];

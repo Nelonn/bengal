@@ -2,7 +2,8 @@ use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, FunctionDef, BinaryOp
 use crate::lexer::Lexer;
 use crate::resolver::ModuleResolver;
 use crate::types::{TypeContext, Type, TypeChecker};
-use sparkler::vm::{Class, Value, Opcode, Function, Method};
+use sparkler::vm::{Class, Value, Function, Method};
+use sparkler::opcodes::Opcode;
 
 pub type Bytecode = sparkler::executor::Bytecode;
 

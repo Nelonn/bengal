@@ -1,4 +1,5 @@
-use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult, Opcode};
+use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult};
+use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use std::sync::{Arc, RwLock};
 

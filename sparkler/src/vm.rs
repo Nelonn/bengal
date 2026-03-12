@@ -8,6 +8,7 @@ use std::fmt;
 use async_recursion::async_recursion;
 use std::any::Any;
 use crate::linker::NativeFunctionRegistry;
+use crate::opcodes::Opcode;
 
 pub type Bytecode = Vec<u8>;
 
@@ -2286,100 +2287,6 @@ pub enum ExecutionResult {
     Continue,
     Breakpoint,
     Awaiting(Arc<TokioMutex<PromiseState>>),
-}
-
-/// Opcodes for the registry-based VM
-/// 
-/// Registry-based instruction format:
-/// - Most instructions use explicit register operands (Rd, Rs, etc.)
-/// - No implicit stack operations
-/// - Fixed register file per call frame
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Opcode {
-    Nop = 0x00,
-
-    // Load constants into registers
-    LoadConst = 0x10,  // Rd, string_idx
-    LoadInt = 0x11,    // Rd, 8 bytes
-    LoadFloat = 0x12,  // Rd, 8 bytes
-    LoadBool = 0x13,   // Rd, 1 byte
-    LoadNull = 0x14,   // Rd
-
-    // Register-to-register operations
-    Move = 0x20,       // Rd, Rs
-
-    // Local variable operations
-    LoadLocal = 0x21,  // Rd, name_idx
-    StoreLocal = 0x22, // name_idx, Rs
-
-    // Property access
-    GetProperty = 0x30,  // Rd, Robj, name_idx
-    SetProperty = 0x31,  // Robj, name_idx, Rs
-
-    // Function calls
-    Call = 0x40,         // Rd, func_idx, arg_start, arg_count
-    CallNative = 0x41,   // Rd, name_idx, arg_start, arg_count
-    Invoke = 0x42,       // Rd, method_idx, arg_start, arg_count
-    Return = 0x43,       // Rs
-    CallAsync = 0x44,
-    CallNativeAsync = 0x45,
-    InvokeAsync = 0x46,
-    Await = 0x47,
-    Spawn = 0x48,
-    InvokeInterface = 0x49,  // Rd, vtable_idx, arg_start, arg_count
-    InvokeInterfaceAsync = 0x4A,  // Rd, vtable_idx, arg_start, arg_count
-    
-    // Indexed native calls (optimized - uses function index instead of string lookup)
-    CallNativeIndexed = 0x4B,  // Rd, func_idx (u16), arg_start, arg_count
-    CallNativeIndexedAsync = 0x4C,  // Rd, func_idx (u16), arg_start, arg_count
-
-    // Control flow
-    Jump = 0x50,         // target (2 bytes)
-    JumpIfTrue = 0x51,   // Rs, target (2 bytes)
-    JumpIfFalse = 0x52,  // Rs, target (2 bytes)
-
-    // Comparisons (3-register format: Rd = Rs1 op Rs2)
-    Equal = 0x60,    // Rd, Rs1, Rs2
-    NotEqual = 0x61, // Rd, Rs1, Rs2
-    Greater = 0x66,  // Rd, Rs1, Rs2
-    Less = 0x67,     // Rd, Rs1, Rs2
-    GreaterEqual = 0x6A,
-    LessEqual = 0x6B,
-
-    // Logical operations
-    And = 0x62,      // Rd, Rs1, Rs2
-    Or = 0x63,       // Rd, Rs1, Rs2
-    Not = 0x64,      // Rd, Rs
-
-    // Arithmetic (3-register format)
-    Add = 0x68,      // Rd, Rs1, Rs2
-    Subtract = 0x69, // Rd, Rs1, Rs2
-    Multiply = 0x70, // Rd, Rs1, Rs2
-    Divide = 0x71,   // Rd, Rs1, Rs2
-    Modulo = 0x75,   // Rd, Rs1, Rs2
-
-    // String operations
-    Concat = 0x65,   // Rd, rs_start, count
-
-    // Type operations
-    Cast = 0x74,     // Rd, Rs, type
-    Array = 0x76,    // Rd, rs_start, count
-    Index = 0x77,    // Rd, Robj, Ridx
-
-    // Debugging
-    Line = 0x73,     // line_number (2 bytes)
-
-    // Exception handling
-    TryStart = 0x80, // catch_pc (2 bytes), catch_reg
-    TryEnd = 0x81,
-    Throw = 0x82,    // Rs
-
-    // Debugging
-    Breakpoint = 0x90,
-
-    // Execution control
-    Halt = 0xFF,
 }
 
 impl Serialize for Value {

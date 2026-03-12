@@ -1,0 +1,5 @@
+import std.io;;;;;
+
+if (true) {;
+  println("Hello world")
+}
