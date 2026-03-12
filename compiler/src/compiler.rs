@@ -1082,8 +1082,40 @@ impl Compiler {
                             bytecode.push(rd as u8);
                             bytecode.push(r_var as u8);
                             Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: load field, increment, store back, return new value
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Add as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+                            Ok(rd)
                         } else {
-                            Err("Prefix increment requires a variable".to_string())
+                            Err("Prefix increment requires a variable or field access".to_string())
                         }
                     }
                     UnaryOp::PrefixDecrement => {
@@ -1104,8 +1136,40 @@ impl Compiler {
                             bytecode.push(rd as u8);
                             bytecode.push(r_var as u8);
                             Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: load field, decrement, store back, return new value
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Subtract as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+                            Ok(rd)
                         } else {
-                            Err("Prefix decrement requires a variable".to_string())
+                            Err("Prefix decrement requires a variable or field access".to_string())
                         }
                     }
                     UnaryOp::PostfixIncrement => {
@@ -1126,8 +1190,42 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
                             Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: save original value, increment field, return original
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            // Save original value for return
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Add as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
+                            Ok(rd)
                         } else {
-                            Err("Postfix increment requires a variable".to_string())
+                            Err("Postfix increment requires a variable or field access".to_string())
                         }
                     }
                     UnaryOp::PostfixDecrement | UnaryOp::Decrement => {
@@ -1148,8 +1246,42 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
                             Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: save original value, decrement field, return original
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            // Save original value for return
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Subtract as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
+                            Ok(rd)
                         } else {
-                            Err("Decrement requires a variable".to_string())
+                            Err("Decrement requires a variable or field access".to_string())
                         }
                     }
                 }

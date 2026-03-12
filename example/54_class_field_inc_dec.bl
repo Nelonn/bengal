@@ -1,0 +1,47 @@
+import std.io
+
+class Counter {
+    value: int = 0
+}
+
+println("Testing prefix and postfix on class member fields:")
+
+let counter = Counter()
+println("Initial counter.value: " + str(counter.value))
+
+println("\nPostfix increment test:")
+println("counter.value++ returns: " + str(counter.value++))
+println("counter.value is now: " + str(counter.value))
+
+println("\nPrefix increment test:")
+println("++counter.value returns: " + str(++counter.value))
+println("counter.value is now: " + str(counter.value))
+
+println("\nPostfix decrement test:")
+println("counter.value-- returns: " + str(counter.value--))
+println("counter.value is now: " + str(counter.value))
+
+println("\nPrefix decrement test:")
+println("--counter.value returns: " + str(--counter.value))
+println("counter.value is now: " + str(counter.value))
+
+println("\nMultiple increments:")
+counter.value = 0
+counter.value++
+counter.value++
+++counter.value
+++counter.value
+println("After 4 increments, counter.value: " + str(counter.value))
+
+println("\nUsing in expression:")
+counter.value = 10
+let result = counter.value++ + 5
+println("result (counter.value++ + 5): " + str(result))
+println("counter.value after: " + str(counter.value))
+
+counter.value = 10
+result = ++counter.value + 5
+println("result (++counter.value + 5): " + str(result))
+println("counter.value after: " + str(counter.value))
+
+println("\nAll tests passed!")

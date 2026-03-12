@@ -1543,28 +1543,28 @@ impl Parser {
         if self.match_token(&Token::PlusPlus) {
             let span = self.compute_span(self.pos - 1);
             let expr = self.parse_unary()?;
-            if let Expr::Variable { .. } = &expr {
+            if let Expr::Variable { .. } | Expr::Get { .. } = &expr {
                 return Ok(Expr::Unary {
                     op: UnaryOp::PrefixIncrement,
                     expr: Box::new(expr),
                     span,
                 });
             } else {
-                return self.error_expr("Prefix increment operator requires a variable");
+                return self.error_expr("Prefix increment operator requires a variable or field access");
             }
         }
 
         if self.match_token(&Token::MinusMinus) {
             let span = self.compute_span(self.pos - 1);
             let expr = self.parse_unary()?;
-            if let Expr::Variable { .. } = &expr {
+            if let Expr::Variable { .. } | Expr::Get { .. } = &expr {
                 return Ok(Expr::Unary {
                     op: UnaryOp::PrefixDecrement,
                     expr: Box::new(expr),
                     span,
                 });
             } else {
-                return self.error_expr("Prefix decrement operator requires a variable");
+                return self.error_expr("Prefix decrement operator requires a variable or field access");
             }
         }
 
@@ -1723,30 +1723,50 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::PlusPlus) {
-                // Postfix increment: var++
+                // Postfix increment: var++ or obj.field++
                 let span = self.compute_span(self.pos - 1);
                 if let Expr::Variable { name, span: var_span } = &expr {
                     expr = Expr::Unary {
-                    op: UnaryOp::PostfixIncrement,
-                    expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
-                    span,
+                        op: UnaryOp::PostfixIncrement,
+                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                        span,
                     };
-                    } else {
-                    return self.error_expr("Increment operator requires a variable");
-                    }
-                    } else if self.match_token(&Token::MinusMinus) {
-                    // Postfix decrement: var--
-                    let span = self.compute_span(self.pos - 1);
-                    if let Expr::Variable { name, span: var_span } = &expr {
+                } else if let Expr::Get { object, name, span: get_span } = &expr {
                     expr = Expr::Unary {
-                    op: UnaryOp::PostfixDecrement,
-                    expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
-                    span,
+                        op: UnaryOp::PostfixIncrement,
+                        expr: Box::new(Expr::Get {
+                            object: object.clone(),
+                            name: name.clone(),
+                            span: *get_span,
+                        }),
+                        span,
                     };
-                    } else {
-                    return self.error_expr("Decrement operator requires a variable");
-                    }
-                    } else {                break;
+                } else {
+                    return self.error_expr("Increment operator requires a variable or field access");
+                }
+            } else if self.match_token(&Token::MinusMinus) {
+                // Postfix decrement: var-- or obj.field--
+                let span = self.compute_span(self.pos - 1);
+                if let Expr::Variable { name, span: var_span } = &expr {
+                    expr = Expr::Unary {
+                        op: UnaryOp::PostfixDecrement,
+                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                        span,
+                    };
+                } else if let Expr::Get { object, name, span: get_span } = &expr {
+                    expr = Expr::Unary {
+                        op: UnaryOp::PostfixDecrement,
+                        expr: Box::new(Expr::Get {
+                            object: object.clone(),
+                            name: name.clone(),
+                            span: *get_span,
+                        }),
+                        span,
+                    };
+                } else {
+                    return self.error_expr("Decrement operator requires a variable or field access");
+                }
+            } else {                break;
             }
         }
 
