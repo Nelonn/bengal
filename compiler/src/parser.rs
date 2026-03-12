@@ -292,23 +292,24 @@ impl Parser {
             return Ok(());
         }
         
-        // Check for semicolon
-        if self.match_token(&Token::Semicolon) {
-            return Ok(());
+        // Consume all consecutive semicolons and newlines (allows ;; for empty statements)
+        let mut found_terminator = false;
+        while self.check(&Token::Semicolon) || self.check(&Token::Newline) {
+            self.advance();
+            found_terminator = true;
         }
         
-        // Check for newline
-        if self.match_token(&Token::Newline) {
-            return Ok(());
+        if !found_terminator {
+            // No valid terminator found
+            let span = self.compute_span(self.pos);
+            let filename = std::path::Path::new(&self.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&self.path);
+            return Err(format!("{}:{}:{}: error: Expected ';' or newline after statement", filename, span.line, span.column));
         }
         
-        // No valid terminator found
-        let span = self.compute_span(self.pos);
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: Expected ';' or newline after statement", filename, span.line, span.column))
+        Ok(())
     }
 
     pub fn parse(&mut self) -> Result<Vec<Stmt>, String> {
@@ -1223,6 +1224,14 @@ impl Parser {
         self.skip_newlines();
 
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
+            // Skip standalone semicolons (empty statements)
+            while self.match_token(&Token::Semicolon) {}
+            self.skip_newlines();
+            
+            if self.check(&Token::RBrace) || self.check(&Token::Eof) {
+                break;
+            }
+            
             if let Some(stmt) = self.parse_statement()? {
                 // Check if this is an if statement that might need an else branch
                 let stmt = self.maybe_parse_else_if(stmt)?;
