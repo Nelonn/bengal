@@ -13,10 +13,11 @@ pub mod sys;
 use sparkler::{NativeModule, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
-    vm.native("print", io::native_print)
-        .description("Print without newline")
+    // Register print with mangled name
+    vm.native("print(str)", io::native_print)
+        .description("Print without newline (str)")
         .register(vm);
-    
+
     // Register println with multiple overloads for different types
     vm.native("println(str)", io::native_println)
         .description("Print with newline (str)")
