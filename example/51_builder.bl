@@ -1,0 +1,58 @@
+#!/usr/bin/env bengal
+
+import std.io
+
+// Simple builder with self return type
+class Counter {
+    value: int = 0
+
+    fn increment(): self {
+        self.value = self.value + 1
+        return self
+    }
+
+    fn add(n: int): self {
+        self.value = self.value + n
+        return self
+    }
+
+    fn getValue(): int {
+        return self.value
+    }
+}
+
+// Builder that returns self for chaining
+class NameBuilder {
+    firstName: str = ""
+    lastName: str = ""
+
+    fn withFirst(name: str): self {
+        self.firstName = name
+        return self
+    }
+
+    fn withLast(name: str): self {
+        self.lastName = name
+        return self
+    }
+
+    fn getFull(): str {
+        return self.firstName + " " + self.lastName
+    }
+}
+
+fn main() {
+    // Test Counter with self return type
+    let counter = Counter()
+    counter.increment().add(5).increment()
+    println("Counter value: " + str(counter.getValue()))
+
+    // Test NameBuilder with self return type
+    let builder = NameBuilder()
+    builder.withFirst("John").withLast("Doe")
+    println("Full name: " + builder.getFull())
+
+    println("\nSelf return type tests passed!")
+}
+
+main()

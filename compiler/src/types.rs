@@ -35,6 +35,8 @@ pub enum Type {
     TypeAlias(String, Vec<Type>),             // Alias name with optional type args
     // Function type for lambdas
     Function(Vec<Type>, Box<Type>),           // (param_types, return_type)
+    // Self type for methods (resolved to actual class type during type checking)
+    SelfType,
 }
 
 impl Type {
@@ -102,6 +104,7 @@ impl Type {
             "uint64" => Type::UInt64,
             "float32" => Type::Float32,
             "float64" => Type::Float64,
+            "self" => Type::SelfType,
             _ => Type::Class(s.to_string()),
         }
     }
@@ -182,6 +185,7 @@ impl Type {
                 let params_str: Vec<String> = params.iter().map(|p| p.to_str()).collect();
                 format!("({}) -> {}", params_str.join(", "), return_type.to_str())
             }
+            Type::SelfType => "self".to_string(),
         }
     }
 
@@ -220,6 +224,8 @@ impl Type {
             // Type parameters - very permissive for now (will be refined in type checker)
             (Type::TypeParameter(_), _) => true,
             (_, Type::TypeParameter(_)) => true,
+            // Self type - only matches with itself (will be resolved to actual class type during type checking)
+            (Type::SelfType, Type::SelfType) => true,
             (a, b) if a == b => true,
             // Numeric compatibility
             (Type::Int, Type::Float) => true,
@@ -1409,7 +1415,11 @@ impl TypeChecker {
 
         // Handle optional return types
         let mut return_type = method.return_type.as_ref().map(|t| {
-            let ty = Type::from_str(t);
+            let mut ty = Type::from_str(t);
+            // Resolve 'self' type to the actual class type
+            if ty == Type::SelfType {
+                ty = Type::Class(class_name.to_string());
+            }
             if method.return_optional {
                 Type::Optional(Box::new(ty))
             } else {
@@ -2084,6 +2094,10 @@ impl TypeChecker {
                 let ret_type = return_type.as_ref()
                     .map(|t| Type::from_str(t))
                     .unwrap_or(Type::Null);
+                
+                // Note: 'self' type in lambda return is not resolved here since lambdas
+                // don't have a class context. It would remain as SelfType which would
+                // only match with another SelfType (unlikely to be useful in lambdas).
 
                 // Type check the lambda body
                 // Add parameters as local variables
