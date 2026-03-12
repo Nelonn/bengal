@@ -419,15 +419,51 @@ impl Compiler {
                 };
                 method_compiler.current_ctx = CompileContext::with_params(method_params);
 
-                for stmt in &method.body {
-                    method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                // Check if this is an auto-generated constructor (empty body, name is "constructor")
+                let is_auto_constructor = method.name == "constructor" && method.body.is_empty();
+
+                if is_auto_constructor {
+                    // Generate field assignment code for auto-generated constructor
+                    if method.params.is_empty() {
+                        // Empty constructor: assign default values from field definitions
+                        for field in &c.fields {
+                            if let Some(default_expr) = &field.default {
+                                let r_self = method_compiler.current_ctx.get_local_reg("self");
+                                let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+
+                                let field_name_idx = method_strings.len();
+                                method_strings.push(field.name.clone());
+                                method_bytecode.push(Opcode::SetProperty as u8);
+                                method_bytecode.push(r_self as u8);
+                                method_bytecode.push(field_name_idx as u8);
+                                method_bytecode.push(r_val as u8);
+                            }
+                        }
+                    } else {
+                        // Constructor with parameters: assign parameter values to fields
+                        for param in &method.params {
+                            let r_self = method_compiler.current_ctx.get_local_reg("self");
+                            let r_param = method_compiler.current_ctx.get_local_reg(&param.name);
+
+                            let field_name_idx = method_strings.len();
+                            method_strings.push(param.name.clone());
+                            method_bytecode.push(Opcode::SetProperty as u8);
+                            method_bytecode.push(r_self as u8);
+                            method_bytecode.push(field_name_idx as u8);
+                            method_bytecode.push(r_param as u8);
+                        }
+                    }
+                } else {
+                    for stmt in &method.body {
+                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                    }
                 }
 
                 // Ensure method returns null if no explicit return
                 // Return is a 2-byte instruction: [opcode, register]
-                let ends_with_return = method_bytecode.len() >= 2 && 
+                let ends_with_return = method_bytecode.len() >= 2 &&
                     method_bytecode[method_bytecode.len() - 2] == Opcode::Return as u8;
-                
+
                 if !ends_with_return {
                     method_bytecode.push(Opcode::LoadNull as u8);
                     method_bytecode.push(0); // R0
@@ -436,14 +472,26 @@ impl Compiler {
                 }
 
                 let register_count = method_compiler.current_ctx.register_count();
-                
+
                 // Adjust string indices in method bytecode to match global string table
                 let string_offset = strings.len();
                 strings.extend(method_strings);
                 adjust_string_indices(&mut method_bytecode, string_offset);
 
-                vm_methods.insert(method.name.clone(), Method {
-                    name: method.name.clone(),
+                // Generate mangled name for method overloading support based on argument count
+                let mangled_name = if method.params.is_empty() {
+                    format!("{}()", method.name)
+                } else {
+                    // Build a mangled name with placeholder types based on param count
+                    let mut params = Vec::new();
+                    for _ in 0..method.params.len() {
+                        params.push("T".to_string());
+                    }
+                    format!("{}({})", method.name, params.join(","))
+                };
+                
+                vm_methods.insert(mangled_name.clone(), Method {
+                    name: mangled_name,
                     bytecode: method_bytecode,
                     register_count,
                 });
@@ -1147,11 +1195,10 @@ impl Compiler {
                         bytecode.push(0); // arg_count (not used for class creation)
 
                         // 2. Call constructor if it exists
-                        // Note: For now we assume a constructor exists if args are provided, 
-                        // or we could check the class definition.
+                        // Check if class has constructor overloads
                         let has_constructor = if let Some(ctx) = type_context {
                             if let Some(class_info) = ctx.get_class(&resolved_name) {
-                                class_info.methods.contains_key("constructor")
+                                class_info.method_overloads.contains_key("constructor")
                             } else { true }
                         } else { true };
 
@@ -1169,8 +1216,22 @@ impl Compiler {
                                 bytecode.push(r as u8);
                             }
 
+                            // Generate mangled constructor name based on argument count
+                            // For empty constructor: "constructor()"
+                            // For constructor with args: "constructor(T1,T2,...)"
+                            let mangled_ctor = if args.is_empty() {
+                                "constructor()".to_string()
+                            } else {
+                                // Build a mangled name with placeholder types based on arg count
+                                let mut params = Vec::new();
+                                for _ in 0..args.len() {
+                                    params.push("T".to_string());
+                                }
+                                format!("constructor({})", params.join(","))
+                            };
+                            
                             let constructor_idx = strings.len();
-                            strings.push("constructor".to_string());
+                            strings.push(mangled_ctor);
                             bytecode.push(Opcode::Invoke as u8);
                             let r_unused = self.current_ctx.allocate_reg();
                             bytecode.push(r_unused as u8);
@@ -1195,9 +1256,20 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        let idx = strings.len();
-                        strings.push(func_name.clone());
+                        // Generate mangled method name based on argument count
+                        let mangled_method = if args.is_empty() {
+                            format!("{}()", func_name)
+                        } else {
+                            let mut params = Vec::new();
+                            for _ in 0..args.len() {
+                                params.push("T".to_string());
+                            }
+                            format!("{}({})", func_name, params.join(","))
+                        };
                         
+                        let idx = strings.len();
+                        strings.push(mangled_method);
+
                         // Check if this is an interface method
                         let is_interface_method = if let Some(ctx) = type_context {
                             if let Some(current_class) = &ctx.current_class {
@@ -1206,7 +1278,7 @@ impl Compiler {
                                 } else { false }
                             } else { false }
                         } else { false };
-                        
+
                         if is_interface_method {
                             bytecode.push(Opcode::InvokeInterface as u8);
                         } else {
@@ -1260,9 +1332,20 @@ impl Compiler {
                         bytecode.push(r as u8);
                     }
 
-                    let idx = strings.len();
-                    strings.push(name.clone());
+                    // Generate mangled method name based on argument count
+                    let mangled_method = if args.is_empty() {
+                        format!("{}()", name)
+                    } else {
+                        let mut params = Vec::new();
+                        for _ in 0..args.len() {
+                            params.push("T".to_string());
+                        }
+                        format!("{}({})", name, params.join(","))
+                    };
                     
+                    let idx = strings.len();
+                    strings.push(mangled_method);
+
                     // Check if this is an interface method call
                     let is_interface_method = if let Some(ctx) = type_context {
                         // Try to get the type of the object
@@ -1274,7 +1357,7 @@ impl Compiler {
                             } else { false }
                         } else { false }
                     } else { false };
-                    
+
                     if is_interface_method {
                         bytecode.push(Opcode::InvokeInterface as u8);
                     } else {
@@ -1386,8 +1469,8 @@ impl Compiler {
                     if !el_type.is_pod() {
                         let r_el = el_regs[i];
                         let constructor_idx = strings.len();
-                        strings.push("constructor".to_string());
-                        
+                        strings.push("constructor()".to_string());
+
                         let contiguous_call_start = self.current_ctx.allocate_regs(1);
                         bytecode.push(Opcode::Move as u8);
                         bytecode.push(contiguous_call_start as u8);
@@ -1478,12 +1561,12 @@ impl Compiler {
                 // 2. Call constructor if it exists
                 let has_constructor = if let Some(ctx) = type_context {
                     if let Some(class_info) = ctx.get_class(&class_name) {
-                        class_info.methods.contains_key("constructor")
-                    } else { 
-                        false 
+                        class_info.method_overloads.contains_key("constructor")
+                    } else {
+                        false
                     }
-                } else { 
-                    false 
+                } else {
+                    false
                 };
                 
                 if has_constructor {
@@ -1491,9 +1574,10 @@ impl Compiler {
                     bytecode.push(Opcode::Move as u8);
                     bytecode.push(contiguous_start as u8);
                     bytecode.push(rd as u8);
-                    
+
+                    // Use mangled constructor name for empty constructor
                     let constructor_idx = strings.len();
-                    strings.push("constructor".to_string());
+                    strings.push("constructor()".to_string());
                     bytecode.push(Opcode::Invoke as u8);
                     let r_unused = self.current_ctx.allocate_reg();
                     bytecode.push(r_unused as u8);

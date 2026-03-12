@@ -307,7 +307,7 @@ impl ModuleResolver {
                         mangled_name: None,
                     });
                 }
-                Stmt::Let { name, type_annotation, expr } => {
+                Stmt::Let { name, type_annotation, expr: _ } => {
                     // Register module-level variables (e.g., math.PI)
                     let var_type = if let Some(ref ty) = type_annotation {
                         Type::from_str(ty)

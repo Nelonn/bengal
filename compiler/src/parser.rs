@@ -550,7 +550,42 @@ impl Parser {
             return self.error_generic("Expected '}' to close class");
         }
 
-        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods, is_native: is_native_class }))
+        // Auto-generate constructors if no custom constructor is defined
+        let mut final_methods = methods;
+        let has_constructor = final_methods.iter().any(|m| m.name == "constructor");
+        if !has_constructor && !is_native_class {
+            // Empty constructor() - fields will be initialized with defaults
+            final_methods.push(Method {
+                name: "constructor".to_string(),
+                params: vec![],
+                return_type: None,
+                return_optional: false,
+                body: vec![],
+                private: false,
+                is_async: false,
+                is_native: false,
+            });
+
+            // Constructor with all fields as parameters
+            if !fields.is_empty() {
+                let field_params: Vec<Param> = fields.iter().map(|field| Param {
+                    name: field.name.clone(),
+                    type_name: Some(field.type_name.clone()),
+                }).collect();
+                final_methods.push(Method {
+                    name: "constructor".to_string(),
+                    params: field_params,
+                    return_type: None,
+                    return_optional: false,
+                    body: vec![],
+                    private: false,
+                    is_async: false,
+                    is_native: false,
+                });
+            }
+        }
+
+        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, is_native: is_native_class }))
     }
 
     fn parse_interface(&mut self) -> Result<Stmt, String> {

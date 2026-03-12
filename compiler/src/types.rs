@@ -299,7 +299,10 @@ pub struct ClassInfo {
     pub name: String,
     pub type_params: Vec<String>,
     pub fields: HashMap<String, FieldInfo>,
+    /// Methods stored by mangled name (e.g., "foo@i_s" for foo(int, str))
     pub methods: HashMap<String, MethodSignature>,
+    /// Map from base method name to list of mangled names (for overload resolution)
+    pub method_overloads: HashMap<String, Vec<String>>,
     pub parent_interfaces: Vec<String>,
     pub vtable: Vec<String>,  // Ordered list of virtual method names
     pub is_interface: bool,
@@ -311,7 +314,10 @@ pub struct InterfaceInfo {
     pub name: String,
     pub type_params: Vec<String>,
     pub parent_interfaces: Vec<String>,
+    /// Methods stored by mangled name
     pub methods: HashMap<String, MethodSignature>,
+    /// Map from base method name to list of mangled names (for overload resolution)
+    pub method_overloads: HashMap<String, Vec<String>>,
     pub vtable: Vec<String>,  // Ordered list of method names for vtable
 }
 
@@ -331,6 +337,7 @@ pub struct MethodSignature {
     pub private: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub mangled_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -510,6 +517,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
         str_methods.insert("trim".to_string(), MethodSignature {
             name: "trim".to_string(),
@@ -519,6 +527,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
         str_methods.insert("split".to_string(), MethodSignature {
             name: "split".to_string(),
@@ -528,11 +537,17 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
+        let mut str_method_overloads = HashMap::new();
+        str_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
+        str_method_overloads.insert("trim".to_string(), vec!["trim()".to_string()]);
+        str_method_overloads.insert("split".to_string(), vec!["split(str)".to_string()]);
         self.classes.insert("str".to_string(), ClassInfo {
             name: "str".to_string(),
             fields: HashMap::new(),
             methods: str_methods,
+            method_overloads: str_method_overloads,
             vtable: vec!["length".to_string(), "trim".to_string(), "split".to_string()],
             is_native: true,
             is_interface: false,
@@ -550,6 +565,7 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
         array_methods.insert("add".to_string(), MethodSignature {
             name: "add".to_string(),
@@ -559,11 +575,16 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            mangled_name: None,
         });
+        let mut array_method_overloads = HashMap::new();
+        array_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
+        array_method_overloads.insert("add".to_string(), vec!["add(Unknown)".to_string()]);
         self.classes.insert("Array".to_string(), ClassInfo {
             name: "Array".to_string(),
             fields: HashMap::new(),
             methods: array_methods,
+            method_overloads: array_method_overloads,
             vtable: vec!["length".to_string(), "add".to_string()],
             is_native: true,
             is_interface: false,
@@ -583,13 +604,28 @@ impl TypeContext {
         }
 
         let mut methods = HashMap::new();
+        let mut method_overloads: HashMap<String, Vec<String>> = HashMap::new();
+        let mut has_constructor = false;
+        
         for method in &class.methods {
+            if method.name == "constructor" {
+                has_constructor = true;
+            }
             let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
                 name: p.name.clone(),
                 type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
             }).collect();
 
-            methods.insert(method.name.clone(), MethodSignature {
+            // Generate mangled name for the method
+            let param_types: Vec<Type> = params.iter()
+                .filter_map(|p| p.type_name.clone())
+                .collect();
+            let mangled = mangle_function_name(&method.name, &param_types);
+
+            let overloads = method_overloads.entry(method.name.clone()).or_insert_with(Vec::new);
+            overloads.push(mangled.clone());
+
+            methods.insert(mangled.clone(), MethodSignature {
                 name: method.name.clone(),
                 params,
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
@@ -597,12 +633,57 @@ impl TypeContext {
                 private: method.private,
                 is_async: method.is_async,
                 is_native: method.is_native,
+                mangled_name: Some(mangled.clone()),
             });
         }
 
+        // Auto-generate constructors if no custom constructor is defined
+        if !has_constructor {
+            // Empty constructor() - fields can be initialized with defaults or remain uninitialized
+            let empty_ctor_mangled = mangle_function_name("constructor", &[]);
+            let overloads = method_overloads.entry("constructor".to_string()).or_insert_with(Vec::new);
+            overloads.push(empty_ctor_mangled.clone());
+
+            methods.insert(empty_ctor_mangled.clone(), MethodSignature {
+                name: "constructor".to_string(),
+                params: Vec::new(),
+                return_type: None,
+                return_optional: false,
+                private: false,
+                is_async: false,
+                is_native: false,
+                mangled_name: Some(empty_ctor_mangled),
+            });
+
+            // Constructor with all fields as parameters
+            if !class.fields.is_empty() {
+                let field_params: Vec<ParamSignature> = class.fields.iter().map(|field| ParamSignature {
+                    name: field.name.clone(),
+                    type_name: Some(Type::from_str(&field.type_name)),
+                }).collect();
+                let field_param_types: Vec<Type> = field_params.iter()
+                    .filter_map(|p| p.type_name.clone())
+                    .collect();
+                let field_ctor_mangled = mangle_function_name("constructor", &field_param_types);
+                overloads.push(field_ctor_mangled.clone());
+                
+                methods.insert(field_ctor_mangled.clone(), MethodSignature {
+                    name: "constructor".to_string(),
+                    params: field_params,
+                    return_type: None,
+                    return_optional: false,
+                    private: false,
+                    is_async: false,
+                    is_native: false,
+                    mangled_name: Some(field_ctor_mangled),
+                });
+            }
+        }
+
         // Build vtable: collect all virtual methods (methods that override interface methods)
+        // Use base method names (not mangled) for vtable
         let mut vtable = Vec::new();
-        for method_name in methods.keys() {
+        for method_name in method_overloads.keys() {
             vtable.push(method_name.clone());
         }
 
@@ -611,6 +692,7 @@ impl TypeContext {
             type_params: class.type_params.clone(),
             fields,
             methods,
+            method_overloads,
             parent_interfaces: class.parent_interfaces.clone(),
             vtable,
             is_interface: false,
@@ -620,13 +702,23 @@ impl TypeContext {
 
     pub fn add_interface(&mut self, interface: &crate::parser::InterfaceDef) {
         let mut methods = HashMap::new();
+        let mut method_overloads: HashMap<String, Vec<String>> = HashMap::new();
         for method in &interface.methods {
             let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
                 name: p.name.clone(),
                 type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
             }).collect();
 
-            methods.insert(method.name.clone(), MethodSignature {
+            // Generate mangled name for the method
+            let param_types: Vec<Type> = params.iter()
+                .filter_map(|p| p.type_name.clone())
+                .collect();
+            let mangled = mangle_function_name(&method.name, &param_types);
+
+            let overloads = method_overloads.entry(method.name.clone()).or_insert_with(Vec::new);
+            overloads.push(mangled.clone());
+
+            methods.insert(mangled.clone(), MethodSignature {
                 name: method.name.clone(),
                 params,
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
@@ -634,12 +726,13 @@ impl TypeContext {
                 private: method.private,
                 is_async: method.is_async,
                 is_native: method.is_native,
+                mangled_name: Some(mangled.clone()),
             });
         }
 
         // Build vtable: ordered list of method names
         let mut vtable = Vec::new();
-        for method_name in methods.keys() {
+        for method_name in method_overloads.keys() {
             vtable.push(method_name.clone());
         }
 
@@ -648,6 +741,7 @@ impl TypeContext {
             type_params: interface.type_params.clone(),
             parent_interfaces: interface.parent_interfaces.clone(),
             methods,
+            method_overloads,
             vtable,
         });
     }
@@ -1048,6 +1142,106 @@ impl TypeContext {
 
     pub fn get_method(&self, class_name: &str, method_name: &str) -> Option<&MethodSignature> {
         self.classes.get(class_name).and_then(|c| c.methods.get(method_name))
+    }
+
+    /// Resolve a method call with argument types for overload resolution
+    /// Returns the best matching method signature based on argument types
+    pub fn resolve_method_call(&self, class_name: &str, method_name: &str, arg_types: &[Type]) -> Option<&MethodSignature> {
+        let class_info = self.classes.get(class_name)?;
+        
+        // Helper to find best match among overloads
+        let find_best_match = |overloads: &[String]| -> Option<&MethodSignature> {
+            let mut best_match: Option<&MethodSignature> = None;
+            let mut best_score = usize::MAX;
+
+            for mangled in overloads {
+                if let Some(sig) = class_info.methods.get(mangled) {
+                    if self.method_signature_matches(sig, arg_types) {
+                        let score = self.calculate_method_match_score(sig, arg_types);
+                        if score < best_score {
+                            best_score = score;
+                            best_match = Some(sig);
+                        }
+                    }
+                }
+            }
+            best_match
+        };
+
+        // Try to find overloads for this method
+        if let Some(overloads) = class_info.method_overloads.get(method_name) {
+            return find_best_match(overloads);
+        }
+
+        None
+    }
+
+    /// Check if two types are compatible (assignable)
+    fn types_compatible(&self, from_type: &Type, to_type: &Type) -> bool {
+        // Exact match
+        if from_type == to_type {
+            return true;
+        }
+        
+        // Unknown type is compatible with anything
+        if *from_type == Type::Unknown || *to_type == Type::Unknown {
+            return true;
+        }
+        
+        // Null is compatible with Optional types
+        if *from_type == Type::Null {
+            if let Type::Optional(_) = to_type {
+                return true;
+            }
+        }
+        
+        // Numeric type compatibility
+        match (from_type, to_type) {
+            (Type::Int, Type::Float) => true,
+            (Type::Int8, Type::Int) | (Type::Int8, Type::Int16) | (Type::Int8, Type::Int32) | (Type::Int8, Type::Int64) => true,
+            (Type::Int16, Type::Int) | (Type::Int16, Type::Int32) | (Type::Int16, Type::Int64) => true,
+            (Type::Int32, Type::Int) | (Type::Int32, Type::Int64) => true,
+            (Type::UInt8, Type::UInt16) | (Type::UInt8, Type::UInt32) | (Type::UInt8, Type::UInt64) => true,
+            (Type::UInt16, Type::UInt32) | (Type::UInt16, Type::UInt64) => true,
+            (Type::UInt32, Type::UInt64) => true,
+            (Type::Float32, Type::Float64) | (Type::Float32, Type::Float) => true,
+            (Type::Float64, Type::Float) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if a method signature matches the given argument types
+    fn method_signature_matches(&self, sig: &MethodSignature, arg_types: &[Type]) -> bool {
+        if sig.params.len() != arg_types.len() {
+            return false;
+        }
+
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(ref param_type) = param.type_name {
+                if !self.types_compatible(arg_type, param_type) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Calculate match score for method overload resolution (lower is better)
+    fn calculate_method_match_score(&self, sig: &MethodSignature, arg_types: &[Type]) -> usize {
+        let mut score = 0;
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(ref param_type) = param.type_name {
+                if arg_type == param_type {
+                    score += 1; // Exact match
+                } else if self.types_compatible(arg_type, param_type) {
+                    score += 2; // Compatible but not exact
+                } else {
+                    score += 100; // Incompatible (shouldn't happen if signature_matches returned true)
+                }
+            }
+        }
+        score
     }
 
     pub fn add_error(&mut self, message: String, line: usize) {
@@ -1694,11 +1888,11 @@ impl TypeChecker {
                             }
                         }
                         return_type
-                    } else if let Some(class_info) = self.context.get_class(func_name) {
+                    } else if let Some(_class_info) = self.context.get_class(func_name) {
                         // It's a class instantiation - check constructor args
-                        let ctor_sig = class_info.methods.get("constructor").cloned();
-                        if let Some(ref sig) = ctor_sig {
-                            self.check_method_call(sig, args, "constructor", func_name);
+                        let ctor_sig = self.context.resolve_method_call(func_name, "constructor", &arg_types);
+                        if let Some(sig) = ctor_sig.cloned() {
+                            self.check_method_call(&sig, args, "constructor", func_name);
                         } else if !args.is_empty() {
                             // No explicit constructor but args were provided
                             self.context.add_error_with_location(
@@ -1728,10 +1922,12 @@ impl TypeChecker {
 
                     if let Some(class_name) = effective_class {
                         // This is a method call on a class instance or built-in type
-                        let method_sig = self.context.get_class(&class_name)
-                            .and_then(|c| c.methods.get(name).cloned());
+                        let arg_types: Vec<Type> = args.iter()
+                            .map(|arg| self.infer_expr(arg))
+                            .collect();
+                        let method_sig = self.context.resolve_method_call(&class_name, name, &arg_types);
 
-                        if let Some(ref sig) = method_sig {
+                        if let Some(sig) = method_sig.cloned() {
                             // Check visibility
                             let mut visibility_error = None;
                             if sig.private {
@@ -1748,7 +1944,7 @@ impl TypeChecker {
                                 self.context.add_error_with_location(err, method_span.line, method_span.column, None, None);
                             }
 
-                            self.check_method_call(sig, args, name, &class_name);
+                            self.check_method_call(&sig, args, name, &class_name);
                             let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
                             // If calling an async method, return type is Promise<T>
                             if sig.is_async {
@@ -1774,7 +1970,7 @@ impl TypeChecker {
                         // Try to resolve as a qualified module function
                         let func_sig = self.context.resolve_qualified_function(module_name, name);
                         if let Some(sig) = func_sig.cloned() {
-                            let arg_types: Vec<Type> = args.iter()
+                            let _arg_types: Vec<Type> = args.iter()
                                 .map(|arg| self.infer_expr(arg))
                                 .collect();
                             self.check_function_call(&sig, args, &sig.name);
@@ -1788,20 +1984,19 @@ impl TypeChecker {
                             return_type
                         } else if let Some(qualified_class_name) = self.context.resolve_qualified_class(module_name, name) {
                             // It's a qualified class instantiation
-                            if let Some(class_info) = self.context.get_class(&qualified_class_name) {
-                                let ctor_sig = class_info.methods.get("constructor").cloned();
-                                if let Some(ref sig) = ctor_sig {
-                                    self.check_method_call(sig, args, "constructor", &qualified_class_name);
-                                } else if !args.is_empty() {
-                                    self.context.add_error_with_location(
-                                        format!("Class '{}' does not accept constructor arguments", qualified_class_name),
-                                        method_span.line, method_span.column, None, None
-                                    );
-                                }
-                                Type::Class(qualified_class_name)
-                            } else {
-                                Type::Unknown
+                            let arg_types: Vec<Type> = args.iter()
+                                .map(|arg| self.infer_expr(arg))
+                                .collect();
+                            let ctor_sig = self.context.resolve_method_call(&qualified_class_name, "constructor", &arg_types);
+                            if let Some(sig) = ctor_sig.cloned() {
+                                self.check_method_call(&sig, args, "constructor", &qualified_class_name);
+                            } else if !args.is_empty() {
+                                self.context.add_error_with_location(
+                                    format!("Class '{}' does not accept constructor arguments", qualified_class_name),
+                                    method_span.line, method_span.column, None, None
+                                );
                             }
+                            Type::Class(qualified_class_name)
                         } else {
                             self.context.add_error_with_location(
                                 format!("Undefined function or class: '{}.{}'", module_name, name),
@@ -1875,7 +2070,7 @@ impl TypeChecker {
 
                     // Also check for enums
                     let direct_name = format!("{}.{}", module_name, name);
-                    if let Some(enum_info) = self.context.get_enum(&direct_name) {
+                    if let Some(_enum_info) = self.context.get_enum(&direct_name) {
                         return Type::Enum(direct_name);
                     }
 
