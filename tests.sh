@@ -10,4 +10,6 @@ done
 if [ $test -eq 0 ]; then
   echo -e "\e[31mSome tests failed\e[0m" >&2
   exit 1
+else
+  echo -e "\033[0;32mAll tests pass\e[0m"
 fi
