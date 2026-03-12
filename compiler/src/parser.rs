@@ -179,6 +179,7 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Modulo,
+    Pow,
     Greater,
     GreaterEqual,
     Less,
@@ -1432,7 +1433,7 @@ impl Parser {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_unary()?;
+        let mut expr = self.parse_exponential()?;
 
         loop {
             if self.match_token(&Token::Star) {
@@ -1440,7 +1441,7 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Multiply,
-                    right: Box::new(self.parse_unary()?),
+                    right: Box::new(self.parse_exponential()?),
                     span,
                 };
             } else if self.match_token(&Token::Slash) {
@@ -1448,7 +1449,7 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Divide,
-                    right: Box::new(self.parse_unary()?),
+                    right: Box::new(self.parse_exponential()?),
                     span,
                 };
             } else if self.match_token(&Token::Percent) {
@@ -1456,12 +1457,30 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Modulo,
-                    right: Box::new(self.parse_unary()?),
+                    right: Box::new(self.parse_exponential()?),
                     span,
                 };
             } else {
                 break;
             }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_exponential(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_unary()?;
+
+        // ** is right-associative, so we parse it differently
+        if self.match_token(&Token::StarStar) {
+            let span = self.compute_span(self.pos - 1);
+            let right = self.parse_exponential()?;  // Right-associative: recurse for right side
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::Pow,
+                right: Box::new(right),
+                span,
+            };
         }
 
         Ok(expr)

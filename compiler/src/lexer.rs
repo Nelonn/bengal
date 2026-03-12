@@ -58,6 +58,7 @@ pub enum Token {
     Minus,
     MinusMinus,
     Star,
+    StarStar,
     Slash,
     Percent,
 
@@ -263,7 +264,15 @@ impl Lexer {
                     Ok(Token::Minus)
                 }
             }
-            '*' => { self.advance(); Ok(Token::Star) }
+            '*' => {
+                self.advance();
+                if self.peek() == Some('*') {
+                    self.advance();
+                    Ok(Token::StarStar)
+                } else {
+                    Ok(Token::Star)
+                }
+            }
             '%' => { self.advance(); Ok(Token::Percent) }
             '/' => {
                 self.advance();

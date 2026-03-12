@@ -914,6 +914,44 @@ impl Compiler {
             }
 
             Expr::Binary { left, op, right, .. } => {
+                // Handle power operator specially - compiles to native std.math.pow call
+                if *op == BinaryOp::Pow {
+                    let r_left = self.compile_expr(left, bytecode, strings, classes, type_context)?;
+                    let r_right = self.compile_expr(right, bytecode, strings, classes, type_context)?;
+                    let rd = self.current_ctx.allocate_reg();
+                    
+                    // Compile as: std.math.pow(base, exponent)
+                    // Arguments must be in consecutive registers for CallNative
+                    // Move arguments to consecutive registers if needed
+                    let arg_start = rd + 1;  // Use registers after return register
+                    
+                    // Move left operand to arg_start if needed
+                    if r_left != arg_start {
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(arg_start as u8);
+                        bytecode.push(r_left as u8);
+                    }
+                    
+                    // Move right operand to arg_start + 1 if needed
+                    if r_right != arg_start + 1 {
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push((arg_start + 1) as u8);
+                        bytecode.push(r_right as u8);
+                    }
+                    
+                    // Call native function: std.math.pow(base, exponent)
+                    let name_idx = strings.len();
+                    strings.push("std.math.pow".to_string());
+                    
+                    bytecode.push(Opcode::CallNative as u8);
+                    bytecode.push(rd as u8);       // destination register
+                    bytecode.push(name_idx as u8); // function name index
+                    bytecode.push(arg_start as u8);// arg_start: first arg register
+                    bytecode.push(2u8);            // arg_count: 2 arguments
+                    
+                    return Ok(rd);
+                }
+                
                 let r1 = self.compile_expr(left, bytecode, strings, classes, type_context)?;
                 let r2 = self.compile_expr(right, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.allocate_reg();
@@ -932,6 +970,7 @@ impl Compiler {
                     BinaryOp::GreaterEqual => Opcode::GreaterEqual,
                     BinaryOp::Less => Opcode::Less,
                     BinaryOp::LessEqual => Opcode::LessEqual,
+                    BinaryOp::Pow => unreachable!("Pow operator handled separately"),
                 };
 
                 bytecode.push(opcode as u8);
@@ -1539,6 +1578,7 @@ impl Compiler {
                     BinaryOp::And | BinaryOp::Or |
                     BinaryOp::Greater | BinaryOp::GreaterEqual |
                     BinaryOp::Less | BinaryOp::LessEqual => Type::Bool,
+                    BinaryOp::Pow => Type::Float,  // std.math.pow returns float
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply |
                     BinaryOp::Divide | BinaryOp::Modulo => {
                         // Try to get type from left operand

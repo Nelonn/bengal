@@ -1603,6 +1603,22 @@ impl TypeChecker {
                             Type::Int
                         }
                     }
+                    crate::parser::BinaryOp::Pow => {
+                        // Power operation requires numeric types and returns float
+                        if !is_numeric_type(&left_type) && left_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for power operation, got {}", left_type.to_str()),
+                                0
+                            );
+                        }
+                        if !is_numeric_type(&right_type) && right_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for power operation, got {}", right_type.to_str()),
+                                0
+                            );
+                        }
+                        Type::Float
+                    }
                     crate::parser::BinaryOp::Greater | crate::parser::BinaryOp::Less |
                     crate::parser::BinaryOp::GreaterEqual | crate::parser::BinaryOp::LessEqual => {
                         // Comparison operations require numeric types and return bool
