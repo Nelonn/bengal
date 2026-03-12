@@ -161,10 +161,24 @@ impl ModuleResolver {
     pub fn process_imports(&mut self, statements: &[Stmt]) -> Result<(), String> {
         for stmt in statements {
             if let Stmt::Import { path } = stmt {
-                self.resolve_and_load(path)?;
+                let module_name = path.join(".");
+                
+                // Only load if not already loaded
+                if !self.loaded_modules.contains_key(&module_name) {
+                    self.resolve_and_load(path)?;
+                    
+                    // Recursively process imports in the loaded module
+                    if let Some(info) = self.loaded_modules.get(&module_name) {
+                        let sub_statements = info.statements.clone();
+                        self.process_imports(&sub_statements)?;
+                    }
+                }
+
                 // Register the import in the type context
                 let import_path = path.join(".");
-                self.type_context.imports.push(import_path);
+                if !self.type_context.imports.contains(&import_path) {
+                    self.type_context.imports.push(import_path);
+                }
             }
         }
         Ok(())

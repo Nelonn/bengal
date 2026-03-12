@@ -5,21 +5,21 @@ native fn env(key: str): str?
 native fn setPwd(dir: str)
 
 native class Process {
-  fn start(cmd: str, args: [str] = [], capture_stdout: bool = false, capture_stderr: bool = false, inherit_stdin: bool = false, working_dir: str? = null)
+  fn start(cmd: str, args: str[], capture_stdout: bool, capture_stderr: bool, inherit_stdin: bool, working_dir: str?)
 
   fn writeStdin(data: str)
 
   fn closeStdin()
 
-  fn readStdout() -> str
+  fn readStdout(): str
 
-  fn readStderr() -> str
+  fn readStderr(): str
 
   fn wait()
 
-  fn exitCode() -> int?
+  fn exitCode(): int?
 
-  fn getStdout() -> str
+  fn getStdout(): str
 
-  fn getStderr() -> str
+  fn getStderr(): str
 }

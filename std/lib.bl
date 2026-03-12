@@ -1,0 +1,16 @@
+module std
+
+// Standard library module index
+// This file allows importing std and accessing submodules via qualified names
+// e.g., import std; io.println("Hello")
+
+// Import all standard library submodules
+import std.io
+import std.fs
+import std.math
+import std.shell
+import std.sys
+import std.data
+import std.ffi
+import std.http
+import std.args

@@ -6,27 +6,27 @@ fn cd(dir: str) {
     setPwd(dir)
 }
 
-private fn split_command(cmd: str): (str, [str]) {
+fn split_command(cmd: str): str[] {
     let trimmed = cmd.trim()
     let parts = trimmed.split(" ")
-    let executable = parts[0]
-    let args = parts[1:] // Skip the first element (executable)
-    return (executable, args)
+    return parts
 }
 
-fn sh(cmd: str) {
-    let (executable, args) = split_command(cmd)
-    let process = new sys.Process()
+fn sh(cmd: str): str {
+    let parts = split_command(cmd)
+    let executable = parts[0]
+    let args = parts
+    let process = sys.Process()
     process.start(executable, args, true, true, false, null)
     process.closeStdin()
     process.wait()
-    return process.get_stdout()
+    return process.getStdout()
 }
 
-fn exec(cmd: str, args: [str] = []) -> int? {
-    let process = new sys.Process()
+fn exec(cmd: str, args: str[]): int? {
+    let process = sys.Process()
     process.start(cmd, args, false, false, true, null)
     process.closeStdin()
     process.wait()
-    return process.exit_code()
+    return process.exitCode()
 }

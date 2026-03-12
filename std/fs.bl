@@ -27,33 +27,33 @@ native fn readString(path: str): str?
 
 native fn write(path: str, data: Array)
 
-native fn writeString(str path, str content)
+native fn writeString(path: str, content: str)
 
-native fn append(str path, Array data)
+native fn append(path: str, data: Array)
 
-native fn appendString(str path, str content)
+native fn appendString(path: str, content: str)
 
-native fn remove(str path)
+native fn remove(path: str)
 
-native fn removeFile(str path)
+native fn removeFile(path: str)
 
-native fn removeDir(str path)
+native fn removeDir(path: str)
 
-native fn removeDirAll(str path)
+native fn removeDirAll(path: str)
 
-native fn exists(str path): bool
+native fn exists(path: str): bool
 
-native fn isFile(str path): bool
+native fn isFile(path: str): bool
 
-native fn isDir(str path): bool
+native fn isDir(path: str): bool
 
-native fn createDir(str path)
+native fn createDir(path: str)
 
-native fn createDirAll(str path)
+native fn createDirAll(path: str)
 
-native fn readDir(str path): Array?
+native fn readDir(path: str): Array?
 
-native fn copy(str from, str to)
+native fn copy(from: str, to: str)
 
 native fn rename(from: str, to: str)
 
@@ -65,29 +65,29 @@ fn readText(path: str): str? {
   return readString(path)
 }
 
-fn writeText(str path, str content) {
+fn writeText(path: str, content: str) {
   writeString(path, content)
 }
 
-fn appendText(str path, str content) {
+fn appendText(path: str, content: str) {
   appendString(path, content)
 }
 
-fn fileExists(str path): bool {
+fn fileExists(path: str): bool {
   if (!exists(path)) {
     return false
   }
-  return is_file(path)
+  return isFile(path)
 }
 
-fn dirExists(str path): bool {
+fn dirExists(path: str): bool {
   if (!exists(path)) {
     return false
   }
-  return is_dir(path)
+  return isDir(path)
 }
 
-fn ensureDir(str path) {
+fn ensureDir(path: str) {
   if (!dirExists(path)) {
     createDirAll(path)
   }

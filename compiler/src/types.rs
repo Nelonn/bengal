@@ -492,6 +492,78 @@ impl TypeContext {
         self.add_function("std.reflect.fields", reflect_fields);
 
         self.imports.push("std.reflect".to_string());
+
+        // Built-in types methods
+        // str methods
+        let mut str_methods = HashMap::new();
+        str_methods.insert("length".to_string(), MethodSignature {
+            name: "length".to_string(),
+            params: vec![],
+            return_type: Some(Type::Int),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+        });
+        str_methods.insert("trim".to_string(), MethodSignature {
+            name: "trim".to_string(),
+            params: vec![],
+            return_type: Some(Type::Str),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+        });
+        str_methods.insert("split".to_string(), MethodSignature {
+            name: "split".to_string(),
+            params: vec![ParamSignature { name: "delimiter".to_string(), type_name: Some(Type::Str) }],
+            return_type: Some(Type::Array(Box::new(Type::Str))),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+        });
+        self.classes.insert("str".to_string(), ClassInfo {
+            name: "str".to_string(),
+            fields: HashMap::new(),
+            methods: str_methods,
+            vtable: vec!["length".to_string(), "trim".to_string(), "split".to_string()],
+            is_native: true,
+            is_interface: false,
+            parent_interfaces: vec![],
+            type_params: vec![],
+        });
+
+        // Array methods
+        let mut array_methods = HashMap::new();
+        array_methods.insert("length".to_string(), MethodSignature {
+            name: "length".to_string(),
+            params: vec![],
+            return_type: Some(Type::Int),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+        });
+        array_methods.insert("add".to_string(), MethodSignature {
+            name: "add".to_string(),
+            params: vec![ParamSignature { name: "element".to_string(), type_name: Some(Type::Unknown) }],
+            return_type: None,
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+        });
+        self.classes.insert("Array".to_string(), ClassInfo {
+            name: "Array".to_string(),
+            fields: HashMap::new(),
+            methods: array_methods,
+            vtable: vec!["length".to_string(), "add".to_string()],
+            is_native: true,
+            is_interface: false,
+            parent_interfaces: vec![],
+            type_params: vec!["T".to_string()],
+        });
     }
 
     pub fn add_class(&mut self, class: &ClassDef) {
@@ -715,29 +787,113 @@ impl TypeContext {
     pub fn resolve_qualified_function(&self, module_alias: &str, member_name: &str) -> Option<&FunctionSignature> {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, member_name);
-        if let Some(sig) = self.functions.get(&direct_name) {
-            return Some(sig);
+        if let Some(mangled_names) = self.function_overloads.get(&direct_name) {
+            if let Some(first_mangled) = mangled_names.first() {
+                return self.functions.get(first_mangled);
+            }
         }
 
-        // Try to find an import that ends with the module alias
-        // e.g., if we have "import std.math" and access "math.sin", look for "std.math.sin"
+        // Try to find an import that matches the module alias
         for import_path in &self.imports {
-            // Get the last component of the import path
+            // Case 1: Import ends with the alias (e.g., import std.math and access math.sin)
             if let Some(last_dot) = import_path.rfind('.') {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
-                    // This import matches the alias, look for the full qualified name
                     let qualified_name = format!("{}.{}", import_path, member_name);
-                    if let Some(sig) = self.functions.get(&qualified_name) {
-                        return Some(sig);
+                    if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
+                        if let Some(first_mangled) = mangled_names.first() {
+                            return self.functions.get(first_mangled);
+                        }
                     }
                 }
             } else if import_path == module_alias {
-                // Import is exactly the alias (no dots)
+                // Import is exactly the alias (no dots, e.g., import math and access math.sin)
                 let qualified_name = format!("{}.{}", import_path, member_name);
-                if let Some(sig) = self.functions.get(&qualified_name) {
-                    return Some(sig);
+                if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
+                    if let Some(first_mangled) = mangled_names.first() {
+                        return self.functions.get(first_mangled);
+                    }
                 }
+            }
+
+            // Case 2: Import is a parent module (e.g., import std and access io.println -> std.io.println)
+            let qualified_name = format!("{}.{}.{}", import_path, module_alias, member_name);
+            if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
+                if let Some(first_mangled) = mangled_names.first() {
+                    return self.functions.get(first_mangled);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Try to resolve a module-qualified class name (e.g., "http.HttpClient" with import "std.http")
+    pub fn resolve_qualified_class(&self, module_alias: &str, class_name: &str) -> Option<String> {
+        // First try direct lookup
+        let direct_name = format!("{}.{}", module_alias, class_name);
+        if self.classes.contains_key(&direct_name) {
+            return Some(direct_name);
+        }
+
+        // Try to find an import that matches the module alias
+        for import_path in &self.imports {
+            // Case 1: Import ends with the alias
+            if let Some(last_dot) = import_path.rfind('.') {
+                let import_alias = &import_path[last_dot + 1..];
+                if import_alias == module_alias {
+                    let qualified_name = format!("{}.{}", import_path, class_name);
+                    if self.classes.contains_key(&qualified_name) {
+                        return Some(qualified_name);
+                    }
+                }
+            } else if import_path == module_alias {
+                let qualified_name = format!("{}.{}", import_path, class_name);
+                if self.classes.contains_key(&qualified_name) {
+                    return Some(qualified_name);
+                }
+            }
+
+            // Case 2: Import is a parent module
+            let qualified_name = format!("{}.{}.{}", import_path, module_alias, class_name);
+            if self.classes.contains_key(&qualified_name) {
+                return Some(qualified_name);
+            }
+        }
+
+        None
+    }
+
+    /// Try to resolve a module-qualified variable name (e.g., "math.PI" with import "std.math")
+    pub fn resolve_qualified_variable(&self, module_alias: &str, var_name: &str) -> Option<&VariableInfo> {
+        // First try direct lookup
+        let direct_name = format!("{}.{}", module_alias, var_name);
+        if let Some(var) = self.variables.get(&direct_name) {
+            return Some(var);
+        }
+
+        // Try to find an import that matches the module alias
+        for import_path in &self.imports {
+            // Case 1: Import ends with the alias
+            if let Some(last_dot) = import_path.rfind('.') {
+                let import_alias = &import_path[last_dot + 1..];
+                if import_alias == module_alias {
+                    let qualified_name = format!("{}.{}", import_path, var_name);
+                    if let Some(var) = self.variables.get(&qualified_name) {
+                        return Some(var);
+                    }
+                }
+            } else if import_path == module_alias {
+                let qualified_name = format!("{}.{}", import_path, var_name);
+                if let Some(var) = self.variables.get(&qualified_name) {
+                    return Some(var);
+                }
+            }
+
+            // Case 2: Import is a parent module
+            let qualified_name = format!("{}.{}.{}", import_path, module_alias, var_name);
+            if let Some(var) = self.variables.get(&qualified_name) {
+                return Some(var);
             }
         }
 
@@ -752,37 +908,69 @@ impl TypeContext {
             return Some(sig);
         }
 
-        // Get all overloads for this function name
-        let overloads = self.get_function_overloads(name);
-        
-        if overloads.is_empty() {
-            // Try qualified lookup
-            for (func_name, sig) in &self.functions {
-                if func_name.ends_with(&format!("::{}", name)) {
-                    // Check if this signature matches
+        // Helper to find best match among overloads
+        let find_best_match = |overloads: &[String]| -> Option<&FunctionSignature> {
+            let mut best_match: Option<&FunctionSignature> = None;
+            let mut best_score = usize::MAX;
+
+            for mangled in overloads {
+                if let Some(sig) = self.functions.get(mangled) {
                     if self.signature_matches(sig, arg_types) {
-                        return Some(sig);
+                        let score = self.calculate_match_score(sig, arg_types);
+                        if score < best_score {
+                            best_score = score;
+                            best_match = Some(sig);
+                        }
                     }
                 }
             }
-            return None;
+            best_match
+        };
+
+        // 1. Try as a full name (with overloads)
+        if let Some(overloads) = self.function_overloads.get(name) {
+            if let Some(res) = find_best_match(overloads) {
+                return Some(res);
+            }
         }
 
-        // Find the best matching overload
-        let mut best_match: Option<&FunctionSignature> = None;
-        let mut best_score = usize::MAX;
+        // 2. Try with imports
+        for import_path in &self.imports {
+            let qualified = format!("{}.{}", import_path, name);
+            if let Some(overloads) = self.function_overloads.get(&qualified) {
+                if let Some(res) = find_best_match(overloads) {
+                    return Some(res);
+                }
+            }
 
-        for sig in &overloads {
-            if self.signature_matches(sig, arg_types) {
-                let score = self.calculate_match_score(sig, arg_types);
-                if score < best_score {
-                    best_score = score;
-                    best_match = Some(sig);
+            // Also try parent module sub-access (e.g., import std and access io.println -> std.io.println)
+            if let Some(dot_pos) = name.find('.') {
+                let (prefix, rest) = name.split_at(dot_pos);
+                let qualified2 = format!("{}.{}.{}", import_path, prefix, &rest[1..]);
+                if let Some(overloads) = self.function_overloads.get(&qualified2) {
+                    if let Some(res) = find_best_match(overloads) {
+                        return Some(res);
+                    }
                 }
             }
         }
 
-        best_match
+        // 3. Try qualified lookup (fallback for older code)
+        for (func_mangled, sig) in &self.functions {
+            // Extract base name from mangled name (part before '(')
+            let base_name = match func_mangled.find('(') {
+                Some(pos) => &func_mangled[..pos],
+                None => func_mangled,
+            };
+
+            if base_name.ends_with(&format!(".{}", name)) || base_name.ends_with(&format!("::{}", name)) {
+                if self.signature_matches(sig, arg_types) {
+                    return Some(sig);
+                }
+            }
+        }
+
+        None
     }
 
     /// Check if a function signature matches the given argument types
@@ -1311,6 +1499,25 @@ impl TypeChecker {
                     // Enum type access
                     Type::Enum(name.clone())
                 } else {
+                    // Variable not found in global/function context - check if it's a module alias
+                    let mut is_module_alias = false;
+                    for import_path in &self.context.imports {
+                        if let Some(last_dot) = import_path.rfind('.') {
+                            let import_alias = &import_path[last_dot + 1..];
+                            if import_alias == name {
+                                is_module_alias = true;
+                                break;
+                            }
+                        } else if import_path == name {
+                            is_module_alias = true;
+                            break;
+                        }
+                    }
+                    
+                    if is_module_alias {
+                        return Type::Unknown;
+                    }
+
                     // Variable not found in global/function context - report as undeclared
                     self.context.add_error_with_location(
                         format!("Undeclared variable '{}'", name),
@@ -1486,8 +1693,15 @@ impl TypeChecker {
                     // Could be method call OR module.function() call
                     let object_type = self.infer_expr(object);
 
-                    if let Type::Class(class_name) = object_type {
-                        // This is a method call on a class instance
+                    let effective_class = match object_type {
+                        Type::Class(ref name) => Some(name.clone()),
+                        Type::Str => Some("str".to_string()),
+                        Type::Array(_) => Some("Array".to_string()),
+                        _ => None,
+                    };
+
+                    if let Some(class_name) = effective_class {
+                        // This is a method call on a class instance or built-in type
                         let method_sig = self.context.get_class(&class_name)
                             .and_then(|c| c.methods.get(name).cloned());
 
@@ -1518,15 +1732,18 @@ impl TypeChecker {
                                     return_type = Type::Promise(Box::new(return_type));
                                 }
                             }
-                            return_type
-                        } else {
+                            return return_type;
+                        } else if !matches!(object_type, Type::Class(_)) {
+                            // If it's a built-in type and method not found, don't fallback to module lookup
                             self.context.add_error_with_location(
-                                format!("Method '{}' not found on class '{}'", name, class_name),
+                                format!("Method '{}' not found on type '{}'", name, object_type.to_str()),
                                 method_span.line, method_span.column, None, None
                             );
-                            Type::Unknown
+                            return Type::Unknown;
                         }
-                    } else if let Expr::Variable { name: module_name, .. } = object.as_ref() {
+                    }
+                    
+                    if let Expr::Variable { name: module_name, .. } = object.as_ref() {
                         // This is module.function() call - look up qualified name
                         // Try to resolve as a qualified module function
                         let func_sig = self.context.resolve_qualified_function(module_name, name);
@@ -1543,9 +1760,25 @@ impl TypeChecker {
                                 }
                             }
                             return_type
+                        } else if let Some(qualified_class_name) = self.context.resolve_qualified_class(module_name, name) {
+                            // It's a qualified class instantiation
+                            if let Some(class_info) = self.context.get_class(&qualified_class_name) {
+                                let ctor_sig = class_info.methods.get("constructor").cloned();
+                                if let Some(ref sig) = ctor_sig {
+                                    self.check_method_call(sig, args, "constructor", &qualified_class_name);
+                                } else if !args.is_empty() {
+                                    self.context.add_error_with_location(
+                                        format!("Class '{}' does not accept constructor arguments", qualified_class_name),
+                                        method_span.line, method_span.column, None, None
+                                    );
+                                }
+                                Type::Class(qualified_class_name)
+                            } else {
+                                Type::Unknown
+                            }
                         } else {
                             self.context.add_error_with_location(
-                                format!("Undefined function: '{}.{}'", module_name, name),
+                                format!("Undefined function or class: '{}.{}'", module_name, name),
                                 method_span.line, method_span.column, None, None
                             );
                             Type::Unknown
@@ -1610,33 +1843,28 @@ impl TypeChecker {
                 } else if let Expr::Variable { name: module_name, .. } = object.as_ref() {
                     // Module-level variable access (e.g., math.PI)
                     // Check if module_name is an imported module alias
+                    if let Some(var_info) = self.context.resolve_qualified_variable(module_name, name) {
+                        return var_info.type_name.clone();
+                    }
+
+                    // Also check for enums
+                    let direct_name = format!("{}.{}", module_name, name);
+                    if let Some(enum_info) = self.context.get_enum(&direct_name) {
+                        return Type::Enum(direct_name);
+                    }
+
                     for import_path in &self.context.imports {
-                        if let Some(last_dot) = import_path.rfind('.') {
-                            let import_alias = &import_path[last_dot + 1..];
-                            if import_alias == module_name {
-                                // This import matches, look for the variable
-                                let full_qualified = format!("{}.{}", import_path, name);
-                                if let Some(var_info) = self.context.variables.get(&full_qualified) {
-                                    return var_info.type_name.clone();
-                                }
-                                // Variable not found in module, but module exists - return Unknown
-                                return Type::Unknown;
-                            }
-                        } else if import_path == module_name {
-                            // Import is exactly the alias (no dots)
-                            let full_qualified = format!("{}.{}", import_path, name);
-                            if let Some(var_info) = self.context.variables.get(&full_qualified) {
-                                return var_info.type_name.clone();
-                            }
-                            // Variable not found in module, but module exists - return Unknown
-                            return Type::Unknown;
+                        let qualified_enum = format!("{}.{}.{}", import_path, module_name, name);
+                        if self.context.get_enum(&qualified_enum).is_some() {
+                            return Type::Enum(qualified_enum);
                         }
                     }
-                    
-                    self.context.add_error_with_location(
-                        format!("Undeclared variable '{}'", module_name),
-                        span.line, span.column, None, None
-                    );
+
+                    // Check for classes
+                    if let Some(qualified_class) = self.context.resolve_qualified_class(module_name, name) {
+                        return Type::Class(qualified_class);
+                    }
+
                     Type::Unknown
                 } else {
                     Type::Unknown

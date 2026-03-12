@@ -961,6 +961,14 @@ impl Parser {
             full_type.push('>');
         }
 
+        // Handle array type suffix []
+        while self.match_token(&Token::LBracket) {
+            if !self.match_token(&Token::RBracket) {
+                return self.error_generic("Expected ']' after '[' in array type");
+            }
+            full_type.push_str("[]");
+        }
+
         let optional = self.match_token(&Token::Question);
 
         Ok((full_type, optional))

@@ -17,15 +17,15 @@ enum RedirectPolicy {
 }
 
 native class Request {
-  url: str
+  // url: str
   // TODO: headers map
-  body: str?
+  // body: str?
 }
 
 native class Response {
-  code: int
+  // code: int
   // TODO: headers map
-  body: str?
+  // body: str?
 }
 
 native class HttpClient {
@@ -45,7 +45,7 @@ native class HttpClient {
 
   async fn post(url: str, body: str): Response?
 
-  async fn get(req: Request): Response?
+  // async fn get(req: Request): Response?
 
-  async fn post(req: Request): Response?
+  // async fn post(req: Request): Response?
 }
