@@ -362,6 +362,7 @@ pub struct Class {
     pub methods: HashMap<String, Method>,
     pub native_methods: HashMap<String, NativeFn>,
     pub native_create: Option<NativeFn>,
+    pub native_destroy: Option<NativeFn>,
     pub is_native: bool,
     pub parent_interfaces: Vec<String>,
     pub vtable: Vec<String>,  // Ordered list of virtual method names
@@ -425,11 +426,72 @@ impl NativeFunctionBuilder {
     }
 }
 
+/// Builder for native class registration with fluent API
+pub struct NativeClass {
+    class_name: String,
+    methods: Vec<(String, NativeFn)>,
+    native_create: Option<NativeFn>,
+    native_destroy: Option<NativeFn>,
+}
+
+impl NativeClass {
+    pub fn new(class_name: &str) -> Self {
+        Self {
+            class_name: class_name.to_string(),
+            methods: Vec::new(),
+            native_create: None,
+            native_destroy: None,
+        }
+    }
+
+    /// Add a native method to this class
+    pub fn method(mut self, method_name: &str, func: NativeFn) -> Self {
+        self.methods.push((method_name.to_string(), func));
+        self
+    }
+
+    /// Set the native constructor callback
+    pub fn native_create(mut self, func: NativeFn) -> Self {
+        self.native_create = Some(func);
+        self
+    }
+
+    /// Set the native destructor callback
+    pub fn native_destroy(mut self, func: NativeFn) -> Self {
+        self.native_destroy = Some(func);
+        self
+    }
+
+    /// Get the class name
+    pub fn class_name(&self) -> &str {
+        &self.class_name
+    }
+
+    /// Register this class with the VM
+    pub fn register(self, vm: &mut VM) {
+        let class_name = self.class_name.clone();
+        
+        // Register native_create if provided
+        if let Some(func) = self.native_create {
+            vm.register_class_native_create(&class_name, func);
+        }
+        
+        // Register native_destroy if provided
+        if let Some(func) = self.native_destroy {
+            vm.register_class_native_destroy(&class_name, func);
+        }
+        
+        // Register all methods
+        for (method_name, func) in self.methods {
+            vm.register_native_method(&class_name, &method_name, func);
+        }
+    }
+}
+
 pub struct NativeModule {
     name: String,
     functions: Vec<(String, NativeFn)>,
-    class_methods: Vec<(String, String, NativeFn)>,
-    class_native_create_callbacks: Vec<(String, NativeFn)>,
+    classes: Vec<NativeClass>,
 }
 
 impl NativeModule {
@@ -437,8 +499,7 @@ impl NativeModule {
         Self {
             name: name.to_string(),
             functions: Vec::new(),
-            class_methods: Vec::new(),
-            class_native_create_callbacks: Vec::new(),
+            classes: Vec::new(),
         }
     }
 
@@ -447,23 +508,32 @@ impl NativeModule {
         self
     }
 
-    pub fn class_method(mut self, class_name: &str, method_name: &str, func: NativeFn) -> Self {
+    /// Start defining a native class with fluent API
+    /// 
+    /// # Example
+    /// ```ignore
+    /// NativeModule::new("std.sys")
+    ///     .function("env", sys::native_sys_env)
+    ///     .class("Process")
+    ///         .native_create(sys::native_process_native_create)
+    ///         .native_destroy(sys::native_process_native_destroy)
+    ///         .method("start", sys::native_process_start)
+    ///         .method("wait", sys::native_process_wait)
+    ///         .register_class()
+    ///     .register(vm);
+    /// ```
+    pub fn class(self, class_name: &str) -> NativeClassBuilder {
         let full_class_name = if class_name.contains('.') {
             class_name.to_string()
         } else {
             format!("{}.{}", self.name, class_name)
         };
-        self.class_methods.push((full_class_name, method_name.to_string(), func));
-        self
+        NativeClassBuilder::new(full_class_name, self)
     }
 
-    pub fn class_native_create(mut self, class_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains('.') {
-            class_name.to_string()
-        } else {
-            format!("{}.{}", self.name, class_name)
-        };
-        self.class_native_create_callbacks.push((full_class_name, func));
+    /// Register a pre-built NativeClass
+    pub fn register_class(mut self, class: NativeClass) -> Self {
+        self.classes.push(class);
         self
     }
 
@@ -472,12 +542,62 @@ impl NativeModule {
             let full_name = format!("{}.{}", self.name, name);
             vm.register_native(&full_name, func);
         }
-        for (class_name, method_name, func) in self.class_methods {
-            vm.register_native_method(&class_name, &method_name, func);
+        for class in self.classes {
+            class.register(vm);
         }
-        for (class_name, func) in self.class_native_create_callbacks {
-            vm.register_class_native_create(&class_name, func);
+    }
+}
+
+/// Builder for creating a NativeClass within a NativeModule context
+pub struct NativeClassBuilder {
+    class_name: String,
+    methods: Vec<(String, NativeFn)>,
+    native_create: Option<NativeFn>,
+    native_destroy: Option<NativeFn>,
+    module: Option<NativeModule>,
+}
+
+impl NativeClassBuilder {
+    fn new(class_name: String, module: NativeModule) -> Self {
+        Self {
+            class_name,
+            methods: Vec::new(),
+            native_create: None,
+            native_destroy: None,
+            module: Some(module),
         }
+    }
+
+    /// Add a native method to this class
+    pub fn method(mut self, method_name: &str, func: NativeFn) -> Self {
+        self.methods.push((method_name.to_string(), func));
+        self
+    }
+
+    /// Set the native constructor callback
+    pub fn native_create(mut self, func: NativeFn) -> Self {
+        self.native_create = Some(func);
+        self
+    }
+
+    /// Set the native destructor callback
+    pub fn native_destroy(mut self, func: NativeFn) -> Self {
+        self.native_destroy = Some(func);
+        self
+    }
+
+    /// Finish building the class and return to the module builder
+    pub fn register_class(self) -> NativeModule {
+        let class = NativeClass {
+            class_name: self.class_name,
+            methods: self.methods,
+            native_create: self.native_create,
+            native_destroy: self.native_destroy,
+        };
+        
+        let mut module = self.module.unwrap();
+        module.classes.push(class);
+        module
     }
 }
 
@@ -563,15 +683,14 @@ pub struct VM {
     functions: HashMap<String, Function>,
     /// Native function registry with indexed lookup (optimized)
     pub native_registry: NativeFunctionRegistry,
-    /// Legacy native functions HashMap (for backward compatibility)
-    #[deprecated(since = "0.2.0", note = "Use native_registry instead")]
-    pub native_functions: HashMap<String, NativeFn>,
     /// Fallback native handler
     pub fallback_native: Option<NativeFn>,
     /// Pending native methods to be attached to classes
     pending_native_methods: HashMap<String, HashMap<String, NativeFn>>,
     /// Pending class native_create callbacks
     pending_class_native_create: HashMap<String, NativeFn>,
+    /// Pending class native_destroy callbacks
+    pending_class_native_destroy: HashMap<String, NativeFn>,
     /// Exception handlers
     exception_handlers: Vec<ExceptionHandler>,
     /// Call stack - frames for active function calls
@@ -615,11 +734,10 @@ impl VM {
             classes: HashMap::new(),
             functions: HashMap::new(),
             native_registry: NativeFunctionRegistry::new(),
-            #[allow(deprecated)]
-            native_functions: HashMap::new(),
             fallback_native: None,
             pending_native_methods: HashMap::new(),
             pending_class_native_create: HashMap::new(),
+            pending_class_native_destroy: HashMap::new(),
             exception_handlers: Vec::new(),
             call_stack: Vec::new(),
             source_file: None,
@@ -638,8 +756,6 @@ impl VM {
             // New registration
             self.native_registry.register(name, f);
         }
-        #[allow(deprecated)]
-        self.native_functions.insert(name.to_string(), f);
     }
 
     pub fn register_native_method(&mut self, class_name: &str, method_name: &str, f: NativeFn) {
@@ -651,6 +767,10 @@ impl VM {
 
     pub fn register_class_native_create(&mut self, class_name: &str, f: NativeFn) {
         self.pending_class_native_create.insert(class_name.to_string(), f);
+    }
+
+    pub fn register_class_native_destroy(&mut self, class_name: &str, f: NativeFn) {
+        self.pending_class_native_destroy.insert(class_name.to_string(), f);
     }
 
     pub fn native_method(&mut self, _class_name: &str, method_name: &str, func: NativeFn) -> NativeFunctionBuilder {
@@ -678,7 +798,7 @@ impl VM {
     pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>) -> Result<(), String> {
         self.bytecode = bytecode.to_vec();
         self.strings = strings;
-        
+
         self.classes.clear();
         for mut class in classes {
             if let Some(methods) = self.pending_native_methods.get(&class.name) {
@@ -688,6 +808,9 @@ impl VM {
             }
             if let Some(on_init) = self.pending_class_native_create.get(&class.name) {
                 class.native_create = Some(*on_init);
+            }
+            if let Some(on_destroy) = self.pending_class_native_destroy.get(&class.name) {
+                class.native_destroy = Some(*on_destroy);
             }
             self.classes.insert(class.name.clone(), class);
         }
@@ -1047,16 +1170,20 @@ impl VM {
                         let mut args = vec![instance];
                         native_create(&mut args)?;
                     }
-                } 
-                // Check if it's a native function
-                else if let Some(native_f) = self.native_functions.get(&func_name) {
-                    let mut args = Vec::new();
-                    for i in 0..arg_count {
-                        args.push(self.get_reg(arg_start + i).clone());
+                }
+                // Check if it's a native function using indexed registry lookup
+                else if let Some(idx) = self.native_registry.get_index(&func_name) {
+                    if let Some(native_f) = self.native_registry.get_by_index(idx) {
+                        let mut args = Vec::new();
+                        for i in 0..arg_count {
+                            args.push(self.get_reg(arg_start + i).clone());
+                        }
+                        let result = native_f(&mut args)?;
+                        self.set_reg(rd, result);
+                    } else {
+                        return Err(Value::String(format!("Native function not found: {}", func_name)));
                     }
-                    let result = native_f(&mut args)?;
-                    self.set_reg(rd, result);
-                } 
+                }
                 // Check if it's a bytecode function
                 else if let Some(function) = self.functions.get(&func_name).cloned() {
                     // Collect arguments
@@ -1105,13 +1232,13 @@ impl VM {
                     let new_bytecode = function.bytecode.clone();
                     let new_strings = self.strings.clone();
                     let new_functions = self.functions.clone();
-                    let new_native_functions = self.native_functions.clone();
+                    let new_native_registry = self.native_registry.clone();
                     let new_classes = self.classes.clone();
 
                     let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                     let old_strings = std::mem::replace(&mut self.strings, new_strings);
                     let old_functions = std::mem::replace(&mut self.functions, new_functions);
-                    let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                    let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
                     let old_classes = std::mem::replace(&mut self.classes, new_classes);
 
                     // Execute function
@@ -1121,7 +1248,7 @@ impl VM {
                     self.bytecode = old_bytecode;
                     self.strings = old_strings;
                     self.functions = old_functions;
-                    self.native_functions = old_native_functions;
+                    self.native_registry = old_native_registry;
                     self.classes = old_classes;
 
                     // Pop frame and restore caller
@@ -1163,21 +1290,14 @@ impl VM {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
 
-                // Try indexed lookup first (faster), fall back to HashMap
+                // Try indexed lookup first, fall back to fallback handler
                 let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
                     Some(f) => f(&mut args)?,
                     None => {
-                        // Fall back to legacy HashMap lookup
-                        #[allow(deprecated)]
-                        match self.native_functions.get(&name) {
+                        match &self.fallback_native {
                             Some(f) => f(&mut args)?,
                             None => {
-                                match &self.fallback_native {
-                                    Some(f) => f(&mut args)?,
-                                    None => {
-                                        return Err(Value::String(format!("Native function not found: {}", name)));
-                                    }
-                                }
+                                return Err(Value::String(format!("Native function not found: {}", name)));
                             }
                         }
                     }
@@ -1319,19 +1439,19 @@ impl VM {
                             let new_bytecode = method.bytecode.clone();
                             let new_strings = self.strings.clone();
                             let new_classes = self.classes.clone();
-                            let new_native_functions = self.native_functions.clone();
+                            let new_native_registry = self.native_registry.clone();
 
                             let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                             let old_strings = std::mem::replace(&mut self.strings, new_strings);
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                            let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
                             let result = self.run().await;
 
                             self.bytecode = old_bytecode;
                             self.strings = old_strings;
                             self.classes = old_classes;
-                            self.native_functions = old_native_functions;
+                            self.native_registry = old_native_registry;
 
                             self.call_stack.pop();
                             if let Some(frame) = self.call_stack.last_mut() {
@@ -1420,19 +1540,19 @@ impl VM {
                         let new_bytecode = method.bytecode.clone();
                         let new_strings = self.strings.clone();
                         let new_classes = self.classes.clone();
-                        let new_native_functions = self.native_functions.clone();
+                        let new_native_registry = self.native_registry.clone();
 
                         let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                         let old_strings = std::mem::replace(&mut self.strings, new_strings);
                         let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                        let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                        let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
                         let result = self.run().await;
 
                         self.bytecode = old_bytecode;
                         self.strings = old_strings;
                         self.classes = old_classes;
-                        self.native_functions = old_native_functions;
+                        self.native_registry = old_native_registry;
 
                         self.call_stack.pop();
                         if let Some(frame) = self.call_stack.last_mut() {
@@ -1497,19 +1617,19 @@ impl VM {
                             let new_bytecode = method.bytecode.clone();
                             let new_strings = self.strings.clone();
                             let new_classes = self.classes.clone();
-                            let new_native_functions = self.native_functions.clone();
+                            let new_native_registry = self.native_registry.clone();
 
                             let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                             let old_strings = std::mem::replace(&mut self.strings, new_strings);
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                            let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
                             let result = self.run().await;
 
                             self.bytecode = old_bytecode;
                             self.strings = old_strings;
                             self.classes = old_classes;
-                            self.native_functions = old_native_functions;
+                            self.native_registry = old_native_registry;
 
                             self.call_stack.pop();
                             if let Some(frame) = self.call_stack.last_mut() {

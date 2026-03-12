@@ -39,34 +39,26 @@ pub fn register_all(vm: &mut VM) {
         .register(vm);
 
     NativeModule::new("std.data")
-        .class_native_create("ByteBuffer", data::native_byte_buffer_native_create)
-        .class_method("ByteBuffer", "constructor", data::native_byte_buffer_constructor)
-        .class_method("ByteBuffer", "reserve", data::native_byte_buffer_reserve)
-        .class_method("ByteBuffer", "get", data::native_byte_buffer_get)
-        .class_method("ByteBuffer", "set", data::native_byte_buffer_set)
-        .class_method("ByteBuffer", "length", data::native_byte_buffer_length)
+        .class("ByteBuffer")
+            .native_create(data::native_byte_buffer_native_create)
+            .method("constructor", data::native_byte_buffer_constructor)
+            .method("reserve", data::native_byte_buffer_reserve)
+            .method("get", data::native_byte_buffer_get)
+            .method("set", data::native_byte_buffer_set)
+            .method("length", data::native_byte_buffer_length)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.http")
         .function("get", http::native_http_get)
         .function("post", http::native_http_post)
-        .class_method(
-            "HttpClient",
-            "set_timeout",
-            http::native_http_client_set_timeout,
-        )
-        .class_method(
-            "HttpClient",
-            "set_base_url",
-            http::native_http_client_set_base_url,
-        )
-        .class_method(
-            "HttpClient",
-            "add_header",
-            http::native_http_client_add_header,
-        )
-        .class_method("HttpClient", "get", http::native_http_client_get)
-        .class_method("HttpClient", "post", http::native_http_client_post)
+        .class("HttpClient")
+            .method("set_timeout", http::native_http_client_set_timeout)
+            .method("set_base_url", http::native_http_client_set_base_url)
+            .method("add_header", http::native_http_client_add_header)
+            .method("get", http::native_http_client_get)
+            .method("post", http::native_http_client_post)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.json")
@@ -81,33 +73,38 @@ pub fn register_all(vm: &mut VM) {
         .register(vm);
 
     NativeModule::new("")
-        .class_method("str", "length", str::native_str_length)
-        .class_method("str", "trim", str::native_str_trim)
-        .class_method("str", "split", str::native_str_split)
-        .class_method("str", "to_int", str::native_str_to_int)
-        .class_method("str", "to_float", str::native_str_to_float)
-        .class_method("str", "contains", str::native_str_contains)
-        .class_method("str", "starts_with", str::native_str_starts_with)
-        .class_method("str", "ends_with", str::native_str_ends_with)
-        .class_method("str", "substring", str::native_str_substring)
-        .class_method("str", "to_lowercase", str::native_str_to_lowercase)
-        .class_method("str", "to_uppercase", str::native_str_to_uppercase)
-        .class_method("str", "replace", str::native_str_replace)
+        .class("str")
+            .method("length", str::native_str_length)
+            .method("trim", str::native_str_trim)
+            .method("split", str::native_str_split)
+            .method("to_int", str::native_str_to_int)
+            .method("to_float", str::native_str_to_float)
+            .method("contains", str::native_str_contains)
+            .method("starts_with", str::native_str_starts_with)
+            .method("ends_with", str::native_str_ends_with)
+            .method("substring", str::native_str_substring)
+            .method("to_lowercase", str::native_str_to_lowercase)
+            .method("to_uppercase", str::native_str_to_uppercase)
+            .method("replace", str::native_str_replace)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.sys")
         .function("env", sys::native_sys_env)
         .function("set_pwd", sys::native_sys_set_pwd)
-        .class_native_create("Process", sys::native_process_native_create)
-        .class_method("Process", "start", sys::native_process_start)
-        .class_method("Process", "write_stdin", sys::native_process_write_stdin)
-        .class_method("Process", "close_stdin", sys::native_process_close_stdin)
-        .class_method("Process", "read_stdout", sys::native_process_read_stdout)
-        .class_method("Process", "read_stderr", sys::native_process_read_stderr)
-        .class_method("Process", "wait", sys::native_process_wait)
-        .class_method("Process", "exit_code", sys::native_process_exit_code)
-        .class_method("Process", "get_stdout", sys::native_process_get_stdout)
-        .class_method("Process", "get_stderr", sys::native_process_get_stderr)
+        .class("Process")
+            .native_create(sys::native_process_native_create)
+            .native_destroy(sys::native_process_native_destroy)
+            .method("start", sys::native_process_start)
+            .method("write_stdin", sys::native_process_write_stdin)
+            .method("close_stdin", sys::native_process_close_stdin)
+            .method("read_stdout", sys::native_process_read_stdout)
+            .method("read_stderr", sys::native_process_read_stderr)
+            .method("wait", sys::native_process_wait)
+            .method("exit_code", sys::native_process_exit_code)
+            .method("get_stdout", sys::native_process_get_stdout)
+            .method("get_stderr", sys::native_process_get_stderr)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.fs")

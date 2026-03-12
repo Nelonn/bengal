@@ -454,6 +454,7 @@ impl Compiler {
                 methods: vm_methods,
                 native_methods: std::collections::HashMap::new(),
                 native_create: None,
+                native_destroy: None,
                 is_native: c.is_native,
                 parent_interfaces: c.parent_interfaces.clone(),
                 vtable: c.methods.iter().map(|m| m.name.clone()).collect(),
