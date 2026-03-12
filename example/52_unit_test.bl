@@ -1,0 +1,137 @@
+#!/usr/bin/env bengal
+
+// Example test suite using std.test
+// JUnit-style assertions with GTest-style test registration
+import std.test
+import std.io
+
+test("assertEquals with integers", () {
+    assertEquals(5, 5)
+    assertEquals(10, 10)
+})
+
+test("assertEquals with strings", () {
+    assertEquals("hello", "hello")
+    assertEquals("world", "world")
+})
+
+test("assertTrue", () {
+    assertTrue(true)
+    assertTrue(2 + 2 == 4)
+})
+
+test("assertFalse", () {
+    assertFalse(false)
+    assertFalse(2 + 2 == 5)
+})
+
+test("assertNull", () {
+    assertNull(null)
+})
+
+test("assertNotNull", () {
+    assertNotNull("value")
+    assertNotNull(0)
+    assertNotNull(false)
+})
+
+// ============== Numeric Assertions ==============
+
+test("Numeric operations", () {
+    assertEquals(4, 2 + 2)
+    assertEquals(5, 10 - 5)
+    assertEquals(12, 3 * 4)
+    assertEquals(5, 15 / 3)
+    assertEquals(1, 10 % 3)
+})
+
+test("assertClose for floats", () {
+    assertClose(3.14, 3.14159, 0.01)
+    assertClose(2.5, 2.5001, 0.001)
+})
+
+// ============== String Assertions ==============
+
+test("String assertions", () {
+    let text = "Hello, World!"
+    
+    assertStringContains(text, "World")
+    assertStartsWith(text, "Hello")
+    assertEndsWith(text, "!")
+    assertEquals(13, text.length())
+})
+
+// ============== Array Assertions ==============
+
+test("Array assertions", () {
+    let arr = [1, 2, 3, 4, 5]
+    
+    assertLength(arr, 5)
+    assertContains(arr, 3)
+    assertContains(arr, 1)
+    assertNotContains(arr, 10)
+    assertEquals(1, arr[0])
+    assertEquals(5, arr[4])
+})
+
+// ============== Comparison Assertions ==============
+
+test("Comparison operators", () {
+    assertTrue(5 > 3)
+    assertTrue(3 < 5)
+    assertTrue(5 >= 5)
+    assertTrue(5 >= 3)
+    assertTrue(3 <= 5)
+    assertTrue(5 <= 5)
+    assertFalse(5 < 3)
+    assertFalse(5 > 10)
+})
+
+// ============== Exception Testing ==============
+
+test("assertThrows", () {
+    assertThrows(() {
+        throw("Expected exception")
+    })
+})
+
+// ============== Custom Failure ==============
+
+test("Custom fail message", () {
+    // This test passes - fail() is not called
+    let value = 10
+    assertTrue(value > 5)
+})
+
+// ============== Complex Test ==============
+
+class Person {
+    name: str = ""
+    age: int = 0
+}
+
+test("Object testing", () {
+    let person = Person()
+    person.name = "Alice"
+    person.age = 30
+    
+    assertNotNull(person)
+    assertEquals("Alice", person.name)
+    assertEquals(30, person.age)
+})
+
+// ============== Print Summary ==============
+
+println("")
+test.summary()
+
+// ============== Exit Status ==============
+
+let allPassed = test.runAll()
+if (allPassed) {
+    println("All tests passed!")
+}
+if (!allPassed) {
+    println("Some tests failed!")
+    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
+}

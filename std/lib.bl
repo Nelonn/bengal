@@ -14,3 +14,4 @@ import std.data
 import std.ffi
 import std.http
 import std.args
+import std.test

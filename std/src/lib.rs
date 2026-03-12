@@ -9,6 +9,7 @@ pub mod math;
 pub mod reflect;
 pub mod str;
 pub mod sys;
+pub mod test;
 
 use sparkler::{NativeModule, Value, VM};
 
@@ -174,6 +175,13 @@ pub fn register_all(vm: &mut VM) {
         .function("smoothstep", math::native_math_smoothstep)
         .function("toRadians", math::native_math_to_radians)
         .function("toDegrees", math::native_math_to_degrees)
+        .register(vm);
+
+    NativeModule::new("std.test")
+        .function("addFailure", test::native_fail)
+        .function("recordPass", test::native_record_pass)
+        .function("setCurrentTest", test::native_set_current_test)
+        .function("assertSame", test::native_assert_same)
         .register(vm);
 
     // Fallback function that throws an error

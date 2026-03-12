@@ -1,0 +1,316 @@
+module std.test
+
+import std.io
+
+// ============== Private Implementation ==============
+
+private let TESTS: any[] = []
+private let RESULTS: TestResult[] = []
+
+private class TestResult {
+    name: str = ""
+    passed: bool = true
+    failures: str[] = []
+}
+
+private fn executeTest(name: str, testFn: any): TestResult {
+    let result = TestResult()
+    result.name = name
+    result.passed = true
+
+    print("Running: ")
+    println(name)
+
+    setCurrentTest(name)
+
+    try {
+        testFn()
+    } catch (e) {
+        result.passed = false
+        result.failures = result.failures + [str(e)]
+        println("  FAIL: " + str(e))
+    }
+
+    if (result.passed) {
+        println("  PASS")
+        recordPass()
+    }
+
+    return result
+}
+
+private fn assertEqualsMsg(expected: any, actual: any, message: str) {
+    if (expected != actual) {
+        let msg = orMsg(message, "Expected " + str(expected) + ", got " + str(actual))
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertTrueMsg(condition: bool, message: str) {
+    if (!condition) {
+        let msg = orMsg(message, "Expected true, got false")
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertFalseMsg(condition: bool, message: str) {
+    if (condition) {
+        let msg = orMsg(message, "Expected false, got true")
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertNullMsg(value: any, message: str) {
+    if (value != null) {
+        let msg = orMsg(message, "Expected null, got " + str(value))
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertNotNullMsg(value: any, message: str) {
+    if (value == null) {
+        let msg = orMsg(message, "Expected non-null value")
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertContainsMsg(array: any[], element: any, message: str) {
+    let found = false
+    let i = 0
+    while (i < array.length()) {
+        if (array[i] == element) {
+            found = true
+            break
+        }
+        i = i + 1
+    }
+    if (!found) {
+        let msg = orMsg(message, "Expected array to contain " + str(element))
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertNotContainsMsg(array: any[], element: any, message: str) {
+    let found = false
+    let i = 0
+    while (i < array.length()) {
+        if (array[i] == element) {
+            found = true
+            break
+        }
+        i = i + 1
+    }
+    if (found) {
+        let msg = orMsg(message, "Expected array to not contain " + str(element))
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertLengthMsg(array: any[], expectedLength: int, message: str) {
+    let actualLength = array.length()
+    if (actualLength != expectedLength) {
+        let msg = orMsg(message, "Expected length " + str(expectedLength) + ", got " + str(actualLength))
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertStringContainsMsg(text: str, substring: str, message: str) {
+    if (!text.contains(substring)) {
+        let msg = orMsg(message, "Expected string to contain '" + substring + "'")
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertStartsWithMsg(text: str, prefix: str, message: str) {
+    if (!text.startsWith(prefix)) {
+        let msg = orMsg(message, "Expected string to start with '" + prefix + "'")
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertEndsWithMsg(text: str, suffix: str, message: str) {
+    if (!text.endsWith(suffix)) {
+        let msg = orMsg(message, "Expected string to end with '" + suffix + "'")
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertCloseMsg(expected: float, actual: float, tolerance: float, message: str) {
+    let diff = expected - actual
+    if (diff < 0) { diff = 0 - diff }
+    if (diff > tolerance) {
+        let msg = orMsg(message, "Expected " + str(expected) + " +/- " + str(tolerance) + ", got " + str(actual))
+        addFailure(msg)
+        throw(msg)
+    }
+}
+
+private fn assertThrowsMsg(testFn: any, message: str) {
+    try {
+        testFn()
+        let msg = orMsg(message, "Expected exception to be thrown")
+        addFailure(msg)
+        throw(msg)
+    } catch (e) {
+        println("  (Caught expected exception)")
+    }
+}
+
+private fn failMsg(message: str) {
+    let msg = orMsg(message, "Test failed")
+    addFailure(msg)
+    throw(msg)
+}
+
+private fn orMsg(message: str, default: str): str {
+    if (message != null) { return message }
+    return default
+}
+
+private native fn addFailure(message: str) {}
+private native fn recordPass() {}
+private native fn setCurrentTest(name: str) {}
+private native fn assertSame(expected: any, actual: any, message: str) {}
+
+// ============== Public API ==============
+
+// Register and run a test - GTest style
+// Usage: test("Test name", (): void { assertEquals(1, 1) })
+fn test(name: str, testFn: any) {
+    let result = executeTest(name, testFn)
+    TESTS = TESTS + [testFn]
+    RESULTS = RESULTS + [result]
+}
+
+fn assertEquals(expected: any, actual: any) {
+    assertEqualsMsg(expected, actual, null)
+}
+
+fn assertTrue(condition: bool) {
+    assertTrueMsg(condition, null)
+}
+
+fn assertFalse(condition: bool) {
+    assertFalseMsg(condition, null)
+}
+
+fn assertNull(value: any) {
+    assertNullMsg(value, null)
+}
+
+fn assertNotNull(value: any) {
+    assertNotNullMsg(value, null)
+}
+
+fn assertSame(expected: any, actual: any) {
+    nativeAssertSame(expected, actual, null)
+}
+
+fn assertContains(array: any[], element: any) {
+    assertContainsMsg(array, element, null)
+}
+
+fn assertNotContains(array: any[], element: any) {
+    assertNotContainsMsg(array, element, null)
+}
+
+fn assertLength(array: any[], expectedLength: int) {
+    assertLengthMsg(array, expectedLength, null)
+}
+
+fn assertStringContains(text: str, substring: str) {
+    assertStringContainsMsg(text, substring, null)
+}
+
+fn assertStartsWith(text: str, prefix: str) {
+    assertStartsWithMsg(text, prefix, null)
+}
+
+fn assertEndsWith(text: str, suffix: str) {
+    assertEndsWithMsg(text, suffix, null)
+}
+
+fn assertClose(expected: float, actual: float, tolerance: float) {
+    assertCloseMsg(expected, actual, tolerance, null)
+}
+
+fn assertThrows(testFn: any) {
+    assertThrowsMsg(testFn, null)
+}
+
+fn fail() {
+    failMsg(null)
+}
+
+fn passedCount(): int {
+    let count: int = 0
+    for r in RESULTS {
+        if (r.passed) { count = count + 1 }
+    }
+    return count
+}
+
+fn failedCount(): int {
+    let count: int = 0
+    for r in RESULTS {
+        if (!r.passed) { count = count + 1 }
+    }
+    return count
+}
+
+fn totalCount(): int {
+    return RESULTS.length()
+}
+
+fn summary() {
+    let total = RESULTS.length()
+    let passed = passedCount()
+    let failed = failedCount()
+
+    println("")
+    println("========================================")
+    println("Test Results")
+    println("========================================")
+    println("Total:  " + str(total))
+    println("Passed: " + str(passed))
+    println("Failed: " + str(failed))
+    println("========================================")
+
+    if (failed > 0) {
+        println("")
+        println("Failures:")
+        for r in RESULTS {
+            if (!r.passed) {
+                println("  - " + r.name)
+                for f in r.failures {
+                    println("      " + f)
+                }
+            }
+        }
+    }
+    println("========================================")
+}
+
+fn reset() {
+    TESTS = []
+    RESULTS = []
+}
+
+fn runAll(): bool {
+    return failedCount() == 0
+}
+
+fn getResults(): TestResult[] {
+    return RESULTS
+}

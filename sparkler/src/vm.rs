@@ -303,8 +303,38 @@ impl Value {
             Value::Float64(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Null => "null".to_string(),
-            Value::Instance(_) => "[instance]".to_string(),
-            Value::Array(_) => "[array]".to_string(),
+            Value::Instance(inst) => {
+                let inst = inst.lock().unwrap();
+                let mut fields_str = Vec::new();
+                for (key, value) in &inst.fields {
+                    let value_str = match value {
+                        Value::String(s) => format!("\"{}\"", s),
+                        Value::Int8(n) => n.to_string(),
+                        Value::Int16(n) => n.to_string(),
+                        Value::Int32(n) => n.to_string(),
+                        Value::Int64(n) => n.to_string(),
+                        Value::UInt8(n) => n.to_string(),
+                        Value::UInt16(n) => n.to_string(),
+                        Value::UInt32(n) => n.to_string(),
+                        Value::UInt64(n) => n.to_string(),
+                        Value::Float32(n) => n.to_string(),
+                        Value::Float64(n) => n.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Null => "null".to_string(),
+                        Value::Instance(_) => "[instance]".to_string(),
+                        Value::Array(_) => "[array]".to_string(),
+                        Value::Promise(_) => "[promise]".to_string(),
+                        Value::Exception(e) => format!("[exception: {}]", e.message),
+                    };
+                    fields_str.push(format!("\"{}\": {}", key, value_str));
+                }
+                format!("{{ {} }}", fields_str.join(", "))
+            }
+            Value::Array(arr) => {
+                let arr = arr.lock().unwrap();
+                let elements_str: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+                format!("[{}]", elements_str.join(", "))
+            }
             Value::Promise(_) => "[promise]".to_string(),
             Value::Exception(e) => e.to_string(),
         }
