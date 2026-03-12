@@ -286,6 +286,31 @@ impl Parser {
         while self.match_token(&Token::Newline) {}
     }
 
+    fn require_statement_terminator(&mut self) -> Result<(), String> {
+        // Check if we're at EOF or end of block
+        if self.check(&Token::Eof) || self.check(&Token::RBrace) {
+            return Ok(());
+        }
+        
+        // Check for semicolon
+        if self.match_token(&Token::Semicolon) {
+            return Ok(());
+        }
+        
+        // Check for newline
+        if self.match_token(&Token::Newline) {
+            return Ok(());
+        }
+        
+        // No valid terminator found
+        let span = self.compute_span(self.pos);
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        Err(format!("{}:{}:{}: error: Expected ';' or newline after statement", filename, span.line, span.column))
+    }
+
     pub fn parse(&mut self) -> Result<Vec<Stmt>, String> {
         let mut statements = Vec::new();
         self.skip_newlines();
@@ -374,20 +399,20 @@ impl Parser {
             if self.match_token(&Token::Equal) {
                 if let Expr::Variable { name, span } = expr {
                     let value = self.parse_expression()?;
-                    if self.match_token(&Token::Semicolon) {}
                     Stmt::Assign { name, expr: value, span }
                 } else if let Expr::Get { object, name, span } = expr {
                     let value = self.parse_expression()?;
-                    if self.match_token(&Token::Semicolon) {}
                     Stmt::Expr(Expr::Set { object, name, value: Box::new(value), span })
                 } else {
                     return self.error_generic("Left side of assignment must be a variable or property access");
                 }
             } else {
-                if self.match_token(&Token::Semicolon) {}
                 Stmt::Expr(expr)
             }
         };
+
+        // Require statement terminator: semicolon or newline (or EOF/RBrace)
+        self.require_statement_terminator()?;
 
         Ok(Some(stmt))
     }
@@ -409,9 +434,6 @@ impl Parser {
             }
         }
 
-        if self.match_token(&Token::Semicolon) {}
-        self.skip_newlines();
-
         Ok(Stmt::Import { path })
     }
 
@@ -431,9 +453,6 @@ impl Parser {
                 break;
             }
         }
-
-        if self.match_token(&Token::Semicolon) {}
-        self.skip_newlines();
 
         Ok(Stmt::Module { path })
     }
@@ -721,8 +740,6 @@ impl Parser {
         // Parse the aliased type name
         let (aliased_type, _) = self.parse_type()?;
 
-        if self.match_token(&Token::Semicolon) {}
-
         Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type }))
     }
 
@@ -810,8 +827,6 @@ impl Parser {
         } else {
             None
         };
-
-        if self.match_token(&Token::Semicolon) {}
 
         Ok(Field { name, type_name, default, private })
     }
@@ -1051,8 +1066,6 @@ impl Parser {
 
         let expr = self.parse_expression()?;
 
-        if self.match_token(&Token::Semicolon) {}
-
         Ok(Stmt::Let { name, type_annotation, expr })
     }
 
@@ -1062,8 +1075,6 @@ impl Parser {
         } else {
             Some(self.parse_expression()?)
         };
-
-        if self.match_token(&Token::Semicolon) {}
 
         Ok(Stmt::Return(expr))
     }
@@ -1151,12 +1162,10 @@ impl Parser {
     }
 
     fn parse_break(&mut self) -> Result<Stmt, String> {
-        if self.match_token(&Token::Semicolon) {}
         Ok(Stmt::Break)
     }
 
     fn parse_continue(&mut self) -> Result<Stmt, String> {
-        if self.match_token(&Token::Semicolon) {}
         Ok(Stmt::Continue)
     }
 
@@ -1205,8 +1214,6 @@ impl Parser {
 
     fn parse_throw(&mut self) -> Result<Stmt, String> {
         let expr = self.parse_expression()?;
-
-        if self.match_token(&Token::Semicolon) {}
 
         Ok(Stmt::Throw(expr))
     }

@@ -1070,6 +1070,7 @@ impl Compiler {
                     let mut resolved_name = func_name.clone();
                     let mut is_class = false;
                     let mut is_method = false;
+                    let mut is_native = false;
                     if let Some(ctx) = type_context {
                         if let Some(resolved_class) = ctx.resolve_class(func_name) {
                             resolved_name = resolved_class;
@@ -1077,6 +1078,7 @@ impl Compiler {
                         } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
                             // Use mangled name for overloaded function resolution
                             resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
+                            is_native = sig.is_native;
                         } else if let Some(current_class) = &ctx.current_class {
                             // Check if it's a method on current class
                             if let Some(class_info) = ctx.get_class(current_class) {
@@ -1185,11 +1187,21 @@ impl Compiler {
 
                         let idx = strings.len();
                         strings.push(resolved_name);
-                        bytecode.push(Opcode::Call as u8);
-                        bytecode.push(rd as u8);
-                        bytecode.push(idx as u8);
-                        bytecode.push(contiguous_start as u8);
-                        bytecode.push(args.len() as u8);
+                        
+                        // Use CallNative for native functions, Call for bytecode functions
+                        if is_native {
+                            bytecode.push(Opcode::CallNative as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push(args.len() as u8);
+                        } else {
+                            bytecode.push(Opcode::Call as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push(args.len() as u8);
+                        }
                     }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
                     let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
