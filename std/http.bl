@@ -41,6 +41,8 @@ native class HttpClient {
 
   fn setVerifySsl(verify: bool)
 
+  fn addHeader(name: str, value: str)
+
   async fn get(url: str): Response?
 
   async fn post(url: str, body: str): Response?

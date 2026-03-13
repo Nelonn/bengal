@@ -49,6 +49,8 @@ pub fn register_all(vm: &mut VM) {
     NativeModule::new("std.http")
         .function("get", http::native_http_get)
         .function("post", http::native_http_post)
+        .class_native_create("HttpClient", http::native_http_client_native_create)
+        // snake_case methods (for compatibility)
         .class_method(
             "HttpClient",
             "set_timeout",
@@ -66,6 +68,45 @@ pub fn register_all(vm: &mut VM) {
         )
         .class_method("HttpClient", "get", http::native_http_client_get)
         .class_method("HttpClient", "post", http::native_http_client_post)
+        // camelCase methods (Bengal convention)
+        .class_method(
+            "HttpClient",
+            "setTimeout",
+            http::native_http_client_set_timeout_camel,
+        )
+        .class_method(
+            "HttpClient",
+            "setBaseUrl",
+            http::native_http_client_set_base_url_camel,
+        )
+        .class_method(
+            "HttpClient",
+            "addHeader",
+            http::native_http_client_add_header_camel,
+        )
+        .class_method("HttpClient", "get", http::native_http_client_get_camel)
+        .class_method("HttpClient", "post", http::native_http_client_post_camel)
+        // Additional methods
+        .class_method(
+            "HttpClient",
+            "setRedirectPolicy",
+            http::native_http_client_set_redirect_policy_camel,
+        )
+        .class_method(
+            "HttpClient",
+            "setMaxRedirects",
+            http::native_http_client_set_max_redirects_camel,
+        )
+        .class_method(
+            "HttpClient",
+            "setProxy",
+            http::native_http_client_set_proxy_camel,
+        )
+        .class_method(
+            "HttpClient",
+            "setVerifySsl",
+            http::native_http_client_set_verify_ssl_camel,
+        )
         .register(vm);
 
     NativeModule::new("std.json")

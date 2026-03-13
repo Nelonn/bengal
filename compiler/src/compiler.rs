@@ -326,14 +326,14 @@ impl Compiler {
                 for stmt in &module_info.statements {
                     if let Stmt::Function(func) = stmt {
                         let mut func_with_module = func.clone();
-                        let full_name = format!("{}::{}", module_name, func.name);
+                        let full_name = format!("{}.{}", module_name, func.name);
                         func_with_module.name = full_name.clone();
                         functions.push(func_with_module);
                         function_source_files.insert(full_name.clone(), module_info.path.to_string_lossy().to_string());
                         function_sources.insert(full_name, module_info.source.clone());
                     } else if let Stmt::Class(class) = stmt {
                         let mut class_with_module = class.clone();
-                        let full_name = format!("{}::{}", module_name, class.name);
+                        let full_name = format!("{}.{}", module_name, class.name);
                         class_with_module.name = full_name.clone();
                         classes.push(class_with_module);
                         class_source_files.insert(full_name.clone(), module_info.path.to_string_lossy().to_string());
