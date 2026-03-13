@@ -1077,6 +1077,24 @@ impl Compiler {
                         bytecode.push(r as u8);
                         Ok(rd)
                     }
+                    UnaryOp::Negate => {
+                        // Negation: subtract value from zero
+                        let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                        let rd = self.current_ctx.allocate_reg();
+                        let r_zero = self.current_ctx.allocate_reg();
+                        
+                        // Load 0 (works for both int and float)
+                        bytecode.push(Opcode::LoadInt as u8);
+                        bytecode.push(r_zero as u8);
+                        bytecode.extend_from_slice(&0i64.to_le_bytes());
+                        
+                        // Subtract: rd = 0 - r
+                        bytecode.push(Opcode::Subtract as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(r_zero as u8);
+                        bytecode.push(r as u8);
+                        Ok(rd)
+                    }
                     UnaryOp::PrefixIncrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
                             let r_var = self.current_ctx.get_local_reg(name);

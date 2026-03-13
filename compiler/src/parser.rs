@@ -215,6 +215,7 @@ pub enum UnaryOp {
     PostfixIncrement,
     PostfixDecrement,
     Decrement, // Keep for backward compatibility if used elsewhere, but we'll use PostfixDecrement for x--
+    Negate,    // Unary minus for negative numbers: -5, -3.14
 }
 
 #[derive(Debug, Clone)]
@@ -1590,6 +1591,15 @@ impl Parser {
             let span = self.compute_span(self.pos - 1);
             return Ok(Expr::Unary {
                 op: UnaryOp::Not,
+                expr: Box::new(self.parse_unary()?),
+                span,
+            });
+        }
+
+        if self.match_token(&Token::Minus) {
+            let span = self.compute_span(self.pos - 1);
+            return Ok(Expr::Unary {
+                op: UnaryOp::Negate,
                 expr: Box::new(self.parse_unary()?),
                 span,
             });

@@ -483,7 +483,10 @@ impl Lexer {
         let mut is_float = false;
 
         while let Some(ch) = self.peek() {
-            if ch == '.' {
+            if ch == '\'' {
+                // Digit separator (e.g., 1'000'000)
+                self.advance();
+            } else if ch == '.' {
                 if is_float {
                     break;
                 }

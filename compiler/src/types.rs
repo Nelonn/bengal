@@ -2364,6 +2364,16 @@ impl TypeChecker {
                         }
                         Type::Bool
                     }
+                    crate::parser::UnaryOp::Negate => {
+                        // Negation works on numeric types and returns the same type
+                        if inner_type != Type::Int && inner_type != Type::Float && !inner_type.is_numeric() && inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for unary minus, got {}", inner_type.to_str()),
+                                0
+                            );
+                        }
+                        inner_type
+                    }
                     crate::parser::UnaryOp::PrefixIncrement | crate::parser::UnaryOp::PostfixIncrement => {
                         // Increment operator works on numeric types and returns the original type
                         if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
