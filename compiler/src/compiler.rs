@@ -1182,6 +1182,11 @@ impl Compiler {
                     return Ok(self.current_ctx.get_local_reg("self"));
                 }
 
+                // Check if it's a local variable or parameter first
+                if self.current_ctx.locals_map.contains_key(name) {
+                    return Ok(self.current_ctx.get_local_reg(name));
+                }
+
                 if let Some(ctx) = type_context {
                     if let Some(current_class_name) = &ctx.current_class {
                         if let Some(class_info) = ctx.get_class(current_class_name) {

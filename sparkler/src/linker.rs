@@ -386,24 +386,24 @@ mod tests {
     #[test]
     fn test_register_and_get() {
         let mut registry = NativeFunctionRegistry::new();
-        let index = registry.register("test::func", dummy_native);
-        
+        let index = registry.register("test.func", dummy_native);
+
         assert_eq!(index, 0);
         assert!(registry.get_by_index(index).is_some());
-        assert_eq!(registry.get_index("test::func"), Some(0));
+        assert_eq!(registry.get_index("test.func"), Some(0));
     }
 
     #[test]
     fn test_hot_swap() {
         let mut registry = NativeFunctionRegistry::new();
-        registry.register("test::func", dummy_native);
-        
+        registry.register("test.func", dummy_native);
+
         fn new_native(_args: &mut Vec<Value>) -> Result<Value, Value> {
             Ok(Value::Int64(42))
         }
-        
-        assert!(registry.hot_swap("test::func", new_native));
-        
+
+        assert!(registry.hot_swap("test.func", new_native));
+
         // Verify the function was swapped
         let entry = registry.get_entry(0).unwrap();
         assert_eq!(entry.version, 1);
@@ -413,14 +413,14 @@ mod tests {
     fn test_version_tracking() {
         let mut registry = NativeFunctionRegistry::new();
         assert_eq!(registry.version(), 0);
-        
-        registry.register("test::func1", dummy_native);
+
+        registry.register("test.func1", dummy_native);
         assert_eq!(registry.version(), 1);
-        
-        registry.register("test::func2", dummy_native);
+
+        registry.register("test.func2", dummy_native);
         assert_eq!(registry.version(), 2);
-        
-        registry.hot_swap("test::func1", dummy_native);
+
+        registry.hot_swap("test.func1", dummy_native);
         assert_eq!(registry.version(), 3);
     }
 }

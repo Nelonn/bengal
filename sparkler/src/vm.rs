@@ -1410,7 +1410,12 @@ impl VM {
                         if let Some(native_method) = class.native_methods.get(&name) {
                             let mut method_args = args.clone();
                             let result = native_method(&mut method_args)?;
-                            self.set_reg(rd, result);
+                            // For constructors, return the instance (self) instead of the method's return value
+                            if name == "constructor" {
+                                self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                            } else {
+                                self.set_reg(rd, result);
+                            }
                         } else if let Some(method) = class.methods.get(&name) {
                             // Set up method call frame
                             let caller_pc = self.pc();
@@ -1465,7 +1470,14 @@ impl VM {
                             }
 
                             match result {
-                                Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
+                                Ok(RunResult::Finished(val)) => {
+                                    // For constructors, return the instance (self) instead of the method's return value
+                                    if name == "constructor" {
+                                        self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                                    } else {
+                                        self.set_reg(rd, val.unwrap_or(Value::Null));
+                                    }
+                                },
                                 Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
                                 Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                                 Err(e) => return Err(e),
@@ -1566,7 +1578,14 @@ impl VM {
                         }
 
                         match result {
-                            Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
+                            Ok(RunResult::Finished(val)) => {
+                                // For constructors, return the instance (self) instead of the method's return value
+                                if name == "constructor" {
+                                    self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                                } else {
+                                    self.set_reg(rd, val.unwrap_or(Value::Null));
+                                }
+                            },
                             Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
                             Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                             Err(e) => return Err(e),

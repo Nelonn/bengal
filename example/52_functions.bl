@@ -1,0 +1,13 @@
+import std.io
+
+fn foo(i: str) {
+    println("this is str")
+}
+
+fn foo(i: int64) {
+    println("this is int64")
+}
+
+
+foo(1234123)
+foo("12312312")
