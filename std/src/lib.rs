@@ -14,12 +14,15 @@ pub mod test;
 use sparkler::{NativeModule, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
-    // Register print with mangled name
+    // Register print with mangled name and base name
     vm.native("print(str)", io::native_print)
         .description("Print without newline (str)")
         .register(vm);
+    vm.native("print", io::native_print)
+        .description("Print without newline (any)")
+        .register(vm);
 
-    // Register println with multiple overloads for different types
+    // Register println with multiple overloads for different types and base name
     vm.native("println(str)", io::native_println)
         .description("Print with newline (str)")
         .register(vm);
@@ -31,6 +34,9 @@ pub fn register_all(vm: &mut VM) {
         .register(vm);
     vm.native("println(bool)", io::native_println)
         .description("Print with newline (bool)")
+        .register(vm);
+    vm.native("println", io::native_println)
+        .description("Print with newline (any)")
         .register(vm);
 
     NativeModule::new("std.io")
@@ -87,6 +93,24 @@ pub fn register_all(vm: &mut VM) {
             .method("to_uppercase", str::native_str_to_uppercase)
             .method("replace", str::native_str_replace)
             .register_class()
+        .register(vm);
+
+    // Register global str() function separately
+    NativeModule::new("")
+        .function("str", str::native_str)
+        .function("int", str::native_int)
+        .function("float", str::native_float)
+        .function("bool", str::native_bool)
+        .function("int8", str::native_int8)
+        .function("uint8", str::native_uint8)
+        .function("int16", str::native_int16)
+        .function("uint16", str::native_uint16)
+        .function("int32", str::native_int32)
+        .function("uint32", str::native_uint32)
+        .function("int64", str::native_int64)
+        .function("uint64", str::native_uint64)
+        .function("float32", str::native_float32)
+        .function("float64", str::native_float64)
         .register(vm);
 
     NativeModule::new("std.sys")

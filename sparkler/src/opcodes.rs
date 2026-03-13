@@ -72,7 +72,7 @@ pub enum Opcode {
     Concat = 0x65,   // Rd, rs_start, count
 
     // Type operations
-    Cast = 0x74,     // Rd, Rs, type
+    Convert = 0x74,  // Rd, Rs, type
     Array = 0x76,    // Rd, rs_start, count
     Index = 0x77,    // Rd, Robj, Ridx
 
@@ -137,7 +137,7 @@ impl Opcode {
             Opcode::Divide => 4,
             Opcode::Modulo => 4,
             Opcode::Concat => 4,
-            Opcode::Cast => 4,
+            Opcode::Convert => 4,
             Opcode::Array => 4,
             Opcode::Index => 4,
             Opcode::Line => 3,

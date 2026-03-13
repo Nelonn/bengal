@@ -1739,38 +1739,8 @@ impl Parser {
                     return self.error_expr("Expected ')' after arguments");
                 }
                 self.skip_newlines();
-                
-                // Check if this is a cast expression (str(x), int(x), float(x), bool(x))
-                if args.len() == 1 {
-                    if let Expr::Variable { name, .. } = &expr {
-                        let cast_type = match name.as_str() {
-                            "str" => Some(CastType::Str),
-                            "int" => Some(CastType::Int),
-                            "float" => Some(CastType::Float),
-                            "bool" => Some(CastType::Bool),
-                            "int8" => Some(CastType::Int8),
-                            "uint8" => Some(CastType::UInt8),
-                            "int16" => Some(CastType::Int16),
-                            "uint16" => Some(CastType::UInt16),
-                            "int32" => Some(CastType::Int32),
-                            "uint32" => Some(CastType::UInt32),
-                            "int64" => Some(CastType::Int64),
-                            "uint64" => Some(CastType::UInt64),
-                            "float32" => Some(CastType::Float32),
-                            "float64" => Some(CastType::Float64),
-                            _ => None,
-                        };
-                        if let Some(target_type) = cast_type {
-                            expr = Expr::Cast {
-                                expr: Box::new(args.into_iter().next().unwrap()),
-                                target_type,
-                                span,
-                            };
-                            continue;
-                        }
-                    }
-                }
-                
+
+                // All type conversion functions (str, int, float, bool, etc.) are handled as native function calls
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,

@@ -540,7 +540,11 @@ impl NativeModule {
 
     pub fn register(self, vm: &mut VM) {
         for (name, func) in self.functions {
-            let full_name = format!("{}.{}", self.name, name);
+            let full_name = if self.name.is_empty() {
+                name
+            } else {
+                format!("{}.{}", self.name, name)
+            };
             vm.register_native(&full_name, func);
         }
         for class in self.classes {
@@ -1767,9 +1771,9 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
 
-            // Type cast
-            // Format: [Cast, Rd, Rs, type_code]
-            x if x == Opcode::Cast as u8 => {
+            // Type conversion
+            // Format: [Convert, Rd, Rs, type_code]
+            x if x == Opcode::Convert as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1828,7 +1832,10 @@ impl VM {
                         }
                     }
                     0x03 => { // Cast to str
-                        Value::String(value.to_string())
+                        match &value {
+                            Value::String(s) => Value::String(s.clone()),
+                            _ => Value::String(value.to_string()),
+                        }
                     }
                     0x04 => { // Cast to bool
                         Value::Bool(value.is_truthy())

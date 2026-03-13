@@ -547,6 +547,41 @@ impl TypeContext {
 
         self.import_paths.push("std.reflect".to_string());
 
+        // Register std.io functions (print, println)
+        let io_print = FunctionSignature {
+            name: "print".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Unknown),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("print", io_print);
+
+        let io_println = FunctionSignature {
+            name: "println".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Unknown),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("println", io_println);
+
+        self.import_paths.push("std.io".to_string());
+
         // Built-in types methods
         // str methods
         let mut str_methods = HashMap::new();
@@ -639,6 +674,244 @@ impl TypeContext {
             parent_interfaces: vec![],
             type_params: vec!["T".to_string()],
         });
+
+        // Register global str() function
+        let str_fn = FunctionSignature {
+            name: "str".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Str),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("str", str_fn);
+
+        // Register int() function
+        let int_fn = FunctionSignature {
+            name: "int".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int", int_fn);
+
+        // Register float() function
+        let float_fn = FunctionSignature {
+            name: "float".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("float", float_fn);
+
+        // Register bool() function
+        let bool_fn = FunctionSignature {
+            name: "bool".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("bool", bool_fn);
+
+        // Register int8() function
+        let int8_fn = FunctionSignature {
+            name: "int8".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int8),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int8", int8_fn);
+
+        // Register uint8() function
+        let uint8_fn = FunctionSignature {
+            name: "uint8".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt8),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint8", uint8_fn);
+
+        // Register int16() function
+        let int16_fn = FunctionSignature {
+            name: "int16".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int16),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int16", int16_fn);
+
+        // Register uint16() function
+        let uint16_fn = FunctionSignature {
+            name: "uint16".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt16),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint16", uint16_fn);
+
+        // Register int32() function
+        let int32_fn = FunctionSignature {
+            name: "int32".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int32),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int32", int32_fn);
+
+        // Register uint32() function
+        let uint32_fn = FunctionSignature {
+            name: "uint32".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt32),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint32", uint32_fn);
+
+        // Register int64() function
+        let int64_fn = FunctionSignature {
+            name: "int64".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int64),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int64", int64_fn);
+
+        // Register uint64() function
+        let uint64_fn = FunctionSignature {
+            name: "uint64".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt64),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint64", uint64_fn);
+
+        // Register float32() function
+        let float32_fn = FunctionSignature {
+            name: "float32".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Float32),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("float32", float32_fn);
+
+        // Register float64() function
+        let float64_fn = FunctionSignature {
+            name: "float64".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Float64),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("float64", float64_fn);
     }
 
     pub fn add_class(&mut self, class: &ClassDef) {
