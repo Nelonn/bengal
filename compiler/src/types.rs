@@ -2190,7 +2190,7 @@ impl TypeChecker {
                     // Use expected type for type deduction
                     let expected_type = var_info.type_name.clone();
                     let deduced_type = self.infer_expr_with_expected_type(expr, &Some(expected_type.clone()));
-                    
+
                     if !deduced_type.is_assignable_to(&expected_type) {
                         self.context.add_error(
                             format!(
@@ -2231,6 +2231,92 @@ impl TypeChecker {
                 } else {
                     // Variable not declared with let, create it (implicit declaration in global/function scope)
                     self.context.add_variable(name, expr_type, false);
+                }
+            }
+            Stmt::AugAssign { target, op, expr, span } => {
+                let var_type = match target {
+                    crate::parser::AugAssignTarget::Variable(name) => {
+                        if let Some(var_info) = self.context.get_variable(name) {
+                            var_info.type_name.clone()
+                        } else {
+                            self.context.add_error_with_location(
+                                format!("Undeclared variable '{}'", name),
+                                span.line,
+                                span.column,
+                                None,
+                                None,
+                            );
+                            return;
+                        }
+                    }
+                    crate::parser::AugAssignTarget::Field { object, name } => {
+                        let obj_type = self.infer_expr(object);
+                        // Get the field type from the object's class
+                        if let Type::Class(class_name) = obj_type {
+                            if let Some(class_info) = self.context.get_class(&class_name) {
+                                if let Some(field_info) = class_info.fields.get(name.as_str()) {
+                                    field_info.type_name.clone()
+                                } else {
+                                    self.context.add_error_with_location(
+                                        format!("Field '{}' not found in class '{}'", name, class_name),
+                                        span.line,
+                                        span.column,
+                                        None,
+                                        None,
+                                    );
+                                    return;
+                                }
+                            } else {
+                                self.context.add_error_with_location(
+                                    format!("Unknown class '{}'", class_name),
+                                    span.line,
+                                    span.column,
+                                    None,
+                                    None,
+                                );
+                                return;
+                            }
+                        } else {
+                            self.context.add_error_with_location(
+                                format!("Cannot access field '{}' on non-class type '{}'", name, obj_type.to_str()),
+                                span.line,
+                                span.column,
+                                None,
+                                None,
+                            );
+                            return;
+                        }
+                    }
+                };
+
+                let expr_type = self.infer_expr(expr);
+
+                // For +=, -=, *=, /=, both operands must be numeric types
+                let op_name = match op {
+                    crate::parser::AugOp::Add => "+=",
+                    crate::parser::AugOp::Subtract => "-=",
+                    crate::parser::AugOp::Multiply => "*=",
+                    crate::parser::AugOp::Divide => "/=",
+                };
+
+                if !var_type.is_numeric() {
+                    self.context.add_error(
+                        format!(
+                            "Cannot use '{}' operator on non-numeric type '{}'",
+                            op_name,
+                            var_type.to_str()
+                        ),
+                        0
+                    );
+                } else if !expr_type.is_numeric() {
+                    self.context.add_error(
+                        format!(
+                            "Cannot use '{}' operator with non-numeric type '{}'",
+                            op_name,
+                            expr_type.to_str()
+                        ),
+                        0
+                    );
                 }
             }
             Stmt::Return(expr) => {

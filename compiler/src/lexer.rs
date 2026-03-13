@@ -60,11 +60,15 @@ pub enum Token {
 
     Plus,
     PlusPlus,
+    PlusEqual,
     Minus,
     MinusMinus,
+    MinusEqual,
     Star,
     StarStar,
+    StarEqual,
     Slash,
+    SlashEqual,
     Percent,
 
     Greater,
@@ -253,6 +257,9 @@ impl Lexer {
                 if self.peek() == Some('+') {
                     self.advance();
                     Ok(Token::PlusPlus)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::PlusEqual)
                 } else {
                     Ok(Token::Plus)
                 }
@@ -262,6 +269,9 @@ impl Lexer {
                 if self.peek() == Some('-') {
                     self.advance();
                     Ok(Token::MinusMinus)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::MinusEqual)
                 } else if self.peek() == Some('>') {
                     self.advance();
                     Ok(Token::Arrow)
@@ -274,8 +284,20 @@ impl Lexer {
                 if self.peek() == Some('*') {
                     self.advance();
                     Ok(Token::StarStar)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::StarEqual)
                 } else {
                     Ok(Token::Star)
+                }
+            }
+            '/' => {
+                self.advance();
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::SlashEqual)
+                } else {
+                    Ok(Token::Slash)
                 }
             }
             '%' => { self.advance(); Ok(Token::Percent) }
@@ -296,10 +318,6 @@ impl Lexer {
                 } else {
                     Err(self.error("Expected '|' after '|'"))
                 }
-            }
-            '/' => {
-                self.advance();
-                Ok(Token::Slash)
             }
             '"' => self.read_string(),
             '>' => {

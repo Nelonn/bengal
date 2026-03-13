@@ -798,6 +798,108 @@ impl Compiler {
                 }
             }
 
+            Stmt::AugAssign { target, op, expr, .. } => {
+                match target {
+                    crate::parser::AugAssignTarget::Variable(name) => {
+                        // Compile: name += expr  =>  name = name + expr
+                        // Get the register for the variable (must already exist)
+                        let r_var = self.current_ctx.get_local_reg(name);
+
+                        // Compile the right-hand side expression
+                        let r_expr = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+
+                        // Perform the operation: r_var = r_var op r_expr
+                        // We need a temp register for the result
+                        let r_temp = self.current_ctx.allocate_reg();
+                        match op {
+                            crate::parser::AugOp::Add => {
+                                bytecode.push(Opcode::Add as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Subtract => {
+                                bytecode.push(Opcode::Subtract as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Multiply => {
+                                bytecode.push(Opcode::Multiply as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Divide => {
+                                bytecode.push(Opcode::Divide as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                        }
+
+                        // Store result back to variable
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(r_var as u8);
+                        bytecode.push(r_temp as u8);
+                    }
+                    crate::parser::AugAssignTarget::Field { object, name } => {
+                        // Compile: obj.field += expr  =>  obj.field = obj.field + expr
+                        // First, compile the object expression
+                        let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+
+                        // Get the current field value into a register
+                        let r_field = self.current_ctx.allocate_reg();
+                        let field_name_idx = strings.len();
+                        strings.push(name.clone());
+                        bytecode.push(Opcode::GetProperty as u8);
+                        bytecode.push(r_field as u8);
+                        bytecode.push(r_obj as u8);
+                        bytecode.push(field_name_idx as u8);
+
+                        // Compile the right-hand side expression
+                        let r_expr = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+
+                        // Perform the operation
+                        let r_result = self.current_ctx.allocate_reg();
+                        match op {
+                            crate::parser::AugOp::Add => {
+                                bytecode.push(Opcode::Add as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Subtract => {
+                                bytecode.push(Opcode::Subtract as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Multiply => {
+                                bytecode.push(Opcode::Multiply as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Divide => {
+                                bytecode.push(Opcode::Divide as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                        }
+
+                        // Store result back to field
+                        let field_name_idx = strings.len();
+                        strings.push(name.clone());
+                        bytecode.push(Opcode::SetProperty as u8);
+                        bytecode.push(r_obj as u8);
+                        bytecode.push(field_name_idx as u8);
+                        bytecode.push(r_result as u8);
+                    }
+                }
+            }
+
             Stmt::Return(expr) => {
                 let r = if let Some(e) = expr {
                     self.compile_expr(e, bytecode, strings, classes, type_context)?

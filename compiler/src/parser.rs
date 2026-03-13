@@ -37,6 +37,7 @@ pub enum Stmt {
     TypeAlias(TypeAliasDef),
     Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool },
     Assign { name: String, expr: Expr, span: Span },
+    AugAssign { target: AugAssignTarget, op: AugOp, expr: Expr, span: Span },
     Return(Option<Expr>),
     Expr(Expr),
     If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
@@ -46,6 +47,12 @@ pub enum Stmt {
     Continue,
     TryCatch { try_block: Block, catch_var: String, catch_block: Block },
     Throw(Expr),
+}
+
+#[derive(Debug, Clone)]
+pub enum AugAssignTarget {
+    Variable(String),
+    Field { object: Expr, name: String },
 }
 
 pub type Block = Vec<Stmt>;
@@ -205,6 +212,14 @@ pub enum BinaryOp {
     GreaterEqual,
     Less,
     LessEqual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AugOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -419,6 +434,50 @@ impl Parser {
                     Stmt::Expr(Expr::Set { object, name, value: Box::new(value), span })
                 } else {
                     return self.error_generic("Left side of assignment must be a variable or property access");
+                }
+            } else if self.match_token(&Token::PlusEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Add, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Add, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of += must be a variable or field access");
+                }
+            } else if self.match_token(&Token::MinusEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Subtract, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Subtract, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of -= must be a variable or field access");
+                }
+            } else if self.match_token(&Token::StarEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Multiply, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Multiply, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of *= must be a variable or field access");
+                }
+            } else if self.match_token(&Token::SlashEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Divide, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Divide, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of /= must be a variable or field access");
                 }
             } else {
                 Stmt::Expr(expr)
