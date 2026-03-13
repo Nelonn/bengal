@@ -1,0 +1,328 @@
+#!/usr/bin/env bengal
+
+// Stress test for strings
+// Tests string manipulation, contains, length, and edge cases
+
+import std.test
+import std.io
+
+// ============== Basic String Operations ==============
+
+test("String creation", () {
+    let s = "Hello, World!"
+    assertNotNull(s)
+    assertEquals(13, s.length())
+})
+
+test("Empty string", () {
+    let s = ""
+    assertEquals(0, s.length())
+})
+
+test("String with spaces", () {
+    let s = "Hello World Test"
+    assertEquals(16, s.length())
+    assertStringContains(s, " ")
+})
+
+// ============== String Length ==============
+
+test("String length single char", () {
+    let s = "a"
+    assertEquals(1, s.length())
+})
+
+test("String length long string", () {
+    let s = "This is a longer string with many characters"
+    assertTrue(s.length() > 30)
+})
+
+test("String length with special chars", () {
+    let s = "Hello\nWorld\t!"
+    assertTrue(s.length() > 0)
+})
+
+// ============== String Contains ==============
+
+test("String contains substring", () {
+    let text = "Hello, World!"
+    assertStringContains(text, "World")
+    assertStringContains(text, "Hello")
+    assertStringContains(text, ", ")
+})
+
+test("String contains full string", () {
+    let text = "Hello"
+    assertStringContains(text, "Hello")
+})
+
+test("String does not contain", () {
+    let text = "Hello, World!"
+    let found = false
+    let i = 0
+    while (i < text.length()) {
+        if (text[i] == 'X') {
+            found = true
+            break
+        }
+        i = i + 1
+    }
+    assertFalse(found)
+})
+
+// ============== String StartsWith / EndsWith ==============
+
+test("String starts with", () {
+    let text = "Hello, World!"
+    assertStartsWith(text, "Hello")
+    assertStartsWith(text, "H")
+    assertStartsWith(text, "He")
+})
+
+test("String ends with", () {
+    let text = "Hello, World!"
+    assertEndsWith(text, "World!")
+    assertEndsWith(text, "!")
+    assertEndsWith(text, "d!")
+})
+
+test("String starts and ends same char", () {
+    let text = "abcda"
+    assertStartsWith(text, "a")
+    assertEndsWith(text, "a")
+})
+
+// ============== String Indexing ==============
+
+test("String character access", () {
+    let s = "Hello"
+    assertEquals('H', s[0])
+    assertEquals('e', s[1])
+    assertEquals('l', s[2])
+    assertEquals('l', s[3])
+    assertEquals('o', s[4])
+})
+
+test("String first and last char", () {
+    let s = "abcdef"
+    assertEquals('a', s[0])
+    assertEquals('f', s[5])
+})
+
+test("String middle char", () {
+    let s = "abcde"
+    assertEquals('c', s[2])
+})
+
+// ============== String Concatenation ==============
+
+test("String concatenation", () {
+    let s1 = "Hello"
+    let s2 = "World"
+    let result = s1 + " " + s2
+    assertEquals("Hello World", result)
+})
+
+test("String concatenation empty", () {
+    let s1 = ""
+    let s2 = "Hello"
+    let result = s1 + s2
+    assertEquals("Hello", result)
+})
+
+test("String concatenation multiple", () {
+    let result = "A" + "B" + "C" + "D"
+    assertEquals("ABCD", result)
+})
+
+// ============== String Edge Cases ==============
+
+test("String with only spaces", () {
+    let s = "   "
+    assertEquals(3, s.length())
+    assertStringContains(s, " ")
+})
+
+test("String with numbers", () {
+    let s = "12345"
+    assertEquals(5, s.length())
+    assertStringContains(s, "123")
+})
+
+test("String with mixed content", () {
+    let s = "Test123ABC"
+    assertEquals(10, s.length())
+    assertStartsWith(s, "Test")
+    assertEndsWith(s, "ABC")
+})
+
+test("String case sensitivity", () {
+    let s1 = "Hello"
+    let s2 = "hello"
+    assertTrue(s1 != s2)
+})
+
+test("String identical comparison", () {
+    let s1 = "Hello"
+    let s2 = "Hello"
+    assertEquals(s1, s2)
+})
+
+// ============== String Stress Tests ==============
+
+test("Stress: Long string creation", () {
+    let s = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    assertEquals(64, s.length())
+})
+
+test("Stress: String repeated pattern", () {
+    let s = "ABABABABABABABABABABABABABABABAB"
+    assertEquals(32, s.length())
+    assertStringContains(s, "AB")
+    assertStringContains(s, "BA")
+})
+
+test("Stress: String many concatenations", () {
+    let result = ""
+    result = result + "A"
+    result = result + "B"
+    result = result + "C"
+    result = result + "D"
+    result = result + "E"
+    result = result + "F"
+    result = result + "G"
+    result = result + "H"
+    assertEquals("ABCDEFGH", result)
+})
+
+test("Stress: String character iteration", () {
+    let s = "Hello World"
+    let count = 0
+    for (i in 0..s.length()) {
+        count = count + 1
+    }
+    assertEquals(11, count)
+})
+
+test("Stress: String character counting", () {
+    let s = "aaaabbbbcccc"
+    let aCount = 0
+    let bCount = 0
+    let cCount = 0
+    for (i in 0..s.length()) {
+        if (s[i] == 'a') { aCount = aCount + 1 }
+        if (s[i] == 'b') { bCount = bCount + 1 }
+        if (s[i] == 'c') { cCount = cCount + 1 }
+    }
+    assertEquals(4, aCount)
+    assertEquals(4, bCount)
+    assertEquals(4, cCount)
+})
+
+// ============== String in Arrays ==============
+
+test("Array of strings", () {
+    let arr = ["apple", "banana", "cherry", "date"]
+    assertEquals(4, arr.length())
+    assertEquals("apple", arr[0])
+    assertEquals("banana", arr[1])
+})
+
+test("Array of strings operations", () {
+    let arr = ["Hello", "World", "Test"]
+    for (i in 0..arr.length()) {
+        assertTrue(arr[i].length() > 0)
+    }
+})
+
+test("String array contains check", () {
+    let arr = ["foo", "bar", "baz"]
+    assertContains(arr, "foo")
+    assertContains(arr, "bar")
+    assertNotContains(arr, "qux")
+})
+
+// ============== String with Control Flow ==============
+
+test("String in condition", () {
+    let s = "test"
+    if (s.length() == 4) {
+        assertTrue(true)
+    } else {
+        fail()
+    }
+})
+
+test("String while loop processing", () {
+    let s = "Hello"
+    let i = 0
+    let count = 0
+    while (i < s.length()) {
+        count = count + 1
+        i = i + 1
+    }
+    assertEquals(5, count)
+})
+
+// ============== String Boundary Tests ==============
+
+test("String single character", () {
+    let s = "X"
+    assertEquals(1, s.length())
+    assertEquals('X', s[0])
+})
+
+test("String two characters", () {
+    let s = "XY"
+    assertEquals(2, s.length())
+    assertEquals('X', s[0])
+    assertEquals('Y', s[1])
+})
+
+test("String boundary first last", () {
+    let s = "abcdef"
+    assertEquals('a', s[0])
+    assertEquals('f', s[5])
+})
+
+// ============== String Comparison ==============
+
+test("String equality", () {
+    let s1 = "test"
+    let s2 = "test"
+    let s3 = "TEST"
+    assertTrue(s1 == s2)
+    assertTrue(s1 != s3)
+})
+
+test("String inequality", () {
+    let s1 = "hello"
+    let s2 = "world"
+    assertTrue(s1 != s2)
+})
+
+// ============== String Multiline ==============
+
+test("String multiline", () {
+    let s = "Line 1\nLine 2\nLine 3"
+    assertTrue(s.length() > 10)
+    assertStringContains(s, "Line 1")
+    assertStringContains(s, "Line 2")
+    assertStringContains(s, "Line 3")
+})
+
+// ============== Print Summary ==============
+
+println("")
+test.summary()
+
+// ============== Exit Status ==============
+
+let allPassed = test.runAll()
+if (allPassed) {
+    println("All string tests passed!")
+}
+if (!allPassed) {
+    println("Some string tests failed!")
+    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
+}

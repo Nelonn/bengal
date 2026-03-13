@@ -1,0 +1,416 @@
+#!/usr/bin/env bengal
+
+// Stress test for exception handling
+// Tests nested try-catch, multiple exceptions, and error propagation
+
+import std.test
+import std.io
+
+// ============== Basic Try-Catch Tests ==============
+
+test("Try-catch with exception", () {
+    let caught = false
+    try {
+        throw("Test exception")
+    } catch (e) {
+        caught = true
+        assertNotNull(e)
+    }
+    assertTrue(caught)
+})
+
+test("Try-catch no exception", () {
+    let caught = false
+    try {
+        let x = 1 + 1
+        assertEquals(2, x)
+    } catch (e) {
+        caught = true
+    }
+    assertFalse(caught)
+})
+
+test("Try-catch with message", () {
+    let message = ""
+    try {
+        throw("Error message test")
+    } catch (e) {
+        message = str(e)
+    }
+    assertStringContains(message, "Error message test")
+})
+
+// ============== Nested Try-Catch ==============
+
+test("Nested try-catch inner", () {
+    let innerCaught = false
+    let outerCaught = false
+    try {
+        try {
+            throw("Inner exception")
+        } catch (e) {
+            innerCaught = true
+        }
+    } catch (e) {
+        outerCaught = true
+    }
+    assertTrue(innerCaught)
+    assertFalse(outerCaught)  // Outer should not catch handled exception
+})
+
+test("Nested try-catch outer", () {
+    let outerCaught = false
+    try {
+        try {
+            throw("Outer exception")
+        } catch (e) {
+            // Re-throw
+            throw(e)
+        }
+    } catch (e) {
+        outerCaught = true
+        assertStringContains(str(e), "Outer exception")
+    }
+    assertTrue(outerCaught)
+})
+
+test("Nested try-catch multiple levels", () {
+    let level1 = false
+    let level2 = false
+    let level3 = false
+    try {
+        level1 = true
+        try {
+            level2 = true
+            try {
+                level3 = true
+                throw("Deep exception")
+            } catch (e) {
+                // Handle at deepest level
+            }
+        } catch (e) {
+            // Should not reach here
+            fail()
+        }
+    } catch (e) {
+        // Should not reach here
+        fail()
+    }
+    assertTrue(level1)
+    assertTrue(level2)
+    assertTrue(level3)
+})
+
+// ============== Exception Propagation ==============
+
+test("Exception propagates to outer catch", () {
+    let caught = false
+    try {
+        try {
+            throw("Propagating exception")
+        } catch (e) {
+            // Don't handle, re-throw
+            throw(e)
+        }
+    } catch (e) {
+        caught = true
+    }
+    assertTrue(caught)
+})
+
+test("Exception with nested try no inner catch", () {
+    let outerCaught = false
+    try {
+        try {
+            throw("Direct propagate")
+        } catch (e) {
+            throw(e)
+        }
+    } catch (e) {
+        outerCaught = true
+    }
+    assertTrue(outerCaught)
+})
+
+// ============== Multiple Exception Throws ==============
+
+test("Multiple exceptions in sequence", () {
+    let count = 0
+    try {
+        throw("First")
+    } catch (e) {
+        count = count + 1
+    }
+    try {
+        throw("Second")
+    } catch (e) {
+        count = count + 1
+    }
+    try {
+        throw("Third")
+    } catch (e) {
+        count = count + 1
+    }
+    assertEquals(3, count)
+})
+
+test("Multiple try blocks", () {
+    let success = 0
+    let failures = 0
+    try {
+        let x = 1
+        assertEquals(1, x)
+        success = success + 1
+    } catch (e) {
+        failures = failures + 1
+    }
+    try {
+        throw("Expected")
+    } catch (e) {
+        failures = failures + 1
+    }
+    try {
+        let y = 2
+        assertEquals(2, y)
+        success = success + 1
+    } catch (e) {
+        failures = failures + 1
+    }
+    assertEquals(2, success)
+    assertEquals(2, failures)
+})
+
+// ============== Exception in Different Contexts ==============
+
+test("Exception in function context", () {
+    let caught = false
+    try {
+        let x = 1
+        if (x == 1) {
+            throw("Condition throw")
+        }
+    } catch (e) {
+        caught = true
+    }
+    assertTrue(caught)
+})
+
+test("Exception in loop", () {
+    let count = 0
+    let caught = false
+    for (i in 1..4) {
+        try {
+            if (i == 2) {
+                throw("Loop exception")
+            }
+            count = count + 1
+        } catch (e) {
+            caught = true
+        }
+    }
+    // Should have counted 1, then exception on 2, then 3 and 4
+    assertTrue(count >= 1)
+    assertTrue(caught)
+})
+
+// ============== Exception with assertThrows ==============
+
+test("Assert throws basic", () {
+    assertThrows(() {
+        throw("Expected throw")
+    })
+})
+
+test("Assert throws in try block", () {
+    let caught = false
+    try {
+        assertThrows(() {
+            throw("Test")
+        })
+        caught = true
+    } catch (e) {
+        // Should not reach here if assertThrows works
+    }
+    assertTrue(caught)
+})
+
+// ============== Complex Exception Scenarios ==============
+
+test("Exception with state cleanup", () {
+    let resourceOpened = false
+    let resourceClosed = false
+    try {
+        resourceOpened = true
+        throw("Error during operation")
+    } catch (e) {
+        resourceClosed = true
+    }
+    assertTrue(resourceOpened)
+    assertTrue(resourceClosed)
+})
+
+test("Exception with multiple catch points", () {
+    let firstCatch = false
+    let secondCatch = false
+    try {
+        try {
+            throw("First level")
+        } catch (e) {
+            firstCatch = true
+            throw(e)
+        }
+    } catch (e) {
+        secondCatch = true
+    }
+    assertTrue(firstCatch)
+    assertTrue(secondCatch)
+})
+
+test("Exception after successful operation", () {
+    let success = false
+    let failure = false
+    let x = 0
+    try {
+        x = 10
+        success = true
+    } catch (e) {
+        fail()
+    }
+    try {
+        if (x == 10) {
+            throw("Post-success throw")
+        }
+    } catch (e) {
+        failure = true
+    }
+    assertTrue(success)
+    assertTrue(failure)
+    assertEquals(10, x)
+})
+
+// ============== Exception Stress Tests ==============
+
+test("Stress: Many try-catch blocks", () {
+    let caught = 0
+    let i = 0
+    while (i < 10) {
+        try {
+            throw("Exception " + str(i))
+        } catch (e) {
+            caught = caught + 1
+        }
+        i = i + 1
+    }
+    assertEquals(10, caught)
+})
+
+test("Stress: Deep nesting", () {
+    let caught = false
+    try {
+        try {
+            try {
+                try {
+                    try {
+                        throw("Deep nested exception")
+                    } catch (e) { throw(e) }
+                } catch (e) { throw(e) }
+            } catch (e) { throw(e) }
+        } catch (e) { throw(e) }
+    } catch (e) {
+        caught = true
+        assertStringContains(str(e), "Deep nested")
+    }
+    assertTrue(caught)
+})
+
+test("Stress: Exception in nested loop", () {
+    let exceptionCount = 0
+    try {
+        for (i in 1..5) {
+            for (j in 1..5) {
+                if (i == 3 && j == 3) {
+                    throw("Nested loop exception")
+                }
+            }
+        }
+    } catch (e) {
+        exceptionCount = exceptionCount + 1
+    }
+    assertEquals(1, exceptionCount)
+})
+
+// ============== Exception with Classes ==============
+
+class ExceptionalClass {
+    value: int = 0
+
+    fn riskyOperation(shouldThrow: bool) {
+        if (shouldThrow) {
+            throw("Risky operation failed")
+        }
+        self.value = 42
+    }
+}
+
+test("Exception from class method", () {
+    let obj = ExceptionalClass()
+    let caught = false
+    try {
+        obj.riskyOperation(true)
+    } catch (e) {
+        caught = true
+    }
+    assertTrue(caught)
+    assertEquals(0, obj.value)  // Should not have been set
+})
+
+test("Class method success after exception", () {
+    let obj = ExceptionalClass()
+    try {
+        obj.riskyOperation(true)
+    } catch (e) {
+        // Handle exception
+    }
+    obj.riskyOperation(false)
+    assertEquals(42, obj.value)
+})
+
+// ============== Exception Edge Cases ==============
+
+test("Exception empty message", () {
+    let caught = false
+    try {
+        throw("")
+    } catch (e) {
+        caught = true
+    }
+    assertTrue(caught)
+})
+
+test("Exception with number conversion", () {
+    let caught = false
+    try {
+        throw("Error code: 42")
+    } catch (e) {
+        caught = true
+        let msg = str(e)
+        assertStringContains(msg, "42")
+    }
+    assertTrue(caught)
+})
+
+// ============== Print Summary ==============
+
+println("")
+test.summary()
+
+// ============== Exit Status ==============
+
+let allPassed = test.runAll()
+if (allPassed) {
+    println("All exception tests passed!")
+}
+if (!allPassed) {
+    println("Some exception tests failed!")
+    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
+}

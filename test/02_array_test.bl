@@ -1,0 +1,331 @@
+#!/usr/bin/env bengal
+
+// Stress test for arrays
+// Tests array operations, edge cases, and large arrays
+
+import std.test
+import std.io
+
+// ============== Basic Array Operations ==============
+
+test("Array creation and access", () {
+    let arr = [1, 2, 3, 4, 5]
+    assertEquals(5, arr.length())
+    assertEquals(1, arr[0])
+    assertEquals(2, arr[1])
+    assertEquals(3, arr[2])
+    assertEquals(4, arr[3])
+    assertEquals(5, arr[4])
+})
+
+test("Array with single element", () {
+    let arr = [42]
+    assertEquals(1, arr.length())
+    assertEquals(42, arr[0])
+})
+
+test("Empty array", () {
+    let arr: int[] = []
+    assertEquals(0, arr.length())
+})
+
+test("Array with mixed types (any[])", () {
+    let arr: any[] = [1, "hello", 3.14, true]
+    assertEquals(4, arr.length())
+    assertEquals(1, arr[0])
+    assertEquals("hello", arr[1])
+    assertTrue(arr.length() > 0)
+})
+
+// ============== Array Modification ==============
+
+test("Array element modification", () {
+    let arr = [1, 2, 3]
+    arr[0] = 10
+    arr[1] = 20
+    arr[2] = 30
+    assertEquals(10, arr[0])
+    assertEquals(20, arr[1])
+    assertEquals(30, arr[2])
+})
+
+// ============== Array Iteration ==============
+
+test("Array iteration with for loop", () {
+    let arr = [1, 2, 3, 4, 5]
+    let sum = 0
+    for (i in 0..arr.length()) {
+        sum = sum + arr[i]
+    }
+    assertEquals(15, sum)
+})
+
+test("Array iteration sum calculation", () {
+    let numbers = [10, 20, 30, 40, 50]
+    let total = 0
+    for (n in 0..numbers.length()) {
+        total = total + numbers[n]
+    }
+    assertEquals(150, total)
+})
+
+// ============== Array Edge Cases ==============
+
+test("Array with negative values", () {
+    let arr = [-1, -2, -3, -4, -5]
+    assertEquals(-1, arr[0])
+    assertEquals(-5, arr[4])
+})
+
+test("Array with zero values", () {
+    let arr = [0, 0, 0, 0, 0]
+    assertEquals(0, arr[0])
+    assertEquals(0, arr[4])
+    assertEquals(5, arr.length())
+})
+
+test("Array with large values", () {
+    let arr = [1000000, 9999999, 100000000]
+    assertEquals(1000000, arr[0])
+    assertEquals(9999999, arr[1])
+    assertEquals(100000000, arr[2])
+})
+
+// ============== String Arrays ==============
+
+test("String array", () {
+    let arr = ["apple", "banana", "cherry"]
+    assertEquals(3, arr.length())
+    assertEquals("apple", arr[0])
+    assertEquals("banana", arr[1])
+    assertEquals("cherry", arr[2])
+})
+
+test("String array operations", () {
+    let fruits = ["apple", "banana", "cherry"]
+    fruits[0] = "apricot"
+    assertEquals("apricot", fruits[0])
+    assertStringContains(fruits[1], "ban")
+})
+
+// ============== Float Arrays ==============
+
+test("Float array", () {
+    let arr = [1.5, 2.5, 3.5, 4.5]
+    assertEquals(4, arr.length())
+    assertClose(1.5, arr[0], 0.001)
+    assertClose(2.5, arr[1], 0.001)
+    assertClose(3.5, arr[2], 0.001)
+    assertClose(4.5, arr[3], 0.001)
+})
+
+// ============== Boolean Arrays ==============
+
+test("Boolean array", () {
+    let arr = [true, false, true, false]
+    assertEquals(4, arr.length())
+    assertTrue(arr[0])
+    assertFalse(arr[1])
+    assertTrue(arr[2])
+    assertFalse(arr[3])
+})
+
+// ============== Array of Arrays ==============
+
+test("Array of arrays", () {
+    let matrix: int[][] = [[1, 2], [3, 4], [5, 6]]
+    assertEquals(3, matrix.length())
+    assertEquals(2, matrix[0].length())
+    assertEquals(1, matrix[0][0])
+    assertEquals(2, matrix[0][1])
+    assertEquals(3, matrix[1][0])
+    assertEquals(4, matrix[1][1])
+    assertEquals(5, matrix[2][0])
+    assertEquals(6, matrix[2][1])
+})
+
+test("Jagged array", () {
+    let jagged: int[][] = [[1, 2, 3], [4, 5], [6]]
+    assertEquals(3, jagged.length())
+    assertEquals(3, jagged[0].length())
+    assertEquals(2, jagged[1].length())
+    assertEquals(1, jagged[2].length())
+    assertEquals(6, jagged[2][0])
+})
+
+// ============== Large Array Stress Tests ==============
+
+test("Stress: Large array creation", () {
+    let arr: int[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assertEquals(50, arr.length())
+})
+
+test("Stress: Array accumulation", () {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+               11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    let sum = 0
+    for (i in 0..arr.length()) {
+        sum = sum + arr[i]
+    }
+    assertEquals(210, sum)
+})
+
+test("Stress: Array with many elements access", () {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+               11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+               21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    assertEquals(1, arr[0])
+    assertEquals(15, arr[14])
+    assertEquals(20, arr[19])
+    assertEquals(30, arr[29])
+})
+
+// ============== Array in Loops ==============
+
+test("Array modification in loop", () {
+    let arr = [0, 0, 0, 0, 0]
+    for (i in 0..arr.length()) {
+        arr[i] = i * 2
+    }
+    assertEquals(0, arr[0])
+    assertEquals(2, arr[1])
+    assertEquals(4, arr[2])
+    assertEquals(6, arr[3])
+    assertEquals(8, arr[4])
+})
+
+test("Array cumulative sum", () {
+    let arr = [1, 2, 3, 4, 5]
+    let running = 0
+    for (i in 0..arr.length()) {
+        running = running + arr[i]
+        arr[i] = running
+    }
+    assertEquals(1, arr[0])
+    assertEquals(3, arr[1])
+    assertEquals(6, arr[2])
+    assertEquals(10, arr[3])
+    assertEquals(15, arr[4])
+})
+
+// ============== Array with Classes ==============
+
+class Box {
+    value: int = 0
+}
+
+test("Array of class instances", () {
+    let boxes: Box[] = [Box(), Box(), Box()]
+    assertEquals(3, boxes.length())
+    boxes[0].value = 10
+    boxes[1].value = 20
+    boxes[2].value = 30
+    assertEquals(10, boxes[0].value)
+    assertEquals(20, boxes[1].value)
+    assertEquals(30, boxes[2].value)
+})
+
+// ============== Array Search Operations ==============
+
+test("Array linear search", () {
+    let arr = [5, 10, 15, 20, 25]
+    let target = 15
+    let found = false
+    let index = -1
+    for (i in 0..arr.length()) {
+        if (arr[i] == target) {
+            found = true
+            index = i
+            break
+        }
+    }
+    assertTrue(found)
+    assertEquals(2, index)
+})
+
+test("Array find minimum", () {
+    let arr = [42, 17, 89, 3, 56, 21]
+    let min = arr[0]
+    for (i in 1..arr.length()) {
+        if (arr[i] < min) {
+            min = arr[i]
+        }
+    }
+    assertEquals(3, min)
+})
+
+test("Array find maximum", () {
+    let arr = [42, 17, 89, 3, 56, 21]
+    let max = arr[0]
+    for (i in 1..arr.length()) {
+        if (arr[i] > max) {
+            max = arr[i]
+        }
+    }
+    assertEquals(89, max)
+})
+
+// ============== Array Reversal ==============
+
+test("Array reversal", () {
+    let arr = [1, 2, 3, 4, 5]
+    let temp = arr[0]
+    arr[0] = arr[4]
+    arr[4] = temp
+    temp = arr[1]
+    arr[1] = arr[3]
+    arr[3] = temp
+    assertEquals(5, arr[0])
+    assertEquals(4, arr[1])
+    assertEquals(3, arr[2])
+    assertEquals(2, arr[3])
+    assertEquals(1, arr[4])
+})
+
+// ============== Array Contains ==============
+
+test("Array contains existing element", () {
+    let arr = [1, 2, 3, 4, 5]
+    assertContains(arr, 3)
+    assertContains(arr, 1)
+    assertContains(arr, 5)
+})
+
+test("Array not contains element", () {
+    let arr = [1, 2, 3, 4, 5]
+    assertNotContains(arr, 10)
+    assertNotContains(arr, 0)
+    assertNotContains(arr, 100)
+})
+
+// ============== Array Length Assertions ==============
+
+test("Array length assertion", () {
+    let arr = [1, 2, 3, 4, 5]
+    assertLength(arr, 5)
+})
+
+test("Empty array length", () {
+    let arr: int[] = []
+    assertLength(arr, 0)
+})
+
+// ============== Print Summary ==============
+
+println("")
+test.summary()
+
+// ============== Exit Status ==============
+
+let allPassed = test.runAll()
+if (allPassed) {
+    println("All array tests passed!")
+}
+if (!allPassed) {
+    println("Some array tests failed!")
+    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
+}
