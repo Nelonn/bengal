@@ -2,8 +2,6 @@ module std.test
 
 import std.io
 
-// ============== Implementation ==============
-
 let TESTS: any[] = []
 let RESULTS: TestResult[] = []
 
@@ -39,7 +37,7 @@ fn executeTest(name: str, testFn: any): TestResult {
     return result
 }
 
-fn assertEqualsMsg(expected: any, actual: any, message: str) {
+fn assertEqualsMsg(expected: any, actual: any, message: str?) {
     if (expected != actual) {
         let msg = orMsg(message, "Expected " + str(expected) + ", got " + str(actual))
         addFailure(msg)
@@ -47,7 +45,7 @@ fn assertEqualsMsg(expected: any, actual: any, message: str) {
     }
 }
 
-fn assertTrueMsg(condition: bool, message: str) {
+fn assertTrueMsg(condition: bool, message: str?) {
     if (!condition) {
         let msg = orMsg(message, "Expected true, got false")
         addFailure(msg)
@@ -55,7 +53,7 @@ fn assertTrueMsg(condition: bool, message: str) {
     }
 }
 
-fn assertFalseMsg(condition: bool, message: str) {
+fn assertFalseMsg(condition: bool, message: str?) {
     if (condition) {
         let msg = orMsg(message, "Expected false, got true")
         addFailure(msg)
@@ -63,7 +61,7 @@ fn assertFalseMsg(condition: bool, message: str) {
     }
 }
 
-fn assertNullMsg(value: any, message: str) {
+fn assertNullMsg(value: any, message: str?) {
     if (value != null) {
         let msg = orMsg(message, "Expected null, got " + str(value))
         addFailure(msg)
@@ -71,7 +69,7 @@ fn assertNullMsg(value: any, message: str) {
     }
 }
 
-fn assertNotNullMsg(value: any, message: str) {
+fn assertNotNullMsg(value: any, message: str?) {
     if (value == null) {
         let msg = orMsg(message, "Expected non-null value")
         addFailure(msg)
@@ -79,74 +77,7 @@ fn assertNotNullMsg(value: any, message: str) {
     }
 }
 
-fn assertContainsMsg(array: any[], element: any, message: str) {
-    let found = false
-    let i = 0
-    while (i < array.length()) {
-        if (array[i] == element) {
-            found = true
-            break
-        }
-        i = i + 1
-    }
-    if (!found) {
-        let msg = orMsg(message, "Expected array to contain " + str(element))
-        addFailure(msg)
-        throw(msg)
-    }
-}
-
-fn assertNotContainsMsg(array: any[], element: any, message: str) {
-    let found = false
-    let i = 0
-    while (i < array.length()) {
-        if (array[i] == element) {
-            found = true
-            break
-        }
-        i = i + 1
-    }
-    if (found) {
-        let msg = orMsg(message, "Expected array to not contain " + str(element))
-        addFailure(msg)
-        throw(msg)
-    }
-}
-
-fn assertLengthMsg(array: any[], expectedLength: int, message: str) {
-    let actualLength = array.length()
-    if (actualLength != expectedLength) {
-        let msg = orMsg(message, "Expected length " + str(expectedLength) + ", got " + str(actualLength))
-        addFailure(msg)
-        throw(msg)
-    }
-}
-
-fn assertStringContainsMsg(text: str, substring: str, message: str) {
-    if (!text.contains(substring)) {
-        let msg = orMsg(message, "Expected string to contain '" + substring + "'")
-        addFailure(msg)
-        throw(msg)
-    }
-}
-
-fn assertStartsWithMsg(text: str, prefix: str, message: str) {
-    if (!text.startsWith(prefix)) {
-        let msg = orMsg(message, "Expected string to start with '" + prefix + "'")
-        addFailure(msg)
-        throw(msg)
-    }
-}
-
-fn assertEndsWithMsg(text: str, suffix: str, message: str) {
-    if (!text.endsWith(suffix)) {
-        let msg = orMsg(message, "Expected string to end with '" + suffix + "'")
-        addFailure(msg)
-        throw(msg)
-    }
-}
-
-fn assertCloseMsg(expected: float, actual: float, tolerance: float, message: str) {
+fn assertCloseMsg(expected: float, actual: float, tolerance: float, message: str?) {
     let diff = expected - actual
     if (diff < 0) { diff = 0 - diff }
     if (diff > tolerance) {
@@ -156,7 +87,7 @@ fn assertCloseMsg(expected: float, actual: float, tolerance: float, message: str
     }
 }
 
-fn assertThrowsMsg(testFn: any, message: str) {
+fn assertThrowsMsg(testFn: any, message: str?) {
     try {
         testFn()
         let msg = orMsg(message, "Expected exception to be thrown")
@@ -167,7 +98,7 @@ fn assertThrowsMsg(testFn: any, message: str) {
     }
 }
 
-fn failMsg(message: str) {
+fn failMsg(message: str?) {
     let msg = orMsg(message, "Test failed")
     addFailure(msg)
     throw(msg)
@@ -178,10 +109,10 @@ fn orMsg(message: str, default: str): str {
     return default
 }
 
-native fn addFailure(message: str) {}
+native fn addFailure(message: str?) {}
 native fn recordPass() {}
 native fn setCurrentTest(name: str) {}
-native fn nativeAssertSame(expected: any, actual: any, message: str) {}
+native fn nativeAssertSame(expected: any, actual: any, message: str?) {}
 
 // ============== Public API ==============
 
@@ -215,30 +146,6 @@ fn assertNotNull(value: any) {
 
 fn assertSame(expected: any, actual: any) {
     nativeAssertSame(expected, actual, null)
-}
-
-fn assertContains(array: any[], element: any) {
-    assertContainsMsg(array, element, null)
-}
-
-fn assertNotContains(array: any[], element: any) {
-    assertNotContainsMsg(array, element, null)
-}
-
-fn assertLength(array: any[], expectedLength: int) {
-    assertLengthMsg(array, expectedLength, null)
-}
-
-fn assertStringContains(text: str, substring: str) {
-    assertStringContainsMsg(text, substring, null)
-}
-
-fn assertStartsWith(text: str, prefix: str) {
-    assertStartsWithMsg(text, prefix, null)
-}
-
-fn assertEndsWith(text: str, suffix: str) {
-    assertEndsWithMsg(text, suffix, null)
 }
 
 fn assertClose(expected: float, actual: float, tolerance: float) {
