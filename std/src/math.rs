@@ -210,3 +210,66 @@ pub fn native_math_to_degrees(args: &mut Vec<Value>) -> Result<Value, Value> {
     let radians = get_float(args, 0);
     Ok(Value::Float64(radians.to_degrees()))
 }
+
+pub fn native_math_check_overflow(args: &mut Vec<Value>) -> Result<Value, Value> {
+    if args.len() < 4 {
+        return Ok(Value::Null);
+    }
+    
+    let a = match args[0] {
+        Value::Int64(v) => v,
+        _ => return Ok(Value::Null),
+    };
+    let b = match args[1] {
+        Value::Int64(v) => v,
+        _ => return Ok(Value::Null),
+    };
+    let res = match args[2] {
+        Value::Int64(v) => v,
+        _ => return Ok(Value::Null),
+    };
+    let op = match args[3] {
+        Value::Int64(v) => v, // 0: Add, 1: Sub, 2: Mul
+        _ => return Ok(Value::Null),
+    };
+
+    let overflow = match op {
+        0 => { // Add
+            let (sum, overflow) = a.overflowing_add(b);
+            overflow || sum != res
+        }
+        1 => { // Sub
+            let (diff, overflow) = a.overflowing_sub(b);
+            overflow || diff != res
+        }
+        2 => { // Mul
+            let (prod, overflow) = a.overflowing_mul(b);
+            overflow || prod != res
+        }
+        _ => false,
+    };
+
+    if overflow {
+        return Err(Value::String("Integer overflow".to_string()));
+    }
+
+    Ok(Value::Null)
+}
+
+pub fn native_math_check_div_zero(args: &mut Vec<Value>) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    let is_zero = match args[0] {
+        Value::Int64(v) => v == 0,
+        Value::Float64(v) => v == 0.0,
+        _ => false,
+    };
+
+    if is_zero {
+        return Err(Value::String("Division by zero".to_string()));
+    }
+
+    Ok(Value::Null)
+}

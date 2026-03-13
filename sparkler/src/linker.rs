@@ -228,7 +228,7 @@ impl NativeFunctionRegistry {
 }
 
 /// Runtime linker that manages the linking between bytecode and native functions
-/// 
+///
 /// Supports:
 /// - Initial linking: Map string names to indices
 /// - Hot-swap: Update function pointers without recompilation
@@ -238,6 +238,8 @@ pub struct RuntimeLinker {
     /// The native function registry
     registry: Arc<RwLock<NativeFunctionRegistry>>,
     /// Cached bytecode patches for fast relinking
+    /// TODO: Implement relinking feature
+    #[allow(dead_code)]
     bytecode_patches: HashMap<String, Vec<PatchLocation>>,
     /// Current linked version
     linked_version: u64,
@@ -309,14 +311,14 @@ impl RuntimeLinker {
     }
 
     /// Link bytecode to native functions
-    /// 
+    ///
     /// This converts string-based native calls to indexed calls
     pub fn link_bytecode(&mut self, bytecode: &mut [u8], strings: &[String]) -> Vec<PatchLocation> {
-        use crate::vm::Opcode;
-        
+        use crate::opcodes::Opcode;
+
         let mut patches = Vec::new();
         let registry = self.registry.read().unwrap();
-        
+
         let mut i = 0;
         while i < bytecode.len() {
             let opcode = bytecode[i];

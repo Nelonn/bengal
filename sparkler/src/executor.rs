@@ -1,4 +1,5 @@
-use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult, Opcode};
+use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult};
+use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use std::sync::{Arc, RwLock};
 
@@ -83,48 +84,112 @@ impl Executor {
     fn convert_to_indexed_calls(bytecode: &mut [u8], strings: &[String], registry: &NativeFunctionRegistry) {
         let mut i = 0;
         while i < bytecode.len() {
-            let opcode = bytecode[i];
+            let opcode_byte = bytecode[i];
             
-            if opcode == Opcode::CallNative as u8 || opcode == Opcode::CallNativeAsync as u8 {
-                // Format: [CallNative, Rd, name_idx, arg_start, arg_count]
-                if i + 4 < bytecode.len() {
-                    let rd = bytecode[i + 1];
-                    let name_idx = bytecode[i + 2] as usize;
-                    let arg_start = bytecode[i + 3];
-                    let arg_count = bytecode[i + 4];
-                    
-                    if let Some(name) = strings.get(name_idx) {
-                        if let Some(func_index) = registry.get_index(name) {
-                            // Replace with CallNativeIndexed
-                            // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count]
-                            bytecode[i] = Opcode::CallNativeIndexed as u8;
-                            bytecode[i + 1] = rd;
-                            bytecode[i + 2] = (func_index & 0xFF) as u8;  // low byte
-                            bytecode[i + 3] = ((func_index >> 8) & 0xFF) as u8;  // high byte
-                            bytecode[i + 4] = arg_start;
-                            bytecode[i + 5] = arg_count;
-                            
-                            // Shift remaining bytes
-                            // We added 1 byte (6 bytes total vs 5 bytes original)
-                            // Need to insert a byte or handle differently
-                            // For simplicity, we'll use the same size by storing index in 2 bytes
-                            // Original: name_idx (1 byte), New: func_idx (2 bytes)
-                            // We need to shift everything after by 1 byte
-                            
-                            // Actually, let's keep the same instruction size for simplicity
-                            // and just use the index directly in place of name_idx
-                            // This means we can only address 256 functions with this approach
-                            // For more, we need the full 2-byte index
-                            
-                            // For now, use 1-byte index (256 functions max)
-                            bytecode[i + 2] = func_index as u8;
-                            // Keep the rest the same
+            // Get the opcode size to skip past this instruction
+            let opcode = match opcode_byte {
+                x if x == crate::opcodes::Opcode::CallNative as u8 || x == crate::opcodes::Opcode::CallNativeAsync as u8 => {
+                    // Format: [CallNative, Rd, name_idx, arg_start, arg_count] (5 bytes)
+                    if i + 4 < bytecode.len() {
+                        let rd = bytecode[i + 1];
+                        let name_idx = bytecode[i + 2] as usize;
+                        let arg_start = bytecode[i + 3];
+                        let arg_count = bytecode[i + 4];
+
+                        if let Some(name) = strings.get(name_idx) {
+                            if let Some(func_index) = registry.get_index(name) {
+                                // Replace with CallNativeIndexed
+                                // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count] (6 bytes)
+                                // Need to shift remaining bytecode by 1 byte to make room
+                                
+                                // Shift all bytes after this instruction by 1 position
+                                for j in (i + 5..bytecode.len()).rev() {
+                                    bytecode[j] = bytecode[j - 1];
+                                }
+                                
+                                // Write the new 6-byte instruction
+                                bytecode[i] = Opcode::CallNativeIndexed as u8;
+                                bytecode[i + 1] = rd;
+                                bytecode[i + 2] = (func_index & 0xFF) as u8;  // low byte
+                                bytecode[i + 3] = ((func_index >> 8) & 0xFF) as u8;  // high byte
+                                bytecode[i + 4] = arg_start;
+                                bytecode[i + 5] = arg_count;
+                                
+                                // Skip past the new instruction (6 bytes)
+                                i += 6;
+                                continue;
+                            }
                         }
                     }
+                    Some(Opcode::CallNative)
                 }
-            }
+                _ => {
+                    // Try to get the opcode from the byte value
+                    // We need to handle all possible opcode values
+                    match opcode_byte {
+                        0x00 => Some(crate::opcodes::Opcode::Nop),
+                        0x10 => Some(crate::opcodes::Opcode::LoadConst),
+                        0x11 => Some(crate::opcodes::Opcode::LoadInt),
+                        0x12 => Some(crate::opcodes::Opcode::LoadFloat),
+                        0x13 => Some(crate::opcodes::Opcode::LoadBool),
+                        0x14 => Some(crate::opcodes::Opcode::LoadNull),
+                        0x20 => Some(crate::opcodes::Opcode::Move),
+                        0x21 => Some(crate::opcodes::Opcode::LoadLocal),
+                        0x22 => Some(crate::opcodes::Opcode::StoreLocal),
+                        0x30 => Some(crate::opcodes::Opcode::GetProperty),
+                        0x31 => Some(crate::opcodes::Opcode::SetProperty),
+                        0x40 => Some(crate::opcodes::Opcode::Call),
+                        0x41 => Some(crate::opcodes::Opcode::CallNative),
+                        0x42 => Some(crate::opcodes::Opcode::Invoke),
+                        0x43 => Some(crate::opcodes::Opcode::Return),
+                        0x44 => Some(crate::opcodes::Opcode::CallAsync),
+                        0x45 => Some(crate::opcodes::Opcode::CallNativeAsync),
+                        0x46 => Some(crate::opcodes::Opcode::InvokeAsync),
+                        0x47 => Some(crate::opcodes::Opcode::Await),
+                        0x48 => Some(crate::opcodes::Opcode::Spawn),
+                        0x49 => Some(crate::opcodes::Opcode::InvokeInterface),
+                        0x4A => Some(crate::opcodes::Opcode::InvokeInterfaceAsync),
+                        0x4B => Some(crate::opcodes::Opcode::CallNativeIndexed),
+                        0x4C => Some(crate::opcodes::Opcode::CallNativeIndexedAsync),
+                        0x50 => Some(crate::opcodes::Opcode::Jump),
+                        0x51 => Some(crate::opcodes::Opcode::JumpIfTrue),
+                        0x52 => Some(crate::opcodes::Opcode::JumpIfFalse),
+                        0x60 => Some(crate::opcodes::Opcode::Equal),
+                        0x61 => Some(crate::opcodes::Opcode::NotEqual),
+                        0x62 => Some(crate::opcodes::Opcode::And),
+                        0x63 => Some(crate::opcodes::Opcode::Or),
+                        0x64 => Some(crate::opcodes::Opcode::Not),
+                        0x65 => Some(crate::opcodes::Opcode::Concat),
+                        0x66 => Some(crate::opcodes::Opcode::Greater),
+                        0x67 => Some(crate::opcodes::Opcode::Less),
+                        0x68 => Some(crate::opcodes::Opcode::Add),
+                        0x69 => Some(crate::opcodes::Opcode::Subtract),
+                        0x6A => Some(crate::opcodes::Opcode::GreaterEqual),
+                        0x6B => Some(crate::opcodes::Opcode::LessEqual),
+                        0x70 => Some(crate::opcodes::Opcode::Multiply),
+                        0x71 => Some(crate::opcodes::Opcode::Divide),
+                        0x73 => Some(crate::opcodes::Opcode::Line),
+                        0x74 => Some(crate::opcodes::Opcode::Convert),
+                        0x75 => Some(crate::opcodes::Opcode::Modulo),
+                        0x76 => Some(crate::opcodes::Opcode::Array),
+                        0x77 => Some(crate::opcodes::Opcode::Index),
+                        0x80 => Some(crate::opcodes::Opcode::TryStart),
+                        0x81 => Some(crate::opcodes::Opcode::TryEnd),
+                        0x82 => Some(crate::opcodes::Opcode::Throw),
+                        0x90 => Some(crate::opcodes::Opcode::Breakpoint),
+                        0xFF => Some(crate::opcodes::Opcode::Halt),
+                        _ => None,
+                    }
+                }
+            };
             
-            i += 1;
+            // Skip past this instruction based on its size
+            if let Some(op) = opcode {
+                i += op.size();
+            } else {
+                // Unknown opcode, skip 1 byte
+                i += 1;
+            }
         }
     }
 

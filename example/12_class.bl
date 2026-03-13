@@ -3,21 +3,24 @@ import std.io
 class SomeObject {
   some_int: int = 10
   some_float: float = 5.0
-  some_string: str = "Default string"
+  some_string: str
 
   private some_private: bool = false
 
+  constructor(name: str) {
+    self.some_string = name
+  }
+
   fn someMethod(): str? {
-    if (!some_private) {
-      some_private = true
+    if (!self.some_private) {
+      self.some_private = true
       return null
     }
-    self.some_undefined = true
-    return some_string
+    return self.some_string
   }
 }
 
-let some_object = SomeObject()
+let some_object = SomeObject("John")
 
 println("Call 1: ${some_object.someMethod()}")
 println("Call 2: ${some_object.someMethod()}")

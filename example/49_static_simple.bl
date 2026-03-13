@@ -1,0 +1,22 @@
+import std.io
+
+class Counter {
+    static count: int = 0
+    
+    static fn getCount(): int {
+        return Counter.count
+    }
+    
+    static fn increment() {
+        Counter.count = Counter.count + 1
+    }
+}
+
+// Test static method call
+Counter.increment()
+Counter.increment()
+Counter.increment()
+println("Count after 3 increments: ${Counter.getCount()}")
+
+Counter.count = 10
+println("Count after setting to 10: ${Counter.getCount()}")

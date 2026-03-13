@@ -30,6 +30,8 @@ pub enum Token {
     Break,
     Continue,
     Constructor,
+    Static,
+    As,
 
     TypeInt,
     TypeFloat,
@@ -53,12 +55,20 @@ pub enum Token {
     Question,
     Range,
 
+    DoubleAnd,
+    DoubleOr,
+
     Plus,
     PlusPlus,
+    PlusEqual,
     Minus,
     MinusMinus,
+    MinusEqual,
     Star,
+    StarStar,
+    StarEqual,
     Slash,
+    SlashEqual,
     Percent,
 
     Greater,
@@ -247,6 +257,9 @@ impl Lexer {
                 if self.peek() == Some('+') {
                     self.advance();
                     Ok(Token::PlusPlus)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::PlusEqual)
                 } else {
                     Ok(Token::Plus)
                 }
@@ -256,6 +269,9 @@ impl Lexer {
                 if self.peek() == Some('-') {
                     self.advance();
                     Ok(Token::MinusMinus)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::MinusEqual)
                 } else if self.peek() == Some('>') {
                     self.advance();
                     Ok(Token::Arrow)
@@ -263,11 +279,45 @@ impl Lexer {
                     Ok(Token::Minus)
                 }
             }
-            '*' => { self.advance(); Ok(Token::Star) }
-            '%' => { self.advance(); Ok(Token::Percent) }
+            '*' => {
+                self.advance();
+                if self.peek() == Some('*') {
+                    self.advance();
+                    Ok(Token::StarStar)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::StarEqual)
+                } else {
+                    Ok(Token::Star)
+                }
+            }
             '/' => {
                 self.advance();
-                Ok(Token::Slash)
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::SlashEqual)
+                } else {
+                    Ok(Token::Slash)
+                }
+            }
+            '%' => { self.advance(); Ok(Token::Percent) }
+            '&' => {
+                self.advance();
+                if self.peek() == Some('&') {
+                    self.advance();
+                    Ok(Token::DoubleAnd)
+                } else {
+                    Err(self.error("Expected '&' after '&'"))
+                }
+            }
+            '|' => {
+                self.advance();
+                if self.peek() == Some('|') {
+                    self.advance();
+                    Ok(Token::DoubleOr)
+                } else {
+                    Err(self.error("Expected '|' after '|'"))
+                }
             }
             '"' => self.read_string(),
             '>' => {
@@ -446,6 +496,8 @@ impl Lexer {
             "break" => Token::Break,
             "continue" => Token::Continue,
             "constructor" => Token::Constructor,
+            "static" => Token::Static,
+            "as" => Token::As,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,
@@ -470,7 +522,10 @@ impl Lexer {
         let mut is_float = false;
 
         while let Some(ch) = self.peek() {
-            if ch == '.' {
+            if ch == '\'' {
+                // Digit separator (e.g., 1'000'000)
+                self.advance();
+            } else if ch == '.' {
                 if is_float {
                     break;
                 }

@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use crate::lexer::Lexer;
-use crate::parser::{Parser, Stmt};
+use crate::parser::{Parser, Stmt, ImportKind};
 use crate::types::{TypeChecker, TypeContext, Type, FunctionSignature, ParamSignature};
 
 pub struct ModuleResolver {
     loaded_modules: HashMap<String, ModuleInfo>,
     search_paths: Vec<PathBuf>,
     type_context: TypeContext,
+    pub enable_type_checking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ impl ModuleResolver {
             loaded_modules: HashMap::new(),
             search_paths,
             type_context: TypeContext::new(),
+            enable_type_checking: true,
         }
     }
 
@@ -51,6 +53,7 @@ impl ModuleResolver {
             loaded_modules: HashMap::new(),
             search_paths,
             type_context: TypeContext::new(),
+            enable_type_checking: true,
         }
     }
 
@@ -82,7 +85,7 @@ impl ModuleResolver {
         // Create module info
         let mut classes = Vec::new();
         let mut interfaces = Vec::new();
-        let functions = Vec::new();
+        let mut functions = Vec::new();
 
         for stmt in &statements {
             match stmt {
@@ -91,6 +94,9 @@ impl ModuleResolver {
                 }
                 Stmt::Interface(interface) => {
                     interfaces.push(interface.name.clone());
+                }
+                Stmt::Function(func) => {
+                    functions.push(func.name.clone());
                 }
                 _ => {}
             }
@@ -160,24 +166,132 @@ impl ModuleResolver {
 
     pub fn process_imports(&mut self, statements: &[Stmt]) -> Result<(), String> {
         for stmt in statements {
-            if let Stmt::Import { path } = stmt {
+            if let Stmt::Import { path, kind } = stmt {
                 let module_name = path.join(".");
+
+                // For wildcard imports, we need to load the module to discover its members
+                // For other imports, load the module path
+                let load_path = match kind {
+                    ImportKind::Wildcard => {
+                        // For wildcard, load the parent module
+                        if path.len() > 1 {
+                            path[..path.len()-1].to_vec()
+                        } else {
+                            path.clone()
+                        }
+                    }
+                    ImportKind::Member => {
+                        // For member imports, load the parent module
+                        if path.len() > 1 {
+                            path[..path.len()-1].to_vec()
+                        } else {
+                            path.clone()
+                        }
+                    }
+                    ImportKind::Simple => {
+                        // For simple imports, load the module itself
+                        path.clone()
+                    }
+                    ImportKind::Module => {
+                        // For module imports, load the module
+                        path.clone()
+                    }
+                    ImportKind::Aliased(_) => {
+                        // For aliased imports, load the module
+                        path.clone()
+                    }
+                };
                 
+                let load_module_name = load_path.join(".");
+
                 // Only load if not already loaded
-                if !self.loaded_modules.contains_key(&module_name) {
-                    self.resolve_and_load(path)?;
-                    
+                if !self.loaded_modules.contains_key(&load_module_name) {
+                    self.resolve_and_load(&load_path)?;
+
                     // Recursively process imports in the loaded module
-                    if let Some(info) = self.loaded_modules.get(&module_name) {
+                    if let Some(info) = self.loaded_modules.get(&load_module_name) {
                         let sub_statements = info.statements.clone();
                         self.process_imports(&sub_statements)?;
                     }
                 }
 
+                // Determine the alias and module path for the import entry
+                let (alias, module_path) = match kind {
+                    ImportKind::Module => {
+                        // import std -> module_path = "std", alias = None
+                        (None, module_name.clone())
+                    }
+                    ImportKind::Simple => {
+                        // import std.io -> module_path = "std.io", alias = Some("io")
+                        // This brings all members into scope directly (like wildcard)
+                        let alias = path.last().cloned();
+                        (alias, module_name.clone())
+                    }
+                    ImportKind::Aliased(ref alias_str) => {
+                        // import std.io as myio -> module_path = "std.io", alias = Some("myio")
+                        (Some(alias_str.clone()), module_name.clone())
+                    }
+                    ImportKind::Member => {
+                        // import std.io.println -> module_path = "std.io", alias = Some("println")
+                        let module_path = if path.len() > 1 {
+                            path[..path.len()-1].join(".")
+                        } else {
+                            module_name.clone()
+                        };
+                        let alias = path.last().cloned();
+                        (alias, module_path)
+                    }
+                    ImportKind::Wildcard => {
+                        // import std.io.* -> module_path = "std.io", alias = None, members populated later
+                        let module_path = if path.len() > 1 {
+                            path[..path.len()-1].join(".")
+                        } else {
+                            module_name.clone()
+                        };
+                        (None, module_path)
+                    }
+                };
+
+                // Create import entry
+                let mut import_entry = crate::types::ImportEntry {
+                    module_path: module_path.clone(),
+                    alias,
+                    kind: kind.clone(),
+                    members: Vec::new(),
+                };
+
+                // For wildcard and simple imports, discover members from the loaded module
+                if matches!(kind, ImportKind::Wildcard | ImportKind::Simple) {
+                    if let Some(info) = self.loaded_modules.get(&module_path) {
+                        // Extract function names from the module
+                        for stmt in &info.statements {
+                            match stmt {
+                                Stmt::Function(func) => {
+                                    import_entry.members.push(func.name.clone());
+                                }
+                                Stmt::Class(class) => {
+                                    import_entry.members.push(class.name.clone());
+                                }
+                                Stmt::Interface(iface) => {
+                                    import_entry.members.push(iface.name.clone());
+                                }
+                                Stmt::Let { name, .. } => {
+                                    import_entry.members.push(name.clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 // Register the import in the type context
-                let import_path = path.join(".");
-                if !self.type_context.imports.contains(&import_path) {
-                    self.type_context.imports.push(import_path);
+                self.type_context.imports.push(import_entry);
+                self.type_context.import_paths.push(module_name.clone());
+
+                // Register all members from the loaded module into the type context
+                if let Some(info) = self.loaded_modules.get(&module_name) {
+                    let statements = info.statements.clone();
+                    self.register_module_types(&module_name, &statements);
                 }
             }
         }
@@ -189,6 +303,10 @@ impl ModuleResolver {
     }
 
     pub fn build_type_context_with_source(&mut self, main_statements: &[Stmt], main_source: &str, main_source_path: Option<&str>) -> Result<TypeContext, String> {
+        if !self.enable_type_checking {
+            return Ok(TypeContext::new());
+        }
+
         // First, process all imports
         self.process_imports(main_statements)?;
 
@@ -200,6 +318,9 @@ impl ModuleResolver {
 
         for (module_name, statements) in &module_statements {
             self.register_module_types(module_name, statements);
+            if !self.type_context.import_paths.contains(module_name) {
+                self.type_context.import_paths.push(module_name.clone());
+            }
         }
 
         // Register native functions (always available, no import required)
@@ -207,28 +328,51 @@ impl ModuleResolver {
 
         // Now type check all loaded modules (skip function registration since they're already registered with qualified names)
         for (module_name, statements) in &module_statements {
-            let ctx = self.type_context.clone();
-            let mut type_checker = TypeChecker::with_context(ctx);
-            let _ = type_checker.check_with_options(statements, true);
+            if self.enable_type_checking {
+                let mut ctx = self.type_context.clone();
+                ctx.current_module = Some(module_name.clone());
+                let mut type_checker = TypeChecker::with_context(ctx);
+                let _ = type_checker.check_with_options(statements, true);
 
-            // Log errors but continue
-            if type_checker.get_context().has_errors() {
-                for error in type_checker.get_context().get_errors() {
-                    eprintln!("Type error in module '{}': {}", module_name, error.message);
+                // Log errors but continue
+                if type_checker.get_context().has_errors() {
+                    for error in type_checker.get_context().get_errors() {
+                        eprintln!("Type error in module '{}': {}", module_name, error.message);
+                    }
                 }
-            }
 
-            // Merge the context back (including errors)
-            self.type_context = type_checker.get_context().clone();
+                // Merge the context back (including errors)
+                self.type_context = type_checker.get_context().clone();
+            }
         }
 
         // Type check main statements
-        let ctx = self.type_context.clone();
+        let mut ctx = self.type_context.clone();
+        ctx.current_module = None; // Clear module context for main file (global scope)
         let mut type_checker = TypeChecker::with_context(ctx);
 
-        match type_checker.check(main_statements) {
-            Ok(ctx) => Ok(ctx.clone()),
+        let result = type_checker.check(main_statements);
+        
+        if !self.enable_type_checking {
+            let current_ctx = type_checker.get_context().clone();
+            self.type_context = current_ctx.clone();
+            return Ok(current_ctx);
+        }
+
+        match result {
+            Ok(ctx) => {
+                self.type_context = ctx.clone();
+                Ok(ctx.clone())
+            },
             Err(errors) => {
+                let current_ctx = type_checker.get_context().clone();
+                self.type_context = current_ctx.clone();
+                
+                if !self.enable_type_checking {
+                    return Ok(current_ctx);
+                }
+
+                // If type checking is enabled, report errors and fail
                 let mut error_msg = String::new();
                 let source_lines: Vec<&str> = main_source.lines().collect();
                 
@@ -275,13 +419,19 @@ impl ModuleResolver {
                     let mut class_with_module = class.clone();
                     class_with_module.name = format!("{}.{}", module_name, class.name);
                     self.type_context.add_class(&class_with_module);
-                    self.type_context.add_class(class); // Also add without module for now
+                    // Only add unqualified version for public classes (private classes should only be accessible within their module)
+                    if !class.private {
+                        self.type_context.add_class(class);
+                    }
                 }
                 Stmt::Interface(interface) => {
                     let mut interface_with_module = interface.clone();
                     interface_with_module.name = format!("{}.{}", module_name, interface.name);
                     self.type_context.add_interface(&interface_with_module);
-                    self.type_context.add_interface(interface); // Also add without module for now
+                    // Only add unqualified version for public interfaces
+                    if !interface.private {
+                        self.type_context.add_interface(interface);
+                    }
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
@@ -296,7 +446,7 @@ impl ModuleResolver {
                     }).collect();
 
                     let full_name = format!("{}.{}", module_name, func.name);
-                    self.type_context.add_function(&full_name, FunctionSignature {
+                    let sig = FunctionSignature {
                         name: full_name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
@@ -304,10 +454,18 @@ impl ModuleResolver {
                         is_method: false,
                         is_async: func.is_async,
                         is_native: func.is_native,
+                        private: func.private,
                         mangled_name: None,
-                    });
+                    };
+
+                    self.type_context.add_function(&full_name, sig.clone());
+                    
+                    // Also add unqualified version for public functions
+                    if !func.private {
+                        self.type_context.add_function(&func.name, sig);
+                    }
                 }
-                Stmt::Let { name, type_annotation, expr } => {
+                Stmt::Let { name, type_annotation, expr: _, private } => {
                     // Register module-level variables (e.g., math.PI)
                     let var_type = if let Some(ref ty) = type_annotation {
                         Type::from_str(ty)
@@ -319,6 +477,7 @@ impl ModuleResolver {
                     self.type_context.variables.insert(qualified_name, crate::types::VariableInfo {
                         name: name.clone(),
                         type_name: var_type,
+                        private: *private,
                     });
                 }
                 _ => {}
@@ -339,6 +498,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -354,6 +514,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -368,6 +529,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -382,6 +544,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -393,6 +556,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -408,6 +572,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.cos", FunctionSignature {
@@ -421,6 +586,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.tan", FunctionSignature {
@@ -434,6 +600,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.sqrt", FunctionSignature {
@@ -447,6 +614,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.min", FunctionSignature {
@@ -463,6 +631,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.max", FunctionSignature {
@@ -479,6 +648,62 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+
+        // Register std.test native functions
+        self.type_context.add_function("std.test.addFailure", FunctionSignature {
+            name: "std.test.addFailure".to_string(),
+            params: vec![ParamSignature {
+                name: "message".to_string(),
+                type_name: Some(Type::Str),
+            }],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.test.recordPass", FunctionSignature {
+            name: "std.test.recordPass".to_string(),
+            params: vec![],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.test.setCurrentTest", FunctionSignature {
+            name: "std.test.setCurrentTest".to_string(),
+            params: vec![ParamSignature {
+                name: "name".to_string(),
+                type_name: Some(Type::Str),
+            }],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.test.assertSame", FunctionSignature {
+            name: "std.test.assertSame".to_string(),
+            params: vec![
+                ParamSignature { name: "expected".to_string(), type_name: Some(Type::Any) },
+                ParamSignature { name: "actual".to_string(), type_name: Some(Type::Any) },
+            ],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
             mangled_name: None,
         });
     }
@@ -489,5 +714,9 @@ impl ModuleResolver {
 
     pub fn get_type_context(&self) -> &TypeContext {
         &self.type_context
+    }
+
+    pub fn get_type_context_cloned(&self) -> Option<TypeContext> {
+        Some(self.type_context.clone())
     }
 }

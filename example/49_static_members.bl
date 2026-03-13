@@ -1,0 +1,56 @@
+import std.io
+
+class Counter {
+    static count: int = 0
+    
+    constructor() {
+        Counter.count = Counter.count + 1
+    }
+    
+    static fn getCount(): int {
+        return Counter.count
+    }
+    
+    static fn reset() {
+        Counter.count = 0
+    }
+    
+    fn instanceValue(): int {
+        return Counter.count
+    }
+}
+
+// Test static field access
+println("Initial count: ${Counter.count}")
+
+// Test static method call
+let c1 = Counter()
+println("After creating c1: ${Counter.getCount()}")
+
+let c2 = Counter()
+println("After creating c2: ${Counter.getCount()}")
+
+// Test instance method accessing static field
+println("c1.instanceValue(): ${c1.instanceValue()}")
+println("c2.instanceValue(): ${c2.instanceValue()}")
+
+// Test static method that modifies static field
+Counter.reset()
+println("After reset: ${Counter.getCount()}")
+
+// Test multiple static methods
+class MathUtils {
+    static PI: float = 3.14159
+    
+    static fn add(a: int, b: int): int {
+        return a + b
+    }
+    
+    static fn multiply(a: int, b: int): int {
+        return a * b
+    }
+}
+
+println("PI: ${MathUtils.PI}")
+println("5 + 3 = ${MathUtils.add(5, 3)}")
+println("5 * 3 = ${MathUtils.multiply(5, 3)}")

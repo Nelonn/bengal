@@ -12,17 +12,32 @@ impl Span {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportKind {
+    /// import std.io - brings io into scope, use io.println()
+    Simple,
+    /// import std - brings std into scope, use std.io.println()
+    Module,
+    /// import std.io.println - brings println into scope, use println()
+    Member,
+    /// import std.io as io - brings io into scope as alias, use io.println()
+    Aliased(String),
+    /// import std.io.* - brings all members of std.io into scope, use println()
+    Wildcard,
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Module { path: Vec<String> },
-    Import { path: Vec<String> },
+    Import { path: Vec<String>, kind: ImportKind },
     Class(ClassDef),
     Interface(InterfaceDef),
     Enum(EnumDef),
     Function(FunctionDef),
     TypeAlias(TypeAliasDef),
-    Let { name: String, type_annotation: Option<String>, expr: Expr },
+    Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool },
     Assign { name: String, expr: Expr, span: Span },
+    AugAssign { target: AugAssignTarget, op: AugOp, expr: Expr, span: Span },
     Return(Option<Expr>),
     Expr(Expr),
     If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
@@ -34,6 +49,12 @@ pub enum Stmt {
     Throw(Expr),
 }
 
+#[derive(Debug, Clone)]
+pub enum AugAssignTarget {
+    Variable(String),
+    Field { object: Expr, name: String },
+}
+
 pub type Block = Vec<Stmt>;
 
 #[derive(Debug, Clone)]
@@ -41,12 +62,14 @@ pub struct TypeAliasDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub aliased_type: String,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub name: String,
     pub variants: Vec<EnumVariant>,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +87,7 @@ pub struct FunctionDef {
     pub body: Block,
     pub is_async: bool,
     pub is_native: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +98,7 @@ pub struct ClassDef {
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
     pub is_native: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +107,7 @@ pub struct InterfaceDef {
     pub type_params: Vec<String>,
     pub parent_interfaces: Vec<String>,
     pub methods: Vec<Method>,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +116,7 @@ pub struct Field {
     pub type_name: String,
     pub default: Option<Expr>,
     pub private: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +129,7 @@ pub struct Method {
     pub private: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -179,10 +207,19 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Modulo,
+    Pow,
     Greater,
     GreaterEqual,
     Less,
     LessEqual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AugOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -193,6 +230,7 @@ pub enum UnaryOp {
     PostfixIncrement,
     PostfixDecrement,
     Decrement, // Keep for backward compatibility if used elsewhere, but we'll use PostfixDecrement for x--
+    Negate,    // Unary minus for negative numbers: -5, -3.14
 }
 
 #[derive(Debug, Clone)]
@@ -287,26 +325,9 @@ impl Parser {
     }
 
     fn require_statement_terminator(&mut self) -> Result<(), String> {
-        // Check if we're at EOF or end of block
-        if self.check(&Token::Eof) || self.check(&Token::RBrace) {
-            return Ok(());
-        }
-        
         // Consume all consecutive semicolons and newlines (allows ;; for empty statements)
-        let mut found_terminator = false;
         while self.check(&Token::Semicolon) || self.check(&Token::Newline) {
             self.advance();
-            found_terminator = true;
-        }
-        
-        if !found_terminator {
-            // No valid terminator found
-            let span = self.compute_span(self.pos);
-            let filename = std::path::Path::new(&self.path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&self.path);
-            return Err(format!("{}:{}:{}: error: Expected ';' or newline after statement", filename, span.line, span.column));
         }
         
         Ok(())
@@ -319,6 +340,7 @@ impl Parser {
         while !self.check(&Token::Eof) {
             let stmt = self.parse_statement()?;
             if let Some(s) = stmt {
+                let s = self.maybe_parse_else_if(s)?;
                 statements.push(s);
             }
             self.skip_newlines();
@@ -335,12 +357,14 @@ impl Parser {
 
         let mut is_native = false;
         let mut is_async = false;
+        let mut is_private = false;
 
-        // Only consume async/native if followed by fn (for function declarations)
+        // Only consume async/native/private if followed by fn (for function declarations)
         // This allows async to be used for lambdas in expressions
-        while self.check(&Token::Native) || self.check(&Token::Async) {
+        while self.check(&Token::Native) || self.check(&Token::Async) || self.check(&Token::Private) {
             let is_current_async = self.match_token(&Token::Async);
             let is_current_native = if !is_current_async { self.match_token(&Token::Native) } else { false };
+            let is_current_private = if !is_current_async && !is_current_native { self.match_token(&Token::Private) } else { false };
 
             if is_current_async {
                 // Check if followed by fn (possibly with native in between: async native fn)
@@ -358,26 +382,29 @@ impl Parser {
                 }
             } else if is_current_native {
                 is_native = true;
+            } else if is_current_private {
+                is_private = true;
             }
             self.skip_newlines();
         }
 
+        self.skip_newlines();
         let stmt = if self.match_token(&Token::Module) {
             self.parse_module()?
         } else if self.match_token(&Token::Import) {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
-            self.parse_class(is_native)?
+            self.parse_class(is_native, is_private)?
         } else if self.match_token(&Token::Interface) {
-            self.parse_interface()?
+            self.parse_interface(is_private)?
         } else if self.match_token(&Token::Enum) {
-            self.parse_enum()?
+            self.parse_enum(is_private)?
         } else if self.match_token(&Token::Fn) {
-            self.parse_function_ext(false, is_async, is_native)?
+            self.parse_function_ext(is_private, is_async, is_native)?
         } else if self.match_token(&Token::Type) {
-            self.parse_type_alias()?
+            self.parse_type_alias(is_private)?
         } else if self.match_token(&Token::Let) {
-            self.parse_let()?
+            self.parse_let(is_private)?
         } else if self.match_token(&Token::Return) {
             self.parse_return()?
         } else if self.match_token(&Token::If) {
@@ -398,6 +425,7 @@ impl Parser {
             let expr = self.parse_expression()?;
 
             if self.match_token(&Token::Equal) {
+                self.skip_newlines();
                 if let Expr::Variable { name, span } = expr {
                     let value = self.parse_expression()?;
                     Stmt::Assign { name, expr: value, span }
@@ -406,6 +434,50 @@ impl Parser {
                     Stmt::Expr(Expr::Set { object, name, value: Box::new(value), span })
                 } else {
                     return self.error_generic("Left side of assignment must be a variable or property access");
+                }
+            } else if self.match_token(&Token::PlusEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Add, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Add, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of += must be a variable or field access");
+                }
+            } else if self.match_token(&Token::MinusEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Subtract, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Subtract, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of -= must be a variable or field access");
+                }
+            } else if self.match_token(&Token::StarEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Multiply, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Multiply, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of *= must be a variable or field access");
+                }
+            } else if self.match_token(&Token::SlashEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Divide, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Divide, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of /= must be a variable or field access");
                 }
             } else {
                 Stmt::Expr(expr)
@@ -421,7 +493,18 @@ impl Parser {
     fn parse_import(&mut self) -> Result<Stmt, String> {
         let mut path = Vec::new();
 
+        // Parse the import path (e.g., std.io.println)
         loop {
+            // Check for wildcard (*)
+            if self.match_token(&Token::Star) {
+                // Wildcard import (e.g., import std.io.*)
+                if path.is_empty() {
+                    return self.error("Cannot use wildcard without a module path");
+                }
+                self.skip_newlines();
+                return Ok(Stmt::Import { path, kind: ImportKind::Wildcard });
+            }
+
             if let Token::Identifier(part) = self.advance() {
                 path.push(part);
             } else {
@@ -435,7 +518,29 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Import { path })
+        // Check for aliased import (e.g., import std.io as io)
+        if self.match_token(&Token::As) {
+            if let Token::Identifier(alias) = self.advance() {
+                return Ok(Stmt::Import { path, kind: ImportKind::Aliased(alias) });
+            } else {
+                return self.error("Expected identifier after 'as'");
+            }
+        }
+
+        // Determine import kind based on path length and context
+        // - Single element: Module (import std -> std.io.println)
+        // - Multiple elements: Simple (import std.io -> println())
+        // - Three+ elements: Member (import std.io.println -> println())
+        let kind = if path.len() == 1 {
+            ImportKind::Module
+        } else if path.len() >= 3 {
+            ImportKind::Member
+        } else {
+            ImportKind::Simple
+        };
+
+        self.skip_newlines();
+        Ok(Stmt::Import { path, kind })
     }
 
     fn parse_module(&mut self) -> Result<Stmt, String> {
@@ -455,10 +560,11 @@ impl Parser {
             }
         }
 
+        self.skip_newlines();
         Ok(Stmt::Module { path })
     }
 
-    fn parse_class(&mut self, is_native_class: bool) -> Result<Stmt, String> {
+    fn parse_class(&mut self, is_native_class: bool, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected class name"),
@@ -512,9 +618,10 @@ impl Parser {
             let mut is_private = false;
             let mut is_native_method = false;
             let mut is_async = false;
+            let mut is_static = false;
 
             self.skip_newlines();
-            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) {
+            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) || self.check(&Token::Static) {
                 if self.match_token(&Token::Private) { is_private = true; }
                 else if self.match_token(&Token::Native) {
                     if !is_native_class {
@@ -523,14 +630,18 @@ impl Parser {
                     is_native_method = true;
                 }
                 else if self.match_token(&Token::Async) { is_async = true; }
+                else if self.match_token(&Token::Static) { is_static = true; }
                 self.skip_newlines();
             }
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_method(is_private, is_async, is_native_method || is_native_class)?;
+                let method = self.parse_method(is_private, is_async, is_native_method || is_native_class, is_static)?;
                 methods.push(method);
             } else if self.match_token(&Token::Constructor) {
-                let method = self.parse_method_named("constructor", is_private, false, is_native_class)?;
+                if is_static {
+                    return self.error_generic("Constructor cannot be static");
+                }
+                let method = self.parse_method_named("constructor", is_private, false, is_native_class, is_static)?;
                 if is_native_class && !method.body.is_empty() {
                     return self.error_generic("Constructor in native classes cannot have implementation.");
                 }
@@ -539,7 +650,7 @@ impl Parser {
                 if is_native_class {
                     return self.error_generic("Native classes cannot have member-fields.");
                 }
-                let field = self.parse_field(is_private)?;
+                let field = self.parse_field(is_private, is_static)?;
                 fields.push(field);
             }
             self.skip_newlines();
@@ -549,10 +660,47 @@ impl Parser {
             return self.error_generic("Expected '}' to close class");
         }
 
-        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods, is_native: is_native_class }))
+        // Auto-generate constructors if no custom constructor is defined
+        let mut final_methods = methods;
+        let has_constructor = final_methods.iter().any(|m| m.name == "constructor");
+        if !has_constructor && !is_native_class {
+            // Empty constructor() - fields will be initialized with defaults
+            final_methods.push(Method {
+                name: "constructor".to_string(),
+                params: vec![],
+                return_type: None,
+                return_optional: false,
+                body: vec![],
+                private: false,
+                is_async: false,
+                is_native: false,
+                is_static: false,
+            });
+
+            // Constructor with all fields as parameters
+            if !fields.is_empty() {
+                let field_params: Vec<Param> = fields.iter().map(|field| Param {
+                    name: field.name.clone(),
+                    type_name: Some(field.type_name.clone()),
+                }).collect();
+                final_methods.push(Method {
+                    name: "constructor".to_string(),
+                    params: field_params,
+                    return_type: None,
+                    return_optional: false,
+                    body: vec![],
+                    private: false,
+                    is_async: false,
+                    is_native: false,
+                    is_static: false,
+                });
+            }
+        }
+
+        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, is_native: is_native_class, private: is_private }))
     }
 
-    fn parse_interface(&mut self) -> Result<Stmt, String> {
+    fn parse_interface(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected interface name"),
@@ -625,7 +773,7 @@ impl Parser {
             return self.error_generic("Expected '}' to close interface");
         }
 
-        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods }))
+        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, private: is_private }))
     }
 
     fn parse_interface_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
@@ -665,10 +813,10 @@ impl Parser {
             Vec::new()
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false, is_static: false })
     }
 
-    fn parse_enum(&mut self) -> Result<Stmt, String> {
+    fn parse_enum(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected enum name"),
@@ -704,10 +852,10 @@ impl Parser {
             return self.error("Expected '}' to close enum");
         }
 
-        Ok(Stmt::Enum(EnumDef { name, variants }))
+        Ok(Stmt::Enum(EnumDef { name, variants, private: is_private }))
     }
 
-    fn parse_type_alias(&mut self) -> Result<Stmt, String> {
+    fn parse_type_alias(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected type alias name"),
@@ -741,10 +889,10 @@ impl Parser {
         // Parse the aliased type name
         let (aliased_type, _) = self.parse_type()?;
 
-        Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type }))
+        Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type, private: is_private }))
     }
 
-    fn parse_function_ext(&mut self, _is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
+    fn parse_function_ext(&mut self, is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected function name"),
@@ -802,11 +950,12 @@ impl Parser {
             return_optional, 
             body, 
             is_async, 
-            is_native 
+            is_native,
+            private: is_private
         }))
     }
 
-    fn parse_field(&mut self, private: bool) -> Result<Field, String> {
+    fn parse_field(&mut self, private: bool, is_static: bool) -> Result<Field, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             t => return self.error_generic(&format!("Expected field name, got {:?}", t)),
@@ -829,18 +978,18 @@ impl Parser {
             None
         };
 
-        Ok(Field { name, type_name, default, private })
+        Ok(Field { name, type_name, default, private, is_static })
     }
 
-    fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
+    fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected method name"),
         };
-        self.parse_method_named(&name, private, is_async, is_native)
+        self.parse_method_named(&name, private, is_async, is_native, is_static)
     }
 
-    fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool) -> Result<Method, String> {
+    fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
         if !self.match_token(&Token::LParen) {
             return self.error_generic(&format!("Expected '(' after {} name", name));
         }
@@ -885,7 +1034,7 @@ impl Parser {
             body
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native, is_static })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -1044,13 +1193,14 @@ impl Parser {
         Ok((type_str, optional))
     }
 
-    fn parse_let(&mut self) -> Result<Stmt, String> {
+    fn parse_let(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected variable name after 'let'"),
         };
 
-        let type_annotation = if self.match_token(&Token::Colon) {
+        let type_annotation = if self.check(&Token::Colon) {
+            self.advance();
             let (type_name, optional) = self.parse_type()?;
             if optional {
                 Some(type_name + "?")
@@ -1061,13 +1211,15 @@ impl Parser {
             None
         };
 
+        self.skip_newlines();
         if !self.match_token(&Token::Equal) {
             return self.error("Expected '=' in let statement");
         }
+        self.skip_newlines();
 
         let expr = self.parse_expression()?;
 
-        Ok(Stmt::Let { name, type_annotation, expr })
+        Ok(Stmt::Let { name, type_annotation, expr, private: is_private })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, String> {
@@ -1296,20 +1448,42 @@ impl Parser {
     }
 
     fn parse_or(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_and()?;
+        let mut expr = self.parse_and()?;
 
         loop {
-            break;
+            if self.match_token(&Token::DoubleOr) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Or,
+                    right: Box::new(self.parse_and()?),
+                    span,
+                };
+            } else {
+                break;
+            }
         }
 
         Ok(expr)
     }
 
     fn parse_and(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_range()?;
+        let mut expr = self.parse_range()?;
 
         loop {
-            break;
+            if self.match_token(&Token::DoubleAnd) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::And,
+                    right: Box::new(self.parse_range()?),
+                    span,
+                };
+            } else {
+                break;
+            }
         }
 
         Ok(expr)
@@ -1336,6 +1510,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::BangEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1344,6 +1519,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::DoubleEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1364,6 +1540,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::RAngle) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1372,6 +1549,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::GreaterEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1380,6 +1558,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::LAngle) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1388,6 +1567,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::LessEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1408,6 +1588,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::Plus) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1416,6 +1597,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::Minus) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1432,36 +1614,58 @@ impl Parser {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_unary()?;
+        let mut expr = self.parse_exponential()?;
 
         loop {
             if self.match_token(&Token::Star) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Multiply,
-                    right: Box::new(self.parse_unary()?),
+                    right: Box::new(self.parse_exponential()?),
                     span,
                 };
             } else if self.match_token(&Token::Slash) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Divide,
-                    right: Box::new(self.parse_unary()?),
+                    right: Box::new(self.parse_exponential()?),
                     span,
                 };
             } else if self.match_token(&Token::Percent) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Modulo,
-                    right: Box::new(self.parse_unary()?),
+                    right: Box::new(self.parse_exponential()?),
                     span,
                 };
             } else {
                 break;
             }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_exponential(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_unary()?;
+
+        // ** is right-associative, so we parse it differently
+        if self.match_token(&Token::StarStar) {
+            self.skip_newlines();
+            let span = self.compute_span(self.pos - 1);
+            let right = self.parse_exponential()?;  // Right-associative: recurse for right side
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::Pow,
+                right: Box::new(right),
+                span,
+            };
         }
 
         Ok(expr)
@@ -1477,31 +1681,40 @@ impl Parser {
             });
         }
 
+        if self.match_token(&Token::Minus) {
+            let span = self.compute_span(self.pos - 1);
+            return Ok(Expr::Unary {
+                op: UnaryOp::Negate,
+                expr: Box::new(self.parse_unary()?),
+                span,
+            });
+        }
+
         if self.match_token(&Token::PlusPlus) {
             let span = self.compute_span(self.pos - 1);
             let expr = self.parse_unary()?;
-            if let Expr::Variable { .. } = &expr {
+            if let Expr::Variable { .. } | Expr::Get { .. } = &expr {
                 return Ok(Expr::Unary {
                     op: UnaryOp::PrefixIncrement,
                     expr: Box::new(expr),
                     span,
                 });
             } else {
-                return self.error_expr("Prefix increment operator requires a variable");
+                return self.error_expr("Prefix increment operator requires a variable or field access");
             }
         }
 
         if self.match_token(&Token::MinusMinus) {
             let span = self.compute_span(self.pos - 1);
             let expr = self.parse_unary()?;
-            if let Expr::Variable { .. } = &expr {
+            if let Expr::Variable { .. } | Expr::Get { .. } = &expr {
                 return Ok(Expr::Unary {
                     op: UnaryOp::PrefixDecrement,
                     expr: Box::new(expr),
                     span,
                 });
             } else {
-                return self.error_expr("Prefix decrement operator requires a variable");
+                return self.error_expr("Prefix decrement operator requires a variable or field access");
             }
         }
 
@@ -1584,38 +1797,9 @@ impl Parser {
                 if !self.match_token(&Token::RParen) {
                     return self.error_expr("Expected ')' after arguments");
                 }
-                
-                // Check if this is a cast expression (str(x), int(x), float(x), bool(x))
-                if args.len() == 1 {
-                    if let Expr::Variable { name, .. } = &expr {
-                        let cast_type = match name.as_str() {
-                            "str" => Some(CastType::Str),
-                            "int" => Some(CastType::Int),
-                            "float" => Some(CastType::Float),
-                            "bool" => Some(CastType::Bool),
-                            "int8" => Some(CastType::Int8),
-                            "uint8" => Some(CastType::UInt8),
-                            "int16" => Some(CastType::Int16),
-                            "uint16" => Some(CastType::UInt16),
-                            "int32" => Some(CastType::Int32),
-                            "uint32" => Some(CastType::UInt32),
-                            "int64" => Some(CastType::Int64),
-                            "uint64" => Some(CastType::UInt64),
-                            "float32" => Some(CastType::Float32),
-                            "float64" => Some(CastType::Float64),
-                            _ => None,
-                        };
-                        if let Some(target_type) = cast_type {
-                            expr = Expr::Cast {
-                                expr: Box::new(args.into_iter().next().unwrap()),
-                                target_type,
-                                span,
-                            };
-                            continue;
-                        }
-                    }
-                }
-                
+                self.skip_newlines();
+
+                // All type conversion functions (str, int, float, bool, etc.) are handled as native function calls
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
@@ -1626,6 +1810,7 @@ impl Parser {
                 if !self.match_token(&Token::RBracket) {
                     return self.error_expr("Expected ']' after array index");
                 }
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Index {
                     object: Box::new(expr),
@@ -1636,6 +1821,7 @@ impl Parser {
                 // Class instantiation with {} or object literal
                 let span = self.compute_span(self.pos - 1);
                 let fields = self.parse_object_literal()?;
+                self.skip_newlines();
                 
                 // If expr is a Variable (class name), this is class instantiation
                 // Otherwise, it's a standalone object literal (type inferred from context)
@@ -1653,6 +1839,7 @@ impl Parser {
                     Token::Identifier(n) => n,
                     _ => return self.error_expr("Expected identifier after '.'"),
                 };
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Get {
                     object: Box::new(expr),
@@ -1660,30 +1847,50 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::PlusPlus) {
-                // Postfix increment: var++
+                // Postfix increment: var++ or obj.field++
                 let span = self.compute_span(self.pos - 1);
                 if let Expr::Variable { name, span: var_span } = &expr {
                     expr = Expr::Unary {
-                    op: UnaryOp::PostfixIncrement,
-                    expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
-                    span,
+                        op: UnaryOp::PostfixIncrement,
+                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                        span,
                     };
-                    } else {
-                    return self.error_expr("Increment operator requires a variable");
-                    }
-                    } else if self.match_token(&Token::MinusMinus) {
-                    // Postfix decrement: var--
-                    let span = self.compute_span(self.pos - 1);
-                    if let Expr::Variable { name, span: var_span } = &expr {
+                } else if let Expr::Get { object, name, span: get_span } = &expr {
                     expr = Expr::Unary {
-                    op: UnaryOp::PostfixDecrement,
-                    expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
-                    span,
+                        op: UnaryOp::PostfixIncrement,
+                        expr: Box::new(Expr::Get {
+                            object: object.clone(),
+                            name: name.clone(),
+                            span: *get_span,
+                        }),
+                        span,
                     };
-                    } else {
-                    return self.error_expr("Decrement operator requires a variable");
-                    }
-                    } else {                break;
+                } else {
+                    return self.error_expr("Increment operator requires a variable or field access");
+                }
+            } else if self.match_token(&Token::MinusMinus) {
+                // Postfix decrement: var-- or obj.field--
+                let span = self.compute_span(self.pos - 1);
+                if let Expr::Variable { name, span: var_span } = &expr {
+                    expr = Expr::Unary {
+                        op: UnaryOp::PostfixDecrement,
+                        expr: Box::new(Expr::Variable { name: name.clone(), span: *var_span }),
+                        span,
+                    };
+                } else if let Expr::Get { object, name, span: get_span } = &expr {
+                    expr = Expr::Unary {
+                        op: UnaryOp::PostfixDecrement,
+                        expr: Box::new(Expr::Get {
+                            object: object.clone(),
+                            name: name.clone(),
+                            span: *get_span,
+                        }),
+                        span,
+                    };
+                } else {
+                    return self.error_expr("Decrement operator requires a variable or field access");
+                }
+            } else {                break;
             }
         }
 
@@ -1780,17 +1987,18 @@ impl Parser {
                 _ => return self.error_generic("Expected parameter name in lambda"),
             };
 
-            // Lambda parameters require type annotations
-            if !self.match_token(&Token::Colon) {
-                return self.error_generic(&format!("Expected ':' after parameter name '{}' in lambda. Lambda parameters require type annotations.", name));
-            }
+            // Optional type annotation
+            let type_name = if self.match_token(&Token::Colon) {
+                let (mut t_name, optional) = self.parse_type()?;
+                if optional {
+                    t_name = t_name + "?";
+                }
+                Some(t_name)
+            } else {
+                None
+            };
 
-            let (mut t_name, optional) = self.parse_type()?;
-            if optional {
-                t_name = t_name + "?";
-            }
-
-            params.push(LambdaParam { name, type_name: Some(t_name) });
+            params.push(LambdaParam { name, type_name });
 
             if !self.match_token(&Token::Comma) {
                 break;
@@ -1844,36 +2052,41 @@ impl Parser {
         let saved_pos = self.pos;
 
         // Try to parse lambda parameters
-        let mut is_lambda = true;
-        let mut found_colon_after_params = false;
+        let mut found_params_end = false;
 
         // Skip potential parameters
         self.skip_newlines();
+        
+        // Simple case: () { ... }
+        if self.match_token(&Token::RParen) {
+            self.skip_newlines();
+            if self.check(&Token::LBrace) || self.check(&Token::Colon) {
+                self.pos = saved_pos;
+                return true;
+            }
+        }
+        
+        self.pos = saved_pos;
+        self.skip_newlines();
+
         if !self.check(&Token::RParen) {
-            // There are parameters - they should have type annotations
+            // There are parameters - they might have type annotations
             loop {
                 // Parameter name - must be identifier
                 if !matches!(self.peek(), Token::Identifier(_)) {
-                    is_lambda = false;
                     break;
                 }
                 self.advance();
 
-                // Must have colon for type annotation
-                if !self.match_token(&Token::Colon) {
-                    is_lambda = false;
-                    break;
+                // Optional colon for type annotation
+                if self.match_token(&Token::Colon) {
+                    // Type name
+                    if self.check_type_token() {
+                        self.advance();
+                        // Optional '?'
+                        self.match_token(&Token::Question);
+                    }
                 }
-
-                // Type name
-                if !self.check_type_token() {
-                    is_lambda = false;
-                    break;
-                }
-                self.advance();
-
-                // Optional '?'
-                self.match_token(&Token::Question);
 
                 // Check for comma or end
                 if !self.match_token(&Token::Comma) {
@@ -1883,21 +2096,19 @@ impl Parser {
             }
         }
 
-        if is_lambda {
-            // Should have closing paren
-            if self.match_token(&Token::RParen) {
-                self.skip_newlines();
-                // Check for colon (return type) or brace (body without return type)
-                if self.check(&Token::Colon) || self.check(&Token::LBrace) {
-                    found_colon_after_params = true;
-                }
+        // Should have closing paren
+        if self.match_token(&Token::RParen) {
+            self.skip_newlines();
+            // Check for colon (return type) or brace (body without return type)
+            if self.check(&Token::Colon) || self.check(&Token::LBrace) {
+                found_params_end = true;
             }
         }
 
         // Restore position
         self.pos = saved_pos;
 
-        found_colon_after_params
+        found_params_end
     }
 
     /// Check if current position looks like an async lambda (called after 'async' was consumed)

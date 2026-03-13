@@ -1,0 +1,429 @@
+#!/usr/bin/env bengal
+
+// Stress test for numeric operations
+// Tests arithmetic, comparison, increment/decrement, and type casting
+
+import std.test
+import std.io
+
+// ============== Integer Arithmetic ==============
+
+test("Integer addition", () {
+    assertEquals(5, 2 + 3)
+    assertEquals(100, 50 + 50)
+    assertEquals(0, 0 + 0)
+    let neg5 = 0 - 5
+    let neg2 = 0 - 2
+    let neg3 = 0 - 3
+    assertEquals(neg5, neg2 + neg3)
+    assertEquals(3, neg2 + 5)
+})
+
+test("Integer subtraction", () {
+    assertEquals(2, 5 - 3)
+    assertEquals(0, 5 - 5)
+    let neg5 = 0 - 5
+    assertEquals(neg5, 0 - 5)
+    assertEquals(10, 5 - neg5)
+})
+
+test("Integer multiplication", () {
+    assertEquals(6, 2 * 3)
+    assertEquals(100, 10 * 10)
+    assertEquals(0, 0 * 100)
+    let neg2 = 0 - 2
+    let neg3 = 0 - 3
+    let neg6 = 0 - 6
+    assertEquals(neg6, neg2 * 3)
+    assertEquals(6, neg2 * neg3)
+})
+
+test("Integer division", () {
+    assertEquals(2, 6 / 3)
+    assertEquals(5, 10 / 2)
+    assertEquals(0, 0 / 5)
+    assertEquals(3, 10 / 3)  // Integer division
+})
+
+test("Integer modulo", () {
+    assertEquals(1, 10 % 3)
+    assertEquals(0, 10 % 2)
+    assertEquals(0, 10 % 5)
+    assertEquals(2, 17 % 5)
+})
+
+// ============== Float Arithmetic ==============
+
+test("Float addition", () {
+    assertClose(5.5, 2.5 + 3.0, 0.001)
+    assertClose(6.28, 3.14 + 3.14, 0.001)
+    assertClose(0.0, 0.0 + 0.0, 0.001)
+})
+
+test("Float subtraction", () {
+    assertClose(1.5, 4.5 - 3.0, 0.001)
+    assertClose(0.0, 3.14 - 3.14, 0.001)
+    let negResult = 0.0 - 1.5
+    assertClose(negResult, 1.5 - 3.0, 0.001)
+})
+
+test("Float multiplication", () {
+    assertClose(6.25, 2.5 * 2.5, 0.001)
+    assertClose(9.8696, 3.14 * 3.14, 0.001)
+    assertClose(0.0, 0.0 * 5.5, 0.001)
+})
+
+test("Float division", () {
+    assertClose(2.5, 5.0 / 2.0, 0.001)
+    assertClose(3.0, 9.0 / 3.0, 0.001)
+    assertClose(0.5, 1.0 / 2.0, 0.001)
+})
+
+// ============== Mixed Arithmetic ==============
+
+test("Mixed int and float addition", () {
+    let result = 5 + 3.5
+    assertClose(8.5, result, 0.001)
+})
+
+test("Mixed int and float multiplication", () {
+    let result = 4 * 2.5
+    assertClose(10.0, result, 0.001)
+})
+
+// ============== Order of Operations ==============
+
+test("Order of operations basic", () {
+    assertEquals(14, 2 + 3 * 4)  // 2 + 12 = 14
+    assertEquals(20, (2 + 3) * 4)  // 5 * 4 = 20
+})
+
+test("Order of operations complex", () {
+    assertEquals(15, 2 + 3 * 5 - 4 / 2)  // 2 + 15 - 2 = 15
+})
+
+test("Order of operations with floats", () {
+    let result = 2.0 + 3.0 * 4.0
+    assertClose(14.0, result, 0.001)
+})
+
+// ============== Comparison Operators ==============
+
+test("Equality operators int", () {
+    assertTrue(5 == 5)
+    assertTrue(5 != 3)
+    assertTrue(0 == 0)
+    let neg5 = 0 - 5
+    assertTrue(neg5 == neg5)
+})
+
+test("Equality operators float", () {
+    assertTrue(3.14 == 3.14)
+    assertTrue(3.14 != 2.71)
+})
+
+test("Greater than operator", () {
+    assertTrue(5 > 3)
+    assertTrue(3 > 0)
+    let neg1 = 0 - 1
+    let neg5 = 0 - 5
+    assertTrue(neg1 > neg5)
+    assertFalse(3 > 5)
+    assertFalse(5 > 5)
+})
+
+test("Less than operator", () {
+    assertTrue(3 < 5)
+    assertTrue(0 < 3)
+    let neg5 = 0 - 5
+    let neg1 = 0 - 1
+    assertTrue(neg5 < neg1)
+    assertFalse(5 < 3)
+    assertFalse(5 < 5)
+})
+
+test("Greater than or equal", () {
+    assertTrue(5 >= 3)
+    assertTrue(5 >= 5)
+    assertTrue(3 >= 3)
+    assertFalse(3 >= 5)
+})
+
+test("Less than or equal", () {
+    assertTrue(3 <= 5)
+    assertTrue(5 <= 5)
+    assertTrue(3 <= 3)
+    assertFalse(5 <= 3)
+})
+
+// ============== Increment Decrement ==============
+
+test("Increment pattern", () {
+    let x = 0
+    x = x + 1
+    assertEquals(1, x)
+    x = x + 1
+    assertEquals(2, x)
+})
+
+test("Decrement pattern", () {
+    let x = 5
+    x = x - 1
+    assertEquals(4, x)
+    x = x - 1
+    assertEquals(3, x)
+})
+
+test("Increment in loop", () {
+    let count = 0
+    for (i in 1..6) {
+        count = count + 1
+    }
+    assertEquals(5, count)
+})
+
+test("Decrement in while", () {
+    let count = 5
+    while (count > 0) {
+        count = count - 1
+    }
+    assertEquals(0, count)
+})
+
+// ============== Compound Assignment ==============
+
+test("Add and assign", () {
+    let x = 10
+    x = x + 5
+    assertEquals(15, x)
+})
+
+test("Subtract and assign", () {
+    let x = 10
+    x = x - 3
+    assertEquals(7, x)
+})
+
+test("Multiply and assign", () {
+    let x = 5
+    x = x * 3
+    assertEquals(15, x)
+})
+
+test("Divide and assign", () {
+    let x = 20
+    x = x / 4
+    assertEquals(5, x)
+})
+
+// ============== Negative Numbers ==============
+
+test("Negative number arithmetic", () {
+    let neg5 = 0 - 5
+    let neg10 = 0 - 10
+    let neg2 = 0 - 2
+    assertEquals(neg5, 0 - 5)
+    assertEquals(neg10, neg5 + neg5)
+    assertEquals(10, neg5 * neg2)
+    assertEquals(neg10, neg5 * 2)
+})
+
+test("Negative comparison", () {
+    let neg5 = 0 - 5
+    let neg10 = 0 - 10
+    assertTrue(neg5 < 0)
+    assertTrue(neg10 < neg5)
+    assertTrue(neg5 > neg10)
+    assertTrue(neg5 == neg5)
+})
+
+// ============== Zero Operations ==============
+
+test("Zero addition", () {
+    assertEquals(5, 5 + 0)
+    assertEquals(5, 0 + 5)
+    assertEquals(0, 0 + 0)
+})
+
+test("Zero multiplication", () {
+    assertEquals(0, 5 * 0)
+    assertEquals(0, 0 * 5)
+    assertEquals(0, 0 * 0)
+})
+
+test("Zero division", () {
+    assertEquals(0, 0 / 5)
+})
+
+test("Zero comparison", () {
+    assertTrue(0 == 0)
+    assertFalse(0 > 0)
+    assertFalse(0 < 0)
+    assertTrue(0 >= 0)
+    assertTrue(0 <= 0)
+})
+
+// ============== Large Numbers ==============
+
+test("Large integer addition", () {
+    assertEquals(2000000, 1000000 + 1000000)
+    assertEquals(1500000, 1000000 + 500000)
+})
+
+test("Large integer multiplication", () {
+    assertEquals(1000000, 1000 * 1000)
+    assertEquals(100000000, 10000 * 10000)
+})
+
+// ============== Type Casting ==============
+
+test("Int to float implicit", () {
+    let i: int = 5
+    let f: float = i  // Implicit cast
+    assertClose(5.0, f, 0.001)
+})
+
+test("Float operations with int result", () {
+    let result = 10.0 / 2.0
+    assertClose(5.0, result, 0.001)
+})
+
+// ============== Numeric Stress Tests ==============
+
+test("Stress: Many additions", () {
+    let sum = 0
+    for (i in 1..101) {
+        sum = sum + i
+    }
+    assertEquals(5050, sum)
+})
+
+test("Stress: Many multiplications", () {
+    let product = 1
+    for (i in 1..6) {
+        product = product * i
+    }
+    assertEquals(720, product)  // 6!
+})
+
+test("Stress: Alternating operations", () {
+    let result = 0
+    for (i in 1..11) {
+        if (i % 2 == 0) {
+            result = result + i
+        } else {
+            let sub = 0 - i
+            result = result + sub
+        }
+    }
+    assertEquals(5, result)
+})
+
+test("Stress: Complex expression", () {
+    let a = 10
+    let b = 5
+    let c = 2
+    let result = (a + b) * c + (a - b) / c
+    // (10+5)*2 + (10-5)/2 = 15*2 + 5/2 = 30 + 2 = 32
+    assertEquals(32, result)
+})
+
+test("Stress: Numeric comparisons chain", () {
+    let a = 10
+    let b = 20
+    let c = 15
+    assertTrue(a < b)
+    assertTrue(b > c)
+    assertTrue(a < c)
+    assertTrue(c > a)
+})
+
+// ============== Power Operator ==============
+
+test("Power operator basic", () {
+    assertEquals(4, 2 ** 2)
+    assertEquals(8, 2 ** 3)
+    assertEquals(16, 2 ** 4)
+    assertEquals(1, 5 ** 0)
+})
+
+test("Power operator with larger numbers", () {
+    assertEquals(100, 10 ** 2)
+    assertEquals(1000, 10 ** 3)
+    assertEquals(32, 2 ** 5)
+})
+
+// ============== Operator Precedence ==============
+
+test("Precedence power before multiply", () {
+    assertEquals(12, 3 * 2 ** 2)  // 3 * 4 = 12
+})
+
+test("Precedence power before add", () {
+    assertEquals(10, 2 + 2 ** 3)  // 2 + 8 = 10
+})
+
+// ============== Boolean Numeric Conversion ==============
+
+test("Boolean in numeric context", () {
+    let t = true
+    let f = false
+    assertTrue(t)
+    assertFalse(f)
+    assertTrue(t != f)
+})
+
+// ============== Safety Checks ==============
+
+test("Division by zero throws", () {
+    assertThrows(() {
+        let x = 10 / 0
+    })
+    assertThrows(() {
+        let x = 10 % 0
+    })
+})
+
+test("Float division by zero throws", () {
+    assertThrows(() {
+        let x = 10.0 / 0.0
+    })
+})
+
+test("Integer overflow addition throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let x = max_int + 1
+    })
+})
+
+test("Integer overflow subtraction throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let min_int = (0 - max_int) - 1
+        let x = min_int - 1
+    })
+})
+
+test("Integer overflow multiplication throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let x = max_int * 2
+    })
+})
+
+test("Increment overflow throws", () {
+    assertThrows(() {
+        let x = 9223372036854775807
+        x++
+    })
+})
+
+test("Decrement overflow throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let min_int = (0 - max_int) - 1
+        let x = min_int
+        x--
+    })
+})

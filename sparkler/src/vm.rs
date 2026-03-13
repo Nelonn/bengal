@@ -8,6 +8,7 @@ use std::fmt;
 use async_recursion::async_recursion;
 use std::any::Any;
 use crate::linker::NativeFunctionRegistry;
+use crate::opcodes::Opcode;
 
 pub type Bytecode = Vec<u8>;
 
@@ -303,8 +304,38 @@ impl Value {
             Value::Float64(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Null => "null".to_string(),
-            Value::Instance(_) => "[instance]".to_string(),
-            Value::Array(_) => "[array]".to_string(),
+            Value::Instance(inst) => {
+                let inst = inst.lock().unwrap();
+                let mut fields_str = Vec::new();
+                for (key, value) in &inst.fields {
+                    let value_str = match value {
+                        Value::String(s) => format!("\"{}\"", s),
+                        Value::Int8(n) => n.to_string(),
+                        Value::Int16(n) => n.to_string(),
+                        Value::Int32(n) => n.to_string(),
+                        Value::Int64(n) => n.to_string(),
+                        Value::UInt8(n) => n.to_string(),
+                        Value::UInt16(n) => n.to_string(),
+                        Value::UInt32(n) => n.to_string(),
+                        Value::UInt64(n) => n.to_string(),
+                        Value::Float32(n) => n.to_string(),
+                        Value::Float64(n) => n.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Null => "null".to_string(),
+                        Value::Instance(_) => "[instance]".to_string(),
+                        Value::Array(_) => "[array]".to_string(),
+                        Value::Promise(_) => "[promise]".to_string(),
+                        Value::Exception(e) => format!("[exception: {}]", e.message),
+                    };
+                    fields_str.push(format!("\"{}\": {}", key, value_str));
+                }
+                format!("{{ {} }}", fields_str.join(", "))
+            }
+            Value::Array(arr) => {
+                let arr = arr.lock().unwrap();
+                let elements_str: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+                format!("[{}]", elements_str.join(", "))
+            }
             Value::Promise(_) => "[promise]".to_string(),
             Value::Exception(e) => e.to_string(),
         }
@@ -332,6 +363,7 @@ pub struct Class {
     pub methods: HashMap<String, Method>,
     pub native_methods: HashMap<String, NativeFn>,
     pub native_create: Option<NativeFn>,
+    pub native_destroy: Option<NativeFn>,
     pub is_native: bool,
     pub parent_interfaces: Vec<String>,
     pub vtable: Vec<String>,  // Ordered list of virtual method names
@@ -395,11 +427,72 @@ impl NativeFunctionBuilder {
     }
 }
 
+/// Builder for native class registration with fluent API
+pub struct NativeClass {
+    class_name: String,
+    methods: Vec<(String, NativeFn)>,
+    native_create: Option<NativeFn>,
+    native_destroy: Option<NativeFn>,
+}
+
+impl NativeClass {
+    pub fn new(class_name: &str) -> Self {
+        Self {
+            class_name: class_name.to_string(),
+            methods: Vec::new(),
+            native_create: None,
+            native_destroy: None,
+        }
+    }
+
+    /// Add a native method to this class
+    pub fn method(mut self, method_name: &str, func: NativeFn) -> Self {
+        self.methods.push((method_name.to_string(), func));
+        self
+    }
+
+    /// Set the native constructor callback
+    pub fn native_create(mut self, func: NativeFn) -> Self {
+        self.native_create = Some(func);
+        self
+    }
+
+    /// Set the native destructor callback
+    pub fn native_destroy(mut self, func: NativeFn) -> Self {
+        self.native_destroy = Some(func);
+        self
+    }
+
+    /// Get the class name
+    pub fn class_name(&self) -> &str {
+        &self.class_name
+    }
+
+    /// Register this class with the VM
+    pub fn register(self, vm: &mut VM) {
+        let class_name = self.class_name.clone();
+        
+        // Register native_create if provided
+        if let Some(func) = self.native_create {
+            vm.register_class_native_create(&class_name, func);
+        }
+        
+        // Register native_destroy if provided
+        if let Some(func) = self.native_destroy {
+            vm.register_class_native_destroy(&class_name, func);
+        }
+        
+        // Register all methods
+        for (method_name, func) in self.methods {
+            vm.register_native_method(&class_name, &method_name, func);
+        }
+    }
+}
+
 pub struct NativeModule {
     name: String,
     functions: Vec<(String, NativeFn)>,
-    class_methods: Vec<(String, String, NativeFn)>,
-    class_native_create_callbacks: Vec<(String, NativeFn)>,
+    classes: Vec<NativeClass>,
 }
 
 impl NativeModule {
@@ -407,8 +500,7 @@ impl NativeModule {
         Self {
             name: name.to_string(),
             functions: Vec::new(),
-            class_methods: Vec::new(),
-            class_native_create_callbacks: Vec::new(),
+            classes: Vec::new(),
         }
     }
 
@@ -417,37 +509,100 @@ impl NativeModule {
         self
     }
 
-    pub fn class_method(mut self, class_name: &str, method_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains('.') || class_name.contains("::") {
+    /// Start defining a native class with fluent API
+    /// 
+    /// # Example
+    /// ```ignore
+    /// NativeModule::new("std.sys")
+    ///     .function("env", sys::native_sys_env)
+    ///     .class("Process")
+    ///         .native_create(sys::native_process_native_create)
+    ///         .native_destroy(sys::native_process_native_destroy)
+    ///         .method("start", sys::native_process_start)
+    ///         .method("wait", sys::native_process_wait)
+    ///         .register_class()
+    ///     .register(vm);
+    /// ```
+    pub fn class(self, class_name: &str) -> NativeClassBuilder {
+        let full_class_name = if class_name.contains('.') {
             class_name.to_string()
         } else {
             format!("{}.{}", self.name, class_name)
         };
-        self.class_methods.push((full_class_name, method_name.to_string(), func));
-        self
+        NativeClassBuilder::new(full_class_name, self)
     }
 
-    pub fn class_native_create(mut self, class_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains('.') || class_name.contains("::") {
-            class_name.to_string()
-        } else {
-            format!("{}.{}", self.name, class_name)
-        };
-        self.class_native_create_callbacks.push((full_class_name, func));
+    /// Register a pre-built NativeClass
+    pub fn register_class(mut self, class: NativeClass) -> Self {
+        self.classes.push(class);
         self
     }
 
     pub fn register(self, vm: &mut VM) {
         for (name, func) in self.functions {
-            let full_name = format!("{}.{}", self.name, name);
+            let full_name = if self.name.is_empty() {
+                name
+            } else {
+                format!("{}.{}", self.name, name)
+            };
             vm.register_native(&full_name, func);
         }
-        for (class_name, method_name, func) in self.class_methods {
-            vm.register_native_method(&class_name, &method_name, func);
+        for class in self.classes {
+            class.register(vm);
         }
-        for (class_name, func) in self.class_native_create_callbacks {
-            vm.register_class_native_create(&class_name, func);
+    }
+}
+
+/// Builder for creating a NativeClass within a NativeModule context
+pub struct NativeClassBuilder {
+    class_name: String,
+    methods: Vec<(String, NativeFn)>,
+    native_create: Option<NativeFn>,
+    native_destroy: Option<NativeFn>,
+    module: Option<NativeModule>,
+}
+
+impl NativeClassBuilder {
+    fn new(class_name: String, module: NativeModule) -> Self {
+        Self {
+            class_name,
+            methods: Vec::new(),
+            native_create: None,
+            native_destroy: None,
+            module: Some(module),
         }
+    }
+
+    /// Add a native method to this class
+    pub fn method(mut self, method_name: &str, func: NativeFn) -> Self {
+        self.methods.push((method_name.to_string(), func));
+        self
+    }
+
+    /// Set the native constructor callback
+    pub fn native_create(mut self, func: NativeFn) -> Self {
+        self.native_create = Some(func);
+        self
+    }
+
+    /// Set the native destructor callback
+    pub fn native_destroy(mut self, func: NativeFn) -> Self {
+        self.native_destroy = Some(func);
+        self
+    }
+
+    /// Finish building the class and return to the module builder
+    pub fn register_class(self) -> NativeModule {
+        let class = NativeClass {
+            class_name: self.class_name,
+            methods: self.methods,
+            native_create: self.native_create,
+            native_destroy: self.native_destroy,
+        };
+        
+        let mut module = self.module.unwrap();
+        module.classes.push(class);
+        module
     }
 }
 
@@ -533,15 +688,14 @@ pub struct VM {
     functions: HashMap<String, Function>,
     /// Native function registry with indexed lookup (optimized)
     pub native_registry: NativeFunctionRegistry,
-    /// Legacy native functions HashMap (for backward compatibility)
-    #[deprecated(since = "0.2.0", note = "Use native_registry instead")]
-    pub native_functions: HashMap<String, NativeFn>,
     /// Fallback native handler
     pub fallback_native: Option<NativeFn>,
     /// Pending native methods to be attached to classes
     pending_native_methods: HashMap<String, HashMap<String, NativeFn>>,
     /// Pending class native_create callbacks
     pending_class_native_create: HashMap<String, NativeFn>,
+    /// Pending class native_destroy callbacks
+    pending_class_native_destroy: HashMap<String, NativeFn>,
     /// Exception handlers
     exception_handlers: Vec<ExceptionHandler>,
     /// Call stack - frames for active function calls
@@ -585,11 +739,10 @@ impl VM {
             classes: HashMap::new(),
             functions: HashMap::new(),
             native_registry: NativeFunctionRegistry::new(),
-            #[allow(deprecated)]
-            native_functions: HashMap::new(),
             fallback_native: None,
             pending_native_methods: HashMap::new(),
             pending_class_native_create: HashMap::new(),
+            pending_class_native_destroy: HashMap::new(),
             exception_handlers: Vec::new(),
             call_stack: Vec::new(),
             source_file: None,
@@ -608,8 +761,6 @@ impl VM {
             // New registration
             self.native_registry.register(name, f);
         }
-        #[allow(deprecated)]
-        self.native_functions.insert(name.to_string(), f);
     }
 
     pub fn register_native_method(&mut self, class_name: &str, method_name: &str, f: NativeFn) {
@@ -621,6 +772,10 @@ impl VM {
 
     pub fn register_class_native_create(&mut self, class_name: &str, f: NativeFn) {
         self.pending_class_native_create.insert(class_name.to_string(), f);
+    }
+
+    pub fn register_class_native_destroy(&mut self, class_name: &str, f: NativeFn) {
+        self.pending_class_native_destroy.insert(class_name.to_string(), f);
     }
 
     pub fn native_method(&mut self, _class_name: &str, method_name: &str, func: NativeFn) -> NativeFunctionBuilder {
@@ -648,7 +803,7 @@ impl VM {
     pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>) -> Result<(), String> {
         self.bytecode = bytecode.to_vec();
         self.strings = strings;
-        
+
         self.classes.clear();
         for mut class in classes {
             if let Some(methods) = self.pending_native_methods.get(&class.name) {
@@ -658,6 +813,9 @@ impl VM {
             }
             if let Some(on_init) = self.pending_class_native_create.get(&class.name) {
                 class.native_create = Some(*on_init);
+            }
+            if let Some(on_destroy) = self.pending_class_native_destroy.get(&class.name) {
+                class.native_destroy = Some(*on_destroy);
             }
             self.classes.insert(class.name.clone(), class);
         }
@@ -1017,16 +1175,20 @@ impl VM {
                         let mut args = vec![instance];
                         native_create(&mut args)?;
                     }
-                } 
-                // Check if it's a native function
-                else if let Some(native_f) = self.native_functions.get(&func_name) {
-                    let mut args = Vec::new();
-                    for i in 0..arg_count {
-                        args.push(self.get_reg(arg_start + i).clone());
+                }
+                // Check if it's a native function using indexed registry lookup
+                else if let Some(idx) = self.native_registry.get_index(&func_name) {
+                    if let Some(native_f) = self.native_registry.get_by_index(idx) {
+                        let mut args = Vec::new();
+                        for i in 0..arg_count {
+                            args.push(self.get_reg(arg_start + i).clone());
+                        }
+                        let result = native_f(&mut args)?;
+                        self.set_reg(rd, result);
+                    } else {
+                        return Err(Value::String(format!("Native function not found: {}", func_name)));
                     }
-                    let result = native_f(&mut args)?;
-                    self.set_reg(rd, result);
-                } 
+                }
                 // Check if it's a bytecode function
                 else if let Some(function) = self.functions.get(&func_name).cloned() {
                     // Collect arguments
@@ -1075,13 +1237,13 @@ impl VM {
                     let new_bytecode = function.bytecode.clone();
                     let new_strings = self.strings.clone();
                     let new_functions = self.functions.clone();
-                    let new_native_functions = self.native_functions.clone();
+                    let new_native_registry = self.native_registry.clone();
                     let new_classes = self.classes.clone();
 
                     let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                     let old_strings = std::mem::replace(&mut self.strings, new_strings);
                     let old_functions = std::mem::replace(&mut self.functions, new_functions);
-                    let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                    let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
                     let old_classes = std::mem::replace(&mut self.classes, new_classes);
 
                     // Execute function
@@ -1091,7 +1253,7 @@ impl VM {
                     self.bytecode = old_bytecode;
                     self.strings = old_strings;
                     self.functions = old_functions;
-                    self.native_functions = old_native_functions;
+                    self.native_registry = old_native_registry;
                     self.classes = old_classes;
 
                     // Pop frame and restore caller
@@ -1133,21 +1295,14 @@ impl VM {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
 
-                // Try indexed lookup first (faster), fall back to HashMap
+                // Try indexed lookup first, fall back to fallback handler
                 let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
                     Some(f) => f(&mut args)?,
                     None => {
-                        // Fall back to legacy HashMap lookup
-                        #[allow(deprecated)]
-                        match self.native_functions.get(&name) {
+                        match &self.fallback_native {
                             Some(f) => f(&mut args)?,
                             None => {
-                                match &self.fallback_native {
-                                    Some(f) => f(&mut args)?,
-                                    None => {
-                                        return Err(Value::String(format!("Native function not found: {}", name)));
-                                    }
-                                }
+                                return Err(Value::String(format!("Native function not found: {}", name)));
                             }
                         }
                     }
@@ -1294,19 +1449,19 @@ impl VM {
                             let new_bytecode = method.bytecode.clone();
                             let new_strings = self.strings.clone();
                             let new_classes = self.classes.clone();
-                            let new_native_functions = self.native_functions.clone();
+                            let new_native_registry = self.native_registry.clone();
 
                             let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                             let old_strings = std::mem::replace(&mut self.strings, new_strings);
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                            let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
                             let result = self.run().await;
 
                             self.bytecode = old_bytecode;
                             self.strings = old_strings;
                             self.classes = old_classes;
-                            self.native_functions = old_native_functions;
+                            self.native_registry = old_native_registry;
 
                             self.call_stack.pop();
                             if let Some(frame) = self.call_stack.last_mut() {
@@ -1402,19 +1557,19 @@ impl VM {
                         let new_bytecode = method.bytecode.clone();
                         let new_strings = self.strings.clone();
                         let new_classes = self.classes.clone();
-                        let new_native_functions = self.native_functions.clone();
+                        let new_native_registry = self.native_registry.clone();
 
                         let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                         let old_strings = std::mem::replace(&mut self.strings, new_strings);
                         let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                        let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                        let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
                         let result = self.run().await;
 
                         self.bytecode = old_bytecode;
                         self.strings = old_strings;
                         self.classes = old_classes;
-                        self.native_functions = old_native_functions;
+                        self.native_registry = old_native_registry;
 
                         self.call_stack.pop();
                         if let Some(frame) = self.call_stack.last_mut() {
@@ -1486,19 +1641,19 @@ impl VM {
                             let new_bytecode = method.bytecode.clone();
                             let new_strings = self.strings.clone();
                             let new_classes = self.classes.clone();
-                            let new_native_functions = self.native_functions.clone();
+                            let new_native_registry = self.native_registry.clone();
 
                             let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
                             let old_strings = std::mem::replace(&mut self.strings, new_strings);
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                            let old_native_functions = std::mem::replace(&mut self.native_functions, new_native_functions);
+                            let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
                             let result = self.run().await;
 
                             self.bytecode = old_bytecode;
                             self.strings = old_strings;
                             self.classes = old_classes;
-                            self.native_functions = old_native_functions;
+                            self.native_registry = old_native_registry;
 
                             self.call_stack.pop();
                             if let Some(frame) = self.call_stack.last_mut() {
@@ -1635,9 +1790,9 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
 
-            // Type cast
-            // Format: [Cast, Rd, Rs, type_code]
-            x if x == Opcode::Cast as u8 => {
+            // Type conversion
+            // Format: [Convert, Rd, Rs, type_code]
+            x if x == Opcode::Convert as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1696,7 +1851,10 @@ impl VM {
                         }
                     }
                     0x03 => { // Cast to str
-                        Value::String(value.to_string())
+                        match &value {
+                            Value::String(s) => Value::String(s.clone()),
+                            _ => Value::String(value.to_string()),
+                        }
                     }
                     0x04 => { // Cast to bool
                         Value::Bool(value.is_truthy())
@@ -1902,7 +2060,7 @@ impl VM {
                     (Value::String(a), b) => Value::String(a.clone() + &b.to_string()),
                     (a, Value::String(b)) => Value::String(a.to_string() + b),
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap() + right.to_arithmetic_int().unwrap())
+                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_add(right.to_arithmetic_int().unwrap()))
                     }
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
@@ -1930,7 +2088,7 @@ impl VM {
                 let right = self.get_reg(rs2);
                 let result = match (left, right) {
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap() - right.to_arithmetic_int().unwrap())
+                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_sub(right.to_arithmetic_int().unwrap()))
                     }
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
@@ -1958,7 +2116,7 @@ impl VM {
                 let right = self.get_reg(rs2);
                 let result = match (left, right) {
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap() * right.to_arithmetic_int().unwrap())
+                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_mul(right.to_arithmetic_int().unwrap()))
                     }
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
@@ -2155,100 +2313,6 @@ pub enum ExecutionResult {
     Continue,
     Breakpoint,
     Awaiting(Arc<TokioMutex<PromiseState>>),
-}
-
-/// Opcodes for the registry-based VM
-/// 
-/// Registry-based instruction format:
-/// - Most instructions use explicit register operands (Rd, Rs, etc.)
-/// - No implicit stack operations
-/// - Fixed register file per call frame
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Opcode {
-    Nop = 0x00,
-
-    // Load constants into registers
-    LoadConst = 0x10,  // Rd, string_idx
-    LoadInt = 0x11,    // Rd, 8 bytes
-    LoadFloat = 0x12,  // Rd, 8 bytes
-    LoadBool = 0x13,   // Rd, 1 byte
-    LoadNull = 0x14,   // Rd
-
-    // Register-to-register operations
-    Move = 0x20,       // Rd, Rs
-
-    // Local variable operations
-    LoadLocal = 0x21,  // Rd, name_idx
-    StoreLocal = 0x22, // name_idx, Rs
-
-    // Property access
-    GetProperty = 0x30,  // Rd, Robj, name_idx
-    SetProperty = 0x31,  // Robj, name_idx, Rs
-
-    // Function calls
-    Call = 0x40,         // Rd, func_idx, arg_start, arg_count
-    CallNative = 0x41,   // Rd, name_idx, arg_start, arg_count
-    Invoke = 0x42,       // Rd, method_idx, arg_start, arg_count
-    Return = 0x43,       // Rs
-    CallAsync = 0x44,
-    CallNativeAsync = 0x45,
-    InvokeAsync = 0x46,
-    Await = 0x47,
-    Spawn = 0x48,
-    InvokeInterface = 0x49,  // Rd, vtable_idx, arg_start, arg_count
-    InvokeInterfaceAsync = 0x4A,  // Rd, vtable_idx, arg_start, arg_count
-    
-    // Indexed native calls (optimized - uses function index instead of string lookup)
-    CallNativeIndexed = 0x4B,  // Rd, func_idx (u16), arg_start, arg_count
-    CallNativeIndexedAsync = 0x4C,  // Rd, func_idx (u16), arg_start, arg_count
-
-    // Control flow
-    Jump = 0x50,         // target (2 bytes)
-    JumpIfTrue = 0x51,   // Rs, target (2 bytes)
-    JumpIfFalse = 0x52,  // Rs, target (2 bytes)
-
-    // Comparisons (3-register format: Rd = Rs1 op Rs2)
-    Equal = 0x60,    // Rd, Rs1, Rs2
-    NotEqual = 0x61, // Rd, Rs1, Rs2
-    Greater = 0x66,  // Rd, Rs1, Rs2
-    Less = 0x67,     // Rd, Rs1, Rs2
-    GreaterEqual = 0x6A,
-    LessEqual = 0x6B,
-
-    // Logical operations
-    And = 0x62,      // Rd, Rs1, Rs2
-    Or = 0x63,       // Rd, Rs1, Rs2
-    Not = 0x64,      // Rd, Rs
-
-    // Arithmetic (3-register format)
-    Add = 0x68,      // Rd, Rs1, Rs2
-    Subtract = 0x69, // Rd, Rs1, Rs2
-    Multiply = 0x70, // Rd, Rs1, Rs2
-    Divide = 0x71,   // Rd, Rs1, Rs2
-    Modulo = 0x75,   // Rd, Rs1, Rs2
-
-    // String operations
-    Concat = 0x65,   // Rd, rs_start, count
-
-    // Type operations
-    Cast = 0x74,     // Rd, Rs, type
-    Array = 0x76,    // Rd, rs_start, count
-    Index = 0x77,    // Rd, Robj, Ridx
-
-    // Debugging
-    Line = 0x73,     // line_number (2 bytes)
-
-    // Exception handling
-    TryStart = 0x80, // catch_pc (2 bytes), catch_reg
-    TryEnd = 0x81,
-    Throw = 0x82,    // Rs
-
-    // Debugging
-    Breakpoint = 0x90,
-
-    // Execution control
-    Halt = 0xFF,
 }
 
 impl Serialize for Value {

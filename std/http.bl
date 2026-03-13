@@ -16,13 +16,13 @@ enum RedirectPolicy {
   None = 2
 }
 
-native class Request {
+class Request {
   // url: str
   // TODO: headers map
   // body: str?
 }
 
-native class Response {
+class Response {
   // code: int
   // TODO: headers map
   // body: str?

@@ -1,6 +1,0 @@
-#!/usr/bin/env bengal
-
-import std.shell
-import std.fs
-
-

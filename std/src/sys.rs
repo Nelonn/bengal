@@ -381,6 +381,32 @@ pub fn native_process_get_stderr(args: &mut Vec<Value>) -> Result<Value, Value> 
     Err(Value::String("Process native data not initialized".to_string()))
 }
 
+pub fn native_process_native_destroy(args: &mut Vec<Value>) -> Result<Value, Value> {
+    let instance = if let Value::Instance(inst) = &args[0] {
+        inst.clone()
+    } else {
+        return Err(Value::String("Process native_destroy requires instance".to_string()));
+    };
+
+    let inst = instance.lock().unwrap();
+    let mut native_data = inst.native_data.lock().unwrap();
+    if let Some(data) = native_data.as_mut() {
+        if let Some(proc_data) = data.downcast_mut::<ProcessData>() {
+            // Kill the process if still running
+            if let Some(mut child) = proc_data.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            // All handles will be dropped automatically
+            proc_data.stdin_handle = None;
+            proc_data.stdout_handle = None;
+            proc_data.stderr_handle = None;
+        }
+    }
+
+    Ok(Value::Null)
+}
+
 pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
     if !args.is_empty() {
         if let Value::String(key) = &args[0] {

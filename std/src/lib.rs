@@ -9,16 +9,20 @@ pub mod math;
 pub mod reflect;
 pub mod str;
 pub mod sys;
+pub mod test;
 
 use sparkler::{NativeModule, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
-    // Register print with mangled name
+    // Register print with mangled name and base name
     vm.native("print(str)", io::native_print)
         .description("Print without newline (str)")
         .register(vm);
+    vm.native("print", io::native_print)
+        .description("Print without newline (any)")
+        .register(vm);
 
-    // Register println with multiple overloads for different types
+    // Register println with multiple overloads for different types and base name
     vm.native("println(str)", io::native_println)
         .description("Print with newline (str)")
         .register(vm);
@@ -31,6 +35,9 @@ pub fn register_all(vm: &mut VM) {
     vm.native("println(bool)", io::native_println)
         .description("Print with newline (bool)")
         .register(vm);
+    vm.native("println", io::native_println)
+        .description("Print with newline (any)")
+        .register(vm);
 
     NativeModule::new("std.io")
         .function("print", io::native_print)
@@ -38,75 +45,26 @@ pub fn register_all(vm: &mut VM) {
         .register(vm);
 
     NativeModule::new("std.data")
-        .class_native_create("ByteBuffer", data::native_byte_buffer_native_create)
-        .class_method("ByteBuffer", "constructor", data::native_byte_buffer_constructor)
-        .class_method("ByteBuffer", "reserve", data::native_byte_buffer_reserve)
-        .class_method("ByteBuffer", "get", data::native_byte_buffer_get)
-        .class_method("ByteBuffer", "set", data::native_byte_buffer_set)
-        .class_method("ByteBuffer", "length", data::native_byte_buffer_length)
+        .class("ByteBuffer")
+            .native_create(data::native_byte_buffer_native_create)
+            .method("constructor", data::native_byte_buffer_constructor)
+            .method("reserve", data::native_byte_buffer_reserve)
+            .method("get", data::native_byte_buffer_get)
+            .method("set", data::native_byte_buffer_set)
+            .method("length", data::native_byte_buffer_length)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.http")
         .function("get", http::native_http_get)
         .function("post", http::native_http_post)
-        .class_native_create("HttpClient", http::native_http_client_native_create)
-        // snake_case methods (for compatibility)
-        .class_method(
-            "HttpClient",
-            "set_timeout",
-            http::native_http_client_set_timeout,
-        )
-        .class_method(
-            "HttpClient",
-            "set_base_url",
-            http::native_http_client_set_base_url,
-        )
-        .class_method(
-            "HttpClient",
-            "add_header",
-            http::native_http_client_add_header,
-        )
-        .class_method("HttpClient", "get", http::native_http_client_get)
-        .class_method("HttpClient", "post", http::native_http_client_post)
-        // camelCase methods (Bengal convention)
-        .class_method(
-            "HttpClient",
-            "setTimeout",
-            http::native_http_client_set_timeout_camel,
-        )
-        .class_method(
-            "HttpClient",
-            "setBaseUrl",
-            http::native_http_client_set_base_url_camel,
-        )
-        .class_method(
-            "HttpClient",
-            "addHeader",
-            http::native_http_client_add_header_camel,
-        )
-        .class_method("HttpClient", "get", http::native_http_client_get_camel)
-        .class_method("HttpClient", "post", http::native_http_client_post_camel)
-        // Additional methods
-        .class_method(
-            "HttpClient",
-            "setRedirectPolicy",
-            http::native_http_client_set_redirect_policy_camel,
-        )
-        .class_method(
-            "HttpClient",
-            "setMaxRedirects",
-            http::native_http_client_set_max_redirects_camel,
-        )
-        .class_method(
-            "HttpClient",
-            "setProxy",
-            http::native_http_client_set_proxy_camel,
-        )
-        .class_method(
-            "HttpClient",
-            "setVerifySsl",
-            http::native_http_client_set_verify_ssl_camel,
-        )
+        .class("HttpClient")
+            .method("set_timeout", http::native_http_client_set_timeout)
+            .method("set_base_url", http::native_http_client_set_base_url)
+            .method("add_header", http::native_http_client_add_header)
+            .method("get", http::native_http_client_get)
+            .method("post", http::native_http_client_post)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.json")
@@ -121,33 +79,56 @@ pub fn register_all(vm: &mut VM) {
         .register(vm);
 
     NativeModule::new("")
-        .class_method("str", "length", str::native_str_length)
-        .class_method("str", "trim", str::native_str_trim)
-        .class_method("str", "split", str::native_str_split)
-        .class_method("str", "to_int", str::native_str_to_int)
-        .class_method("str", "to_float", str::native_str_to_float)
-        .class_method("str", "contains", str::native_str_contains)
-        .class_method("str", "starts_with", str::native_str_starts_with)
-        .class_method("str", "ends_with", str::native_str_ends_with)
-        .class_method("str", "substring", str::native_str_substring)
-        .class_method("str", "to_lowercase", str::native_str_to_lowercase)
-        .class_method("str", "to_uppercase", str::native_str_to_uppercase)
-        .class_method("str", "replace", str::native_str_replace)
+        .class("str")
+            .method("length", str::native_str_length)
+            .method("trim", str::native_str_trim)
+            .method("split", str::native_str_split)
+            .method("to_int", str::native_str_to_int)
+            .method("to_float", str::native_str_to_float)
+            .method("contains", str::native_str_contains)
+            .method("starts_with", str::native_str_starts_with)
+            .method("ends_with", str::native_str_ends_with)
+            .method("substring", str::native_str_substring)
+            .method("to_lowercase", str::native_str_to_lowercase)
+            .method("to_uppercase", str::native_str_to_uppercase)
+            .method("replace", str::native_str_replace)
+            .register_class()
+        .register(vm);
+
+    // Register global str() function separately
+    NativeModule::new("")
+        .function("str", str::native_str)
+        .function("int", str::native_int)
+        .function("float", str::native_float)
+        .function("bool", str::native_bool)
+        .function("int8", str::native_int8)
+        .function("uint8", str::native_uint8)
+        .function("int16", str::native_int16)
+        .function("uint16", str::native_uint16)
+        .function("int32", str::native_int32)
+        .function("uint32", str::native_uint32)
+        .function("int64", str::native_int64)
+        .function("uint64", str::native_uint64)
+        .function("float32", str::native_float32)
+        .function("float64", str::native_float64)
         .register(vm);
 
     NativeModule::new("std.sys")
         .function("env", sys::native_sys_env)
         .function("set_pwd", sys::native_sys_set_pwd)
-        .class_native_create("Process", sys::native_process_native_create)
-        .class_method("Process", "start", sys::native_process_start)
-        .class_method("Process", "write_stdin", sys::native_process_write_stdin)
-        .class_method("Process", "close_stdin", sys::native_process_close_stdin)
-        .class_method("Process", "read_stdout", sys::native_process_read_stdout)
-        .class_method("Process", "read_stderr", sys::native_process_read_stderr)
-        .class_method("Process", "wait", sys::native_process_wait)
-        .class_method("Process", "exit_code", sys::native_process_exit_code)
-        .class_method("Process", "get_stdout", sys::native_process_get_stdout)
-        .class_method("Process", "get_stderr", sys::native_process_get_stderr)
+        .class("Process")
+            .native_create(sys::native_process_native_create)
+            .native_destroy(sys::native_process_native_destroy)
+            .method("start", sys::native_process_start)
+            .method("write_stdin", sys::native_process_write_stdin)
+            .method("close_stdin", sys::native_process_close_stdin)
+            .method("read_stdout", sys::native_process_read_stdout)
+            .method("read_stderr", sys::native_process_read_stderr)
+            .method("wait", sys::native_process_wait)
+            .method("exit_code", sys::native_process_exit_code)
+            .method("get_stdout", sys::native_process_get_stdout)
+            .method("get_stderr", sys::native_process_get_stderr)
+            .register_class()
         .register(vm);
 
     NativeModule::new("std.fs")
@@ -216,6 +197,15 @@ pub fn register_all(vm: &mut VM) {
         .function("smoothstep", math::native_math_smoothstep)
         .function("toRadians", math::native_math_to_radians)
         .function("toDegrees", math::native_math_to_degrees)
+        .function("check_overflow", math::native_math_check_overflow)
+        .function("check_div_zero", math::native_math_check_div_zero)
+        .register(vm);
+
+    NativeModule::new("std.test")
+        .function("addFailure", test::native_fail)
+        .function("recordPass", test::native_record_pass)
+        .function("setCurrentTest", test::native_set_current_test)
+        .function("assertSame", test::native_assert_same)
         .register(vm);
 
     // Fallback function that throws an error

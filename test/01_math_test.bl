@@ -1,0 +1,289 @@
+#!/usr/bin/env bengal
+
+// Stress test for std.math module
+// Tests trigonometric, power, rounding, and utility functions
+
+import std.test
+import std.math
+import std.io
+
+// ============== Constants Tests ==============
+
+test("Math constants existence", () {
+    assertNotNull(PI)
+    assertNotNull(E)
+    assertNotNull(TAU)
+    assertClose(3.14159, PI, 0.0001)
+    assertClose(2.71828, E, 0.0001)
+    assertClose(6.28318, TAU, 0.0001)
+})
+
+// ============== Trigonometric Functions ==============
+
+test("sin function basic values", () {
+    assertClose(0.0, sin(0.0), 0.0001)
+    assertClose(1.0, sin(PI / 2), 0.0001)
+    assertClose(-1.0, sin(3 * PI / 2), 0.0001)
+    assertClose(0.0, sin(PI), 0.0001)
+})
+
+test("cos function basic values", () {
+    assertClose(1.0, cos(0.0), 0.0001)
+    assertClose(0.0, cos(PI / 2), 0.0001)
+    assertClose(-1.0, cos(PI), 0.0001)
+    assertClose(0.0, cos(3 * PI / 2), 0.0001)
+})
+
+test("tan function basic values", () {
+    assertClose(0.0, tan(0.0), 0.0001)
+    assertClose(1.0, tan(PI / 4), 0.0001)
+})
+
+test("asin function", () {
+    assertClose(0.0, asin(0.0), 0.0001)
+    assertClose(PI / 2, asin(1.0), 0.0001)
+    assertClose(-PI / 2, asin(-1.0), 0.0001)
+})
+
+test("acos function", () {
+    assertClose(PI / 2, acos(0.0), 0.0001)
+    assertClose(0.0, acos(1.0), 0.0001)
+    assertClose(PI, acos(-1.0), 0.0001)
+})
+
+test("atan function", () {
+    assertClose(0.0, atan(0.0), 0.0001)
+    assertClose(PI / 4, atan(1.0), 0.0001)
+    assertClose(-PI / 4, atan(-1.0), 0.0001)
+})
+
+test("atan2 function", () {
+    assertClose(PI / 4, atan2(1.0, 1.0), 0.0001)
+    assertClose(0.0, atan2(0.0, 1.0), 0.0001)
+    assertClose(PI / 2, atan2(1.0, 0.0), 0.0001)
+})
+
+// ============== Hyperbolic Functions ==============
+
+test("sinh function", () {
+    assertClose(0.0, sinh(0.0), 0.0001)
+    assertTrue(sinh(1.0) > 0)
+    assertTrue(sinh(-1.0) < 0)
+})
+
+test("cosh function", () {
+    assertClose(1.0, cosh(0.0), 0.0001)
+    assertTrue(cosh(1.0) > 1)
+    assertTrue(cosh(-1.0) > 1)
+})
+
+test("tanh function", () {
+    assertClose(0.0, tanh(0.0), 0.0001)
+    assertTrue(tanh(1.0) > 0 && tanh(1.0) < 1)
+    assertTrue(tanh(-1.0) < 0 && tanh(-1.0) > -1)
+})
+
+// ============== Rounding Functions ==============
+
+test("floor function", () {
+    assertClose(3.0, floor(3.7), 0.0001)
+    assertClose(3.0, floor(3.0), 0.0001)
+    assertClose(4.0, floor(3.999), 0.0001)
+    assertClose(-4.0, floor(-3.1), 0.0001)
+})
+
+test("ceil function", () {
+    assertClose(4.0, ceil(3.1), 0.0001)
+    assertClose(3.0, ceil(3.0), 0.0001)
+    assertClose(4.0, ceil(3.999), 0.0001)
+    assertClose(-3.0, ceil(-3.9), 0.0001)
+})
+
+test("round function", () {
+    assertClose(4.0, round(3.5), 0.0001)
+    assertClose(3.0, round(3.4), 0.0001)
+    assertClose(4.0, round(3.6), 0.0001)
+    assertClose(3.0, round(3.0), 0.0001)
+})
+
+test("trunc function", () {
+    assertClose(3.0, trunc(3.9), 0.0001)
+    assertClose(3.0, trunc(3.1), 0.0001)
+    assertClose(-3.0, trunc(-3.9), 0.0001)
+})
+
+test("fract function", () {
+    assertClose(0.5, fract(3.5), 0.0001)
+    assertClose(0.1, fract(3.1), 0.0001)
+    assertClose(0.0, fract(3.0), 0.0001)
+})
+
+// ============== Comparison Functions ==============
+
+test("min function", () {
+    assertClose(3.0, min(3.0, 5.0), 0.0001)
+    assertClose(3.0, min(5.0, 3.0), 0.0001)
+    assertClose(3.0, min(3.0, 3.0), 0.0001)
+})
+
+test("max function", () {
+    assertClose(5.0, max(3.0, 5.0), 0.0001)
+    assertClose(5.0, max(5.0, 3.0), 0.0001)
+    assertClose(5.0, max(5.0, 5.0), 0.0001)
+})
+
+test("clamp function", () {
+    assertClose(5.0, clamp(5.0, 0.0, 10.0), 0.0001)
+    assertClose(0.0, clamp(-5.0, 0.0, 10.0), 0.0001)
+    assertClose(10.0, clamp(15.0, 0.0, 10.0), 0.0001)
+})
+
+test("abs function", () {
+    assertClose(5.0, abs(5.0), 0.0001)
+    assertClose(5.0, abs(-5.0), 0.0001)
+    assertClose(0.0, abs(0.0), 0.0001)
+})
+
+test("sign function", () {
+    assertClose(1.0, sign(5.0), 0.0001)
+    assertClose(-1.0, sign(-5.0), 0.0001)
+    assertClose(0.0, sign(0.0), 0.0001)
+})
+
+// ============== Power and Root Functions ==============
+
+test("sqrt function", () {
+    assertClose(2.0, sqrt(4.0), 0.0001)
+    assertClose(3.0, sqrt(9.0), 0.0001)
+    assertClose(1.0, sqrt(1.0), 0.0001)
+    assertClose(0.0, sqrt(0.0), 0.0001)
+})
+
+test("cbrt function", () {
+    assertClose(2.0, cbrt(8.0), 0.0001)
+    assertClose(3.0, cbrt(27.0), 0.0001)
+    assertClose(1.0, cbrt(1.0), 0.0001)
+    assertClose(-2.0, cbrt(-8.0), 0.0001)
+})
+
+test("pow function", () {
+    assertClose(8.0, pow(2.0, 3.0), 0.0001)
+    assertClose(16.0, pow(2.0, 4.0), 0.0001)
+    assertClose(1.0, pow(5.0, 0.0), 0.0001)
+    assertClose(2.0, pow(2.0, 1.0), 0.0001)
+})
+
+test("exp function", () {
+    assertClose(E, exp(1.0), 0.0001)
+    assertClose(1.0, exp(0.0), 0.0001)
+})
+
+test("ln function", () {
+    assertClose(1.0, ln(E), 0.0001)
+    assertClose(0.0, ln(1.0), 0.0001)
+})
+
+test("log10 function", () {
+    assertClose(1.0, log10(10.0), 0.0001)
+    assertClose(2.0, log10(100.0), 0.0001)
+    assertClose(0.0, log10(1.0), 0.0001)
+})
+
+test("log2 function", () {
+    assertClose(1.0, log2(2.0), 0.0001)
+    assertClose(2.0, log2(4.0), 0.0001)
+    assertClose(3.0, log2(8.0), 0.0001)
+})
+
+// ============== Utility Functions ==============
+
+test("hypot function", () {
+    assertClose(5.0, hypot(3.0, 4.0), 0.0001)
+    assertClose(1.41421, hypot(1.0, 1.0), 0.0001)
+})
+
+test("lerp function", () {
+    assertClose(5.0, lerp(0.0, 10.0, 0.5), 0.0001)
+    assertClose(0.0, lerp(0.0, 10.0, 0.0), 0.0001)
+    assertClose(10.0, lerp(0.0, 10.0, 1.0), 0.0001)
+    assertClose(2.5, lerp(0.0, 10.0, 0.25), 0.0001)
+})
+
+test("step function", () {
+    assertClose(0.0, step(5.0, 3.0), 0.0001)
+    assertClose(1.0, step(5.0, 5.0), 0.0001)
+    assertClose(1.0, step(5.0, 10.0), 0.0001)
+})
+
+test("toRadians function", () {
+    assertClose(PI, toRadians(180.0), 0.0001)
+    assertClose(PI / 2, toRadians(90.0), 0.0001)
+    assertClose(0.0, toRadians(0.0), 0.0001)
+})
+
+test("toDegrees function", () {
+    assertClose(180.0, toDegrees(PI), 0.0001)
+    assertClose(90.0, toDegrees(PI / 2), 0.0001)
+    assertClose(0.0, toDegrees(0.0), 0.0001)
+})
+
+// ============== Vector Types ==============
+
+test("vec2 creation", () {
+    let v: vec2 = tvec2()
+    v.x = 1.0
+    v.y = 2.0
+    assertClose(1.0, v.x, 0.0001)
+    assertClose(2.0, v.y, 0.0001)
+})
+
+test("ivec2 creation", () {
+    let v: ivec2 = tvec2()
+    v.x = 1
+    v.y = 2
+    assertEquals(1, v.x)
+    assertEquals(2, v.y)
+})
+
+test("vec3 creation", () {
+    let v: vec3 = tvec3()
+    v.x = 1.0
+    v.y = 2.0
+    v.z = 3.0
+    assertClose(1.0, v.x, 0.0001)
+    assertClose(2.0, v.y, 0.0001)
+    assertClose(3.0, v.z, 0.0001)
+})
+
+test("ivec3 creation", () {
+    let v: ivec3 = tvec3()
+    v.x = 1
+    v.y = 2
+    v.z = 3
+    assertEquals(1, v.x)
+    assertEquals(2, v.y)
+    assertEquals(3, v.z)
+})
+
+// ============== Stress Test: Many Calculations ==============
+
+test("Stress: Multiple trig calculations", () {
+    let result: float = 0.0
+    let i = 0
+    while (i < 100) {
+        result = result + sin(i * 0.1)
+        result = result + cos(i * 0.1)
+        i = i + 1
+    }
+    assertTrue(result > 0 || result < 0)  // Just ensure calculation happened
+})
+
+test("Stress: Multiple pow calculations", () {
+    let result: float = 0.0
+    let i = 0
+    while (i < 50) {
+        result = result + pow(2.0, i * 0.1)
+        i = i + 1
+    }
+    assertTrue(result > 50)  // Should accumulate to significant value
+})

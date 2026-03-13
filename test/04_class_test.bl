@@ -1,0 +1,433 @@
+#!/usr/bin/env bengal
+
+// Stress test for classes and objects
+// Tests inheritance, methods, constructors, and object-oriented features
+
+import std.test
+import std.io
+
+// ============== Basic Class Tests ==============
+
+class SimpleClass {
+    value: int = 0
+}
+
+test("Simple class creation", () {
+    let obj = SimpleClass()
+    assertNotNull(obj)
+    assertEquals(0, obj.value)
+})
+
+test("Simple class field modification", () {
+    let obj = SimpleClass()
+    obj.value = 42
+    assertEquals(42, obj.value)
+})
+
+// ============== Class with Constructor ==============
+
+class Person {
+    name: str = ""
+    age: int = 0
+
+    constructor(name: str, age: int) {
+        self.name = name
+        self.age = age
+    }
+}
+
+test("Class with constructor", () {
+    let person = Person("Alice", 30)
+    assertEquals("Alice", person.name)
+    assertEquals(30, person.age)
+})
+
+test("Multiple instances", () {
+    let p1 = Person("Bob", 25)
+    let p2 = Person("Carol", 35)
+    assertEquals("Bob", p1.name)
+    assertEquals(25, p1.age)
+    assertEquals("Carol", p2.name)
+    assertEquals(35, p2.age)
+})
+
+// ============== Class Methods ==============
+
+class Calculator {
+    result: float = 0.0
+
+    fn add(value: float) {
+        self.result = self.result + value
+    }
+
+    fn subtract(value: float) {
+        self.result = self.result - value
+    }
+
+    fn multiply(value: float) {
+        self.result = self.result * value
+    }
+
+    fn reset() {
+        self.result = 0.0
+    }
+
+    fn getResult(): float {
+        return self.result
+    }
+}
+
+test("Class methods basic", () {
+    let calc = Calculator()
+    calc.add(10.0)
+    assertClose(10.0, calc.getResult(), 0.001)
+})
+
+test("Class method chaining simulation", () {
+    let calc = Calculator()
+    calc.add(100.0)
+    calc.subtract(30.0)
+    calc.multiply(2.0)
+    assertClose(140.0, calc.getResult(), 0.001)
+})
+
+test("Class method reset", () {
+    let calc = Calculator()
+    calc.add(50.0)
+    calc.reset()
+    assertClose(0.0, calc.getResult(), 0.001)
+})
+
+// ============== Class with Multiple Fields ==============
+
+class Rectangle {
+    width: float = 0.0
+    height: float = 0.0
+    color: str = "white"
+
+    constructor(width: float, height: float, color: str) {
+        self.width = width
+        self.height = height
+        self.color = color
+    }
+
+    fn area(): float {
+        return self.width * self.height
+    }
+
+    fn perimeter(): float {
+        return 2 * (self.width + self.height)
+    }
+}
+
+test("Rectangle class", () {
+    let rect = Rectangle(5.0, 10.0, "red")
+    assertClose(5.0, rect.width, 0.001)
+    assertClose(10.0, rect.height, 0.001)
+    assertEquals("red", rect.color)
+})
+
+test("Rectangle area calculation", () {
+    let rect = Rectangle(4.0, 5.0, "blue")
+    assertClose(20.0, rect.area(), 0.001)
+})
+
+test("Rectangle perimeter calculation", () {
+    let rect = Rectangle(4.0, 5.0, "blue")
+    assertClose(18.0, rect.perimeter(), 0.001)
+})
+
+// ============== Class with Private Fields ==============
+
+class BankAccount {
+    private balance: float = 0.0
+    owner: str = ""
+
+    constructor(owner: str, initialBalance: float) {
+        self.owner = owner
+        self.balance = initialBalance
+    }
+
+    fn deposit(amount: float) {
+        self.balance = self.balance + amount
+    }
+
+    fn withdraw(amount: float) {
+        self.balance = self.balance - amount
+    }
+
+    fn getBalance(): float {
+        return self.balance
+    }
+}
+
+test("Bank account class", () {
+    let account = BankAccount("John", 100.0)
+    assertEquals("John", account.owner)
+    assertClose(100.0, account.getBalance(), 0.001)
+})
+
+test("Bank account deposit", () {
+    let account = BankAccount("Jane", 50.0)
+    account.deposit(25.0)
+    assertClose(75.0, account.getBalance(), 0.001)
+})
+
+test("Bank account withdraw", () {
+    let account = BankAccount("Jane", 100.0)
+    account.withdraw(30.0)
+    assertClose(70.0, account.getBalance(), 0.001)
+})
+
+test("Bank account multiple operations", () {
+    let account = BankAccount("Bob", 0.0)
+    account.deposit(100.0)
+    account.deposit(50.0)
+    account.withdraw(30.0)
+    account.deposit(20.0)
+    assertClose(140.0, account.getBalance(), 0.001)
+})
+
+// ============== Class Arrays ==============
+
+class Item {
+    name: str = ""
+    price: float = 0.0
+
+    constructor(name: str, price: float) {
+        self.name = name
+        self.price = price
+    }
+}
+
+test("Array of class instances", () {
+    let items: Item[] = [
+        Item("Apple", 1.5),
+        Item("Banana", 0.75),
+        Item("Orange", 2.0)
+    ]
+    assertEquals(3, items.length())
+    assertEquals("Apple", items[0].name)
+    assertClose(1.5, items[0].price, 0.001)
+})
+
+test("Array of class instances iteration", () {
+    let items: Item[] = [
+        Item("Item1", 10.0),
+        Item("Item2", 20.0),
+        Item("Item3", 30.0)
+    ]
+    let total = 0.0
+    for (i in 0..items.length()) {
+        total = total + items[i].price
+    }
+    assertClose(60.0, total, 0.001)
+})
+
+// ============== Class with Optional Return ==============
+
+class Divider {
+    fn divide(a: float, b: float): float? {
+        if (b == 0.0) {
+            return null
+        }
+        return a / b
+    }
+}
+
+test("Class optional return value", () {
+    let divider = Divider()
+    let result = divider.divide(10.0, 2.0)
+    assertNotNull(result)
+})
+
+test("Class optional return null", () {
+    let divider = Divider()
+    let result = divider.divide(10.0, 0.0)
+    assertNull(result)
+})
+
+// ============== Class Field Types ==============
+
+class MultiTypeClass {
+    intField: int = 0
+    floatField: float = 0.0
+    strField: str = ""
+    boolField: bool = false
+
+    constructor(i: int, f: float, s: str, b: bool) {
+        self.intField = i
+        self.floatField = f
+        self.strField = s
+        self.boolField = b
+    }
+}
+
+test("Class with multiple field types", () {
+    let obj = MultiTypeClass(42, 3.14, "hello", true)
+    assertEquals(42, obj.intField)
+    assertClose(3.14, obj.floatField, 0.001)
+    assertEquals("hello", obj.strField)
+    assertTrue(obj.boolField)
+})
+
+// ============== Class in Class ==============
+
+class Address {
+    street: str = ""
+    city: str = ""
+}
+
+class Employee {
+    name: str = ""
+    address: Address? = null
+
+    constructor(name: str) {
+        self.name = name
+    }
+}
+
+test("Nested class structure", () {
+    let emp = Employee("Alice")
+    assertEquals("Alice", emp.name)
+    assertNull(emp.address)
+})
+
+test("Class with nested class instance", () {
+    let emp = Employee("Bob")
+    let addr = Address()
+    addr.street = "123 Main St"
+    addr.city = "Springfield"
+    emp.address = addr
+    assertNotNull(emp.address)
+    assertEquals("123 Main St", emp.address.street)
+})
+
+// ============== Class Counter Pattern ==============
+
+class Counter {
+    count: int = 0
+
+    fn increment() {
+        self.count = self.count + 1
+    }
+
+    fn decrement() {
+        self.count = self.count - 1
+    }
+
+    fn getCount(): int {
+        return self.count
+    }
+}
+
+test("Counter increment", () {
+    let counter = Counter()
+    counter.increment()
+    assertEquals(1, counter.getCount())
+})
+
+test("Counter multiple increments", () {
+    let counter = Counter()
+    counter.increment()
+    counter.increment()
+    counter.increment()
+    assertEquals(3, counter.getCount())
+})
+
+test("Counter decrement", () {
+    let counter = Counter()
+    counter.increment()
+    counter.increment()
+    counter.decrement()
+    assertEquals(1, counter.getCount())
+})
+
+// ============== Class Stress Tests ==============
+
+test("Stress: Many class instances", () {
+    let p1 = Person("P1", 1)
+    let p2 = Person("P2", 2)
+    let p3 = Person("P3", 3)
+    let p4 = Person("P4", 4)
+    let p5 = Person("P5", 5)
+    assertEquals(5, p5.age)
+    assertEquals("P1", p1.name)
+})
+
+test("Stress: Class with many fields", () {
+    class DataClass {
+        f1: int = 0
+        f2: int = 0
+        f3: int = 0
+        f4: int = 0
+        f5: int = 0
+
+        constructor(a: int, b: int, c: int, d: int, e: int) {
+            self.f1 = a
+            self.f2 = b
+            self.f3 = c
+            self.f4 = d
+            self.f5 = e
+        }
+    }
+    let obj = DataClass(1, 2, 3, 4, 5)
+    assertEquals(1, obj.f1)
+    assertEquals(2, obj.f2)
+    assertEquals(3, obj.f3)
+    assertEquals(4, obj.f4)
+    assertEquals(5, obj.f5)
+})
+
+test("Stress: Class method calls in loop", () {
+    let counter = Counter()
+    let i = 0
+    while (i < 10) {
+        counter.increment()
+        i = i + 1
+    }
+    assertEquals(10, counter.getCount())
+})
+
+// ============== Class Field Default Values ==============
+
+class DefaultValues {
+    intVal: int = 42
+    floatVal: float = 3.14
+    strVal: str = "default"
+    boolVal: bool = true
+}
+
+test("Class default values", () {
+    let obj = DefaultValues()
+    assertEquals(42, obj.intVal)
+    assertClose(3.14, obj.floatVal, 0.001)
+    assertEquals("default", obj.strVal)
+    assertTrue(obj.boolVal)
+})
+
+// ============== Class Self Reference ==============
+
+class SelfRef {
+    value: int = 0
+
+    fn setValue(v: int) {
+        self.value = v
+    }
+
+    fn getValue(): int {
+        return self.value
+    }
+
+    fn doubleValue() {
+        self.value = self.value * 2
+    }
+}
+
+test("Class self reference", () {
+    let obj = SelfRef()
+    obj.setValue(5)
+    assertEquals(5, obj.getValue())
+    obj.doubleValue()
+    assertEquals(10, obj.getValue())
+})

@@ -27,6 +27,7 @@ pub enum Type {
     Promise(Box<Type>),
     Array(Box<Type>),
     Null,
+    Any,
     Unknown,
     // Generics support
     TypeParameter(String),                    // T (type parameter)
@@ -104,7 +105,12 @@ impl Type {
             "uint64" => Type::UInt64,
             "float32" => Type::Float32,
             "float64" => Type::Float64,
+            "any" => Type::Any,
             "self" => Type::SelfType,
+            // Recognize type parameters: single uppercase letter (T, U, V, etc.) or uppercase followed by single digit (T1, U2)
+            _ if s.len() <= 2 && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && s.chars().skip(1).all(|c| c.is_ascii_digit()) => {
+                Type::TypeParameter(s.to_string())
+            }
             _ => Type::Class(s.to_string()),
         }
     }
@@ -186,11 +192,14 @@ impl Type {
                 format!("({}) -> {}", params_str.join(", "), return_type.to_str())
             }
             Type::SelfType => "self".to_string(),
+            Type::Any => "any".to_string(),
         }
     }
 
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         match (self, other) {
+            (_, Type::Any) => true,
+            (Type::Any, _) => true,
             (Type::Null, Type::Optional(_)) => true,
             (Type::Null, Type::Promise(_)) => true,
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),
@@ -265,6 +274,7 @@ pub struct FunctionSignature {
     pub is_method: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub private: bool,
     /// Mangled name for VM lookup (includes type information for overloading)
     pub mangled_name: Option<String>,
 }
@@ -299,11 +309,15 @@ pub struct ClassInfo {
     pub name: String,
     pub type_params: Vec<String>,
     pub fields: HashMap<String, FieldInfo>,
+    /// Methods stored by mangled name (e.g., "foo@i_s" for foo(int, str))
     pub methods: HashMap<String, MethodSignature>,
+    /// Map from base method name to list of mangled names (for overload resolution)
+    pub method_overloads: HashMap<String, Vec<String>>,
     pub parent_interfaces: Vec<String>,
     pub vtable: Vec<String>,  // Ordered list of virtual method names
     pub is_interface: bool,
     pub is_native: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -311,8 +325,12 @@ pub struct InterfaceInfo {
     pub name: String,
     pub type_params: Vec<String>,
     pub parent_interfaces: Vec<String>,
+    /// Methods stored by mangled name
     pub methods: HashMap<String, MethodSignature>,
+    /// Map from base method name to list of mangled names (for overload resolution)
+    pub method_overloads: HashMap<String, Vec<String>>,
     pub vtable: Vec<String>,  // Ordered list of method names for vtable
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +338,7 @@ pub struct FieldInfo {
     pub name: String,
     pub type_name: Type,
     pub private: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -331,12 +350,15 @@ pub struct MethodSignature {
     pub private: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub is_static: bool,
+    pub mangled_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumInfo {
     pub name: String,
     pub variants: HashMap<String, EnumVariantInfo>,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +371,7 @@ pub struct EnumVariantInfo {
 pub struct VariableInfo {
     pub name: String,
     pub type_name: Type,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +379,24 @@ pub struct TypeAliasInfo {
     pub name: String,
     pub type_params: Vec<String>,
     pub aliased_type: Type,
+    pub private: bool,
+}
+
+/// Represents what a single import brings into scope
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    /// The full module path that was imported (e.g., "std.io")
+    pub module_path: String,
+    /// The alias or name this import brings into scope
+    /// - For "import std.io": Some("io")
+    /// - For "import std.io as myio": Some("myio")
+    /// - For "import std.io.println": Some("println")
+    /// - For "import std": None (module import, access via std.xxx)
+    pub alias: Option<String>,
+    /// The kind of import
+    pub kind: crate::parser::ImportKind,
+    /// All members brought into scope (for wildcard imports)
+    pub members: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -370,10 +411,14 @@ pub struct TypeContext {
     pub enums: HashMap<String, EnumInfo>,
     pub type_aliases: HashMap<String, TypeAliasInfo>,
     pub current_class: Option<String>,
+    pub current_module: Option<String>,
     pub current_method_return: Option<Type>,
     pub current_async_inner_return: Option<Type>,
     pub current_method_params: Vec<String>,
-    pub imports: Vec<String>,
+    /// List of imports with their scope information
+    pub imports: Vec<ImportEntry>,
+    /// Raw import paths for backward compatibility
+    pub import_paths: Vec<String>,
     pub errors: Vec<TypeError>,
     // Type annotations for expressions (line -> column -> type)
     // Used to store inferred types for object literals
@@ -400,10 +445,12 @@ impl TypeContext {
             enums: HashMap::new(),
             type_aliases: HashMap::new(),
             current_class: None,
+            current_module: None,
             current_method_return: None,
             current_async_inner_return: None,
             current_method_params: Vec::new(),
             imports: Vec::new(),
+            import_paths: Vec::new(),
             errors: Vec::new(),
             expr_types: HashMap::new(),
         };
@@ -430,6 +477,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.json.stringify", json_stringify);
@@ -445,11 +493,12 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.json.parse", json_parse);
 
-        self.imports.push("std.json".to_string());
+        self.import_paths.push("std.json".to_string());
 
         // Reflection
         let reflect_typeof = FunctionSignature {
@@ -463,6 +512,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.reflect.type_of", reflect_typeof);
@@ -478,6 +528,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.reflect.class_name", reflect_class_name);
@@ -493,11 +544,47 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.reflect.fields", reflect_fields);
 
-        self.imports.push("std.reflect".to_string());
+        self.import_paths.push("std.reflect".to_string());
+
+        // Register std.io functions (print, println)
+        let io_print = FunctionSignature {
+            name: "print".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Unknown),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("print", io_print);
+
+        let io_println = FunctionSignature {
+            name: "println".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Unknown),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("println", io_println);
+
+        self.import_paths.push("std.io".to_string());
 
         // Built-in types methods
         // str methods
@@ -510,6 +597,8 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
+            mangled_name: None,
         });
         str_methods.insert("trim".to_string(), MethodSignature {
             name: "trim".to_string(),
@@ -519,6 +608,8 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
+            mangled_name: None,
         });
         str_methods.insert("split".to_string(), MethodSignature {
             name: "split".to_string(),
@@ -528,14 +619,22 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
+            mangled_name: None,
         });
+        let mut str_method_overloads = HashMap::new();
+        str_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
+        str_method_overloads.insert("trim".to_string(), vec!["trim()".to_string()]);
+        str_method_overloads.insert("split".to_string(), vec!["split(str)".to_string()]);
         self.classes.insert("str".to_string(), ClassInfo {
             name: "str".to_string(),
             fields: HashMap::new(),
             methods: str_methods,
+            method_overloads: str_method_overloads,
             vtable: vec!["length".to_string(), "trim".to_string(), "split".to_string()],
             is_native: true,
             is_interface: false,
+            private: false,
             parent_interfaces: vec![],
             type_params: vec![],
         });
@@ -550,6 +649,8 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
+            mangled_name: None,
         });
         array_methods.insert("add".to_string(), MethodSignature {
             name: "add".to_string(),
@@ -559,17 +660,262 @@ impl TypeContext {
             private: false,
             is_async: false,
             is_native: true,
+            is_static: false,
+            mangled_name: None,
         });
+        let mut array_method_overloads = HashMap::new();
+        array_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
+        array_method_overloads.insert("add".to_string(), vec!["add(Unknown)".to_string()]);
         self.classes.insert("Array".to_string(), ClassInfo {
             name: "Array".to_string(),
             fields: HashMap::new(),
             methods: array_methods,
+            method_overloads: array_method_overloads,
             vtable: vec!["length".to_string(), "add".to_string()],
             is_native: true,
             is_interface: false,
+            private: false,
             parent_interfaces: vec![],
             type_params: vec!["T".to_string()],
         });
+
+        // Register global str() function
+        let str_fn = FunctionSignature {
+            name: "str".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Str),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("str", str_fn);
+
+        // Register int() function
+        let int_fn = FunctionSignature {
+            name: "int".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int", int_fn);
+
+        // Register float() function
+        let float_fn = FunctionSignature {
+            name: "float".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("float", float_fn);
+
+        // Register bool() function
+        let bool_fn = FunctionSignature {
+            name: "bool".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("bool", bool_fn);
+
+        // Register int8() function
+        let int8_fn = FunctionSignature {
+            name: "int8".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int8),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int8", int8_fn);
+
+        // Register uint8() function
+        let uint8_fn = FunctionSignature {
+            name: "uint8".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt8),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint8", uint8_fn);
+
+        // Register int16() function
+        let int16_fn = FunctionSignature {
+            name: "int16".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int16),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int16", int16_fn);
+
+        // Register uint16() function
+        let uint16_fn = FunctionSignature {
+            name: "uint16".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt16),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint16", uint16_fn);
+
+        // Register int32() function
+        let int32_fn = FunctionSignature {
+            name: "int32".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int32),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int32", int32_fn);
+
+        // Register uint32() function
+        let uint32_fn = FunctionSignature {
+            name: "uint32".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt32),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint32", uint32_fn);
+
+        // Register int64() function
+        let int64_fn = FunctionSignature {
+            name: "int64".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Int64),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("int64", int64_fn);
+
+        // Register uint64() function
+        let uint64_fn = FunctionSignature {
+            name: "uint64".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::UInt64),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("uint64", uint64_fn);
+
+        // Register float32() function
+        let float32_fn = FunctionSignature {
+            name: "float32".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Float32),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("float32", float32_fn);
+
+        // Register float64() function
+        let float64_fn = FunctionSignature {
+            name: "float64".to_string(),
+            params: vec![ParamSignature {
+                name: "value".to_string(),
+                type_name: Some(Type::Unknown),
+            }],
+            return_type: Some(Type::Float64),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        };
+        self.add_function("float64", float64_fn);
     }
 
     pub fn add_class(&mut self, class: &ClassDef) {
@@ -579,17 +925,33 @@ impl TypeContext {
                 name: field.name.clone(),
                 type_name: Type::from_str(&field.type_name),
                 private: field.private,
+                is_static: field.is_static,
             });
         }
 
         let mut methods = HashMap::new();
+        let mut method_overloads: HashMap<String, Vec<String>> = HashMap::new();
+        let mut has_constructor = false;
+
         for method in &class.methods {
+            if method.name == "constructor" {
+                has_constructor = true;
+            }
             let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
                 name: p.name.clone(),
                 type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
             }).collect();
 
-            methods.insert(method.name.clone(), MethodSignature {
+            // Generate mangled name for the method
+            let param_types: Vec<Type> = params.iter()
+                .filter_map(|p| p.type_name.clone())
+                .collect();
+            let mangled = mangle_function_name(&method.name, &param_types);
+
+            let overloads = method_overloads.entry(method.name.clone()).or_insert_with(Vec::new);
+            overloads.push(mangled.clone());
+
+            methods.insert(mangled.clone(), MethodSignature {
                 name: method.name.clone(),
                 params,
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
@@ -597,12 +959,60 @@ impl TypeContext {
                 private: method.private,
                 is_async: method.is_async,
                 is_native: method.is_native,
+                is_static: method.is_static,
+                mangled_name: Some(mangled.clone()),
             });
         }
 
+        // Auto-generate constructors if no custom constructor is defined
+        if !has_constructor {
+            // Empty constructor() - fields can be initialized with defaults or remain uninitialized
+            let empty_ctor_mangled = mangle_function_name("constructor", &[]);
+            let overloads = method_overloads.entry("constructor".to_string()).or_insert_with(Vec::new);
+            overloads.push(empty_ctor_mangled.clone());
+
+            methods.insert(empty_ctor_mangled.clone(), MethodSignature {
+                name: "constructor".to_string(),
+                params: Vec::new(),
+                return_type: None,
+                return_optional: false,
+                private: false,
+                is_async: false,
+                is_native: false,
+                is_static: false,
+                mangled_name: Some(empty_ctor_mangled),
+            });
+
+            // Constructor with all fields as parameters
+            if !class.fields.is_empty() {
+                let field_params: Vec<ParamSignature> = class.fields.iter().map(|field| ParamSignature {
+                    name: field.name.clone(),
+                    type_name: Some(Type::from_str(&field.type_name)),
+                }).collect();
+                let field_param_types: Vec<Type> = field_params.iter()
+                    .filter_map(|p| p.type_name.clone())
+                    .collect();
+                let field_ctor_mangled = mangle_function_name("constructor", &field_param_types);
+                overloads.push(field_ctor_mangled.clone());
+
+                methods.insert(field_ctor_mangled.clone(), MethodSignature {
+                    name: "constructor".to_string(),
+                    params: field_params,
+                    return_type: None,
+                    return_optional: false,
+                    private: false,
+                    is_async: false,
+                    is_native: false,
+                    is_static: false,
+                    mangled_name: Some(field_ctor_mangled),
+                });
+            }
+        }
+
         // Build vtable: collect all virtual methods (methods that override interface methods)
+        // Use base method names (not mangled) for vtable
         let mut vtable = Vec::new();
-        for method_name in methods.keys() {
+        for method_name in method_overloads.keys() {
             vtable.push(method_name.clone());
         }
 
@@ -611,22 +1021,34 @@ impl TypeContext {
             type_params: class.type_params.clone(),
             fields,
             methods,
+            method_overloads,
             parent_interfaces: class.parent_interfaces.clone(),
             vtable,
             is_interface: false,
             is_native: class.is_native,
+            private: class.private,
         });
     }
 
     pub fn add_interface(&mut self, interface: &crate::parser::InterfaceDef) {
         let mut methods = HashMap::new();
+        let mut method_overloads: HashMap<String, Vec<String>> = HashMap::new();
         for method in &interface.methods {
             let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
                 name: p.name.clone(),
                 type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
             }).collect();
 
-            methods.insert(method.name.clone(), MethodSignature {
+            // Generate mangled name for the method
+            let param_types: Vec<Type> = params.iter()
+                .filter_map(|p| p.type_name.clone())
+                .collect();
+            let mangled = mangle_function_name(&method.name, &param_types);
+
+            let overloads = method_overloads.entry(method.name.clone()).or_insert_with(Vec::new);
+            overloads.push(mangled.clone());
+
+            methods.insert(mangled.clone(), MethodSignature {
                 name: method.name.clone(),
                 params,
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
@@ -634,12 +1056,14 @@ impl TypeContext {
                 private: method.private,
                 is_async: method.is_async,
                 is_native: method.is_native,
+                is_static: method.is_static,
+                mangled_name: Some(mangled.clone()),
             });
         }
 
         // Build vtable: ordered list of method names
         let mut vtable = Vec::new();
-        for method_name in methods.keys() {
+        for method_name in method_overloads.keys() {
             vtable.push(method_name.clone());
         }
 
@@ -648,7 +1072,9 @@ impl TypeContext {
             type_params: interface.type_params.clone(),
             parent_interfaces: interface.parent_interfaces.clone(),
             methods,
+            method_overloads,
             vtable,
+            private: interface.private,
         });
     }
 
@@ -676,6 +1102,7 @@ impl TypeContext {
             name: alias.name.clone(),
             type_params: alias.type_params.clone(),
             aliased_type,
+            private: alias.private,
         });
     }
 
@@ -711,6 +1138,7 @@ impl TypeContext {
         self.enums.insert(enum_def.name.clone(), EnumInfo {
             name: enum_def.name.clone(),
             variants,
+            private: enum_def.private,
         });
     }
 
@@ -722,10 +1150,11 @@ impl TypeContext {
         self.enums.get(enum_name).and_then(|e| e.variants.get(variant_name))
     }
 
-    pub fn add_variable(&mut self, name: &str, type_name: Type) {
+    pub fn add_variable(&mut self, name: &str, type_name: Type, private: bool) {
         self.variables.insert(name.to_string(), VariableInfo {
             name: name.to_string(),
             type_name,
+            private,
         });
     }
 
@@ -747,6 +1176,47 @@ impl TypeContext {
             return Some(sig);
         }
         None
+    }
+
+    /// Substitute type parameters in a type with actual type arguments
+    /// E.g., TypeParameter("T") with mapping {"T": Str} -> Str
+    pub fn substitute_type_params(&self, ty: &Type, type_args: &[Type], type_params: &[String]) -> Type {
+        match ty {
+            Type::TypeParameter(param_name) => {
+                // Find the corresponding type argument
+                if let Some(idx) = type_params.iter().position(|p| p == param_name) {
+                    if let Some(arg) = type_args.get(idx) {
+                        return arg.clone();
+                    }
+                }
+                ty.clone()
+            }
+            Type::Array(inner) => {
+                Type::Array(Box::new(self.substitute_type_params(inner, type_args, type_params)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type_params(inner, type_args, type_params)))
+            }
+            Type::Promise(inner) => {
+                Type::Promise(Box::new(self.substitute_type_params(inner, type_args, type_params)))
+            }
+            Type::GenericInstance(name, args) => {
+                let substituted_args: Vec<Type> = args
+                    .iter()
+                    .map(|arg| self.substitute_type_params(arg, type_args, type_params))
+                    .collect();
+                Type::GenericInstance(name.clone(), substituted_args)
+            }
+            Type::Function(params, return_type) => {
+                let substituted_params: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.substitute_type_params(p, type_args, type_params))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_type_params(return_type, type_args, type_params));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => ty.clone(),
+        }
     }
 
     /// Get all overloaded versions of a function by base name
@@ -774,15 +1244,95 @@ impl TypeContext {
         // Try to find overloads by base name
         if let Some(mangled_names) = self.function_overloads.get(name) {
             if let Some(first_mangled) = mangled_names.first() {
-                return self.functions.get(first_mangled);
+                if let Some(sig) = self.functions.get(first_mangled) {
+                    // Check visibility for private functions
+                    if sig.private {
+                        // Private functions are only visible within the same module
+                        if let Some(ref current_module) = self.current_module {
+                            let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
+                            if func_module != *current_module {
+                                return None; // Private function not visible from this module
+                            }
+                        } else {
+                            return None; // Private function not visible from global scope
+                        }
+                    }
+                    return Some(sig);
+                }
             }
         }
 
         // Try to find a function that ends with ::<name> or .<name>
         // Prefer exact module match if we're in a module context
+        // First, collect all matching functions
+        let mut matching_sigs: Vec<&FunctionSignature> = Vec::new();
         for (func_name, sig) in &self.functions {
-            if func_name.ends_with(&format!("::{}", name)) || func_name.ends_with(&format!(".{}", name)) {
-                return Some(sig);
+            if func_name.ends_with(&format!(".{}", name)) {
+                matching_sigs.push(sig);
+            }
+        }
+
+        // If we have matches, find the best one based on imports and visibility
+        if !matching_sigs.is_empty() {
+            // First, try to find a match from an imported module that is not private
+            for import_entry in &self.imports {
+                for sig in &matching_sigs {
+                    // Check if function is from the imported module
+                    let from_imported_module = match import_entry.kind {
+                        crate::parser::ImportKind::Module => {
+                            // Module import: function should be under import_entry.module_path.*
+                            sig.name.starts_with(&format!("{}.", import_entry.module_path))
+                        }
+                        crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                            // Simple/aliased import: function should be under the module path
+                            // Also check if the function name is in the members list (for wildcard-like behavior)
+                            let from_module = sig.name.starts_with(&format!("{}.", import_entry.module_path));
+                            let from_members = import_entry.members.iter().any(|m| {
+                                sig.name.ends_with(&format!(".{}", m)) || sig.name == *m
+                            });
+                            from_module || from_members
+                        }
+                        crate::parser::ImportKind::Member => {
+                            // Member import: function name should match the alias
+                            if let Some(ref alias) = import_entry.alias {
+                                sig.name.ends_with(&format!(".{}", alias))
+                            } else {
+                                false
+                            }
+                        }
+                        crate::parser::ImportKind::Wildcard => {
+                            // Wildcard: function should be directly under the module path
+                            // or in the members list
+                            let from_module = sig.name.starts_with(&format!("{}.", import_entry.module_path));
+                            let from_members = import_entry.members.iter().any(|m| {
+                                sig.name.ends_with(&format!(".{}", m)) || sig.name == *m
+                            });
+                            from_module || from_members
+                        }
+                    };
+
+                    if from_imported_module {
+                        // Check visibility
+                        if sig.private {
+                            // Private functions are only visible within the same module
+                            if let Some(ref current_module) = self.current_module {
+                                if import_entry.module_path == *current_module {
+                                    return Some(sig); // Visible - same module
+                                }
+                            }
+                            // Not visible from this module
+                            continue;
+                        }
+                        return Some(sig); // Public function from imported module
+                    }
+                }
+            }
+
+            // If no imported match found, return the first non-private match
+            for sig in &matching_sigs {
+                if !sig.private {
+                    return Some(sig);
+                }
             }
         }
 
@@ -791,42 +1341,120 @@ impl TypeContext {
 
     /// Try to resolve a module-qualified function name (e.g., "math.sin" with import "std.math")
     pub fn resolve_qualified_function(&self, module_alias: &str, member_name: &str) -> Option<&FunctionSignature> {
-        // First try direct lookup
+        // First try direct lookup (e.g., "std.io.println" when user wrote "io.println")
         let direct_name = format!("{}.{}", module_alias, member_name);
         if let Some(mangled_names) = self.function_overloads.get(&direct_name) {
             if let Some(first_mangled) = mangled_names.first() {
-                return self.functions.get(first_mangled);
+                if let Some(sig) = self.functions.get(first_mangled) {
+                    // Check visibility: private functions are only visible within the same module
+                    if sig.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
+                            if func_module != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    return Some(sig);
+                }
             }
         }
 
         // Try to find an import that matches the module alias
-        for import_path in &self.imports {
-            // Case 1: Import ends with the alias (e.g., import std.math and access math.sin)
+        for import_entry in &self.imports {
+            let module_matches = match &import_entry.alias {
+                Some(alias) => alias == module_alias,
+                None => {
+                    // No alias - check if the last component of the module path matches
+                    import_entry.module_path.ends_with(&format!(".{}", module_alias))
+                        || import_entry.module_path == module_alias
+                }
+            };
+
+            if module_matches {
+                // Build the qualified name based on import kind
+                let qualified_name = match import_entry.kind {
+                    crate::parser::ImportKind::Module => {
+                        // import std -> std.io.println
+                        format!("{}.{}.{}", import_entry.module_path, module_alias, member_name)
+                    }
+                    crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                        // import std.io -> std.io.println
+                        format!("{}.{}", import_entry.module_path, member_name)
+                    }
+                    crate::parser::ImportKind::Member => {
+                        // import std.io.println - shouldn't reach here for qualified access
+                        continue;
+                    }
+                    crate::parser::ImportKind::Wildcard => {
+                        // import std.io.* -> std.io.println
+                        format!("{}.{}", import_entry.module_path, member_name)
+                    }
+                };
+
+                if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
+                    if let Some(first_mangled) = mangled_names.first() {
+                        if let Some(sig) = self.functions.get(first_mangled) {
+                            // Check visibility
+                            if sig.private {
+                                if let Some(ref current_module) = self.current_module {
+                                    if !import_entry.module_path.ends_with(&format!(".{}", current_module)) 
+                                        && import_entry.module_path != *current_module {
+                                        return None;
+                                    }
+                                } else {
+                                    return None;
+                                }
+                            }
+                            return Some(sig);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: check import_paths for backward compatibility
+        for import_path in &self.import_paths {
             if let Some(last_dot) = import_path.rfind('.') {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, member_name);
                     if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                         if let Some(first_mangled) = mangled_names.first() {
-                            return self.functions.get(first_mangled);
+                            if let Some(sig) = self.functions.get(first_mangled) {
+                                if sig.private {
+                                    if let Some(ref current_module) = self.current_module {
+                                        if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                            return None;
+                                        }
+                                    } else {
+                                        return None;
+                                    }
+                                }
+                                return Some(sig);
+                            }
                         }
-                    }
-                }
-            } else if import_path == module_alias {
-                // Import is exactly the alias (no dots, e.g., import math and access math.sin)
-                let qualified_name = format!("{}.{}", import_path, member_name);
-                if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
-                    if let Some(first_mangled) = mangled_names.first() {
-                        return self.functions.get(first_mangled);
                     }
                 }
             }
 
-            // Case 2: Import is a parent module (e.g., import std and access io.println -> std.io.println)
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, member_name);
             if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                 if let Some(first_mangled) = mangled_names.first() {
-                    return self.functions.get(first_mangled);
+                    if let Some(sig) = self.functions.get(first_mangled) {
+                        if sig.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if !qualified_name.ends_with(&format!(".{}", current_module)) {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
+                        return Some(sig);
+                    }
                 }
             }
         }
@@ -838,31 +1466,108 @@ impl TypeContext {
     pub fn resolve_qualified_class(&self, module_alias: &str, class_name: &str) -> Option<String> {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, class_name);
-        if self.classes.contains_key(&direct_name) {
+        if let Some(class_info) = self.classes.get(&direct_name) {
+            if class_info.private {
+                if let Some(ref current_module) = self.current_module {
+                    let class_module = direct_name.rsplit('.').nth(1).unwrap_or("");
+                    if class_module != *current_module {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
             return Some(direct_name);
         }
 
         // Try to find an import that matches the module alias
-        for import_path in &self.imports {
-            // Case 1: Import ends with the alias
+        for import_entry in &self.imports {
+            let module_matches = match &import_entry.alias {
+                Some(alias) => alias == module_alias,
+                None => {
+                    import_entry.module_path.ends_with(&format!(".{}", module_alias))
+                        || import_entry.module_path == module_alias
+                }
+            };
+
+            if module_matches {
+                let qualified_name = match import_entry.kind {
+                    crate::parser::ImportKind::Module => {
+                        format!("{}.{}.{}", import_entry.module_path, module_alias, class_name)
+                    }
+                    crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                        format!("{}.{}", import_entry.module_path, class_name)
+                    }
+                    crate::parser::ImportKind::Member => {
+                        continue;
+                    }
+                    crate::parser::ImportKind::Wildcard => {
+                        format!("{}.{}", import_entry.module_path, class_name)
+                    }
+                };
+
+                if let Some(class_info) = self.classes.get(&qualified_name) {
+                    if class_info.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if !import_entry.module_path.ends_with(&format!(".{}", current_module)) 
+                                && import_entry.module_path != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    return Some(qualified_name);
+                }
+            }
+        }
+
+        // Fallback to import_paths for backward compatibility
+        for import_path in &self.import_paths {
             if let Some(last_dot) = import_path.rfind('.') {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, class_name);
-                    if self.classes.contains_key(&qualified_name) {
+                    if let Some(class_info) = self.classes.get(&qualified_name) {
+                        if class_info.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
                         return Some(qualified_name);
                     }
                 }
             } else if import_path == module_alias {
                 let qualified_name = format!("{}.{}", import_path, class_name);
-                if self.classes.contains_key(&qualified_name) {
+                if let Some(class_info) = self.classes.get(&qualified_name) {
+                    if class_info.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if *import_path != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
                     return Some(qualified_name);
                 }
             }
 
-            // Case 2: Import is a parent module
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, class_name);
-            if self.classes.contains_key(&qualified_name) {
+            if let Some(class_info) = self.classes.get(&qualified_name) {
+                if class_info.private {
+                    if let Some(ref current_module) = self.current_module {
+                        if !qualified_name.ends_with(&format!(".{}", current_module)) {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                }
                 return Some(qualified_name);
             }
         }
@@ -875,30 +1580,107 @@ impl TypeContext {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, var_name);
         if let Some(var) = self.variables.get(&direct_name) {
+            if var.private {
+                if let Some(ref current_module) = self.current_module {
+                    let var_module = var.name.rsplit('.').nth(1).unwrap_or("");
+                    if var_module != *current_module {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
             return Some(var);
         }
 
         // Try to find an import that matches the module alias
-        for import_path in &self.imports {
-            // Case 1: Import ends with the alias
+        for import_entry in &self.imports {
+            let module_matches = match &import_entry.alias {
+                Some(alias) => alias == module_alias,
+                None => {
+                    import_entry.module_path.ends_with(&format!(".{}", module_alias))
+                        || import_entry.module_path == module_alias
+                }
+            };
+
+            if module_matches {
+                let qualified_name = match import_entry.kind {
+                    crate::parser::ImportKind::Module => {
+                        format!("{}.{}.{}", import_entry.module_path, module_alias, var_name)
+                    }
+                    crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                        format!("{}.{}", import_entry.module_path, var_name)
+                    }
+                    crate::parser::ImportKind::Member => {
+                        continue;
+                    }
+                    crate::parser::ImportKind::Wildcard => {
+                        format!("{}.{}", import_entry.module_path, var_name)
+                    }
+                };
+
+                if let Some(var) = self.variables.get(&qualified_name) {
+                    if var.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if !import_entry.module_path.ends_with(&format!(".{}", current_module))
+                                && import_entry.module_path != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    return Some(var);
+                }
+            }
+        }
+
+        // Fallback to import_paths for backward compatibility
+        for import_path in &self.import_paths {
             if let Some(last_dot) = import_path.rfind('.') {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, var_name);
                     if let Some(var) = self.variables.get(&qualified_name) {
+                        if var.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
                         return Some(var);
                     }
                 }
             } else if import_path == module_alias {
                 let qualified_name = format!("{}.{}", import_path, var_name);
                 if let Some(var) = self.variables.get(&qualified_name) {
+                    if var.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if *import_path != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
                     return Some(var);
                 }
             }
 
-            // Case 2: Import is a parent module
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, var_name);
             if let Some(var) = self.variables.get(&qualified_name) {
+                if var.private {
+                    if let Some(ref current_module) = self.current_module {
+                        if !qualified_name.ends_with(&format!(".{}", current_module)) {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                }
                 return Some(var);
             }
         }
@@ -936,15 +1718,36 @@ impl TypeContext {
         // 1. Try as a full name (with overloads)
         if let Some(overloads) = self.function_overloads.get(name) {
             if let Some(res) = find_best_match(overloads) {
+                // Check visibility for private functions
+                if res.private {
+                    if let Some(ref current_module) = self.current_module {
+                        let func_module = res.name.rsplit('.').nth(1).unwrap_or("");
+                        if func_module != *current_module {
+                            return None; // Private function not visible from this module
+                        }
+                    } else {
+                        return None; // Private function not visible from global scope
+                    }
+                }
                 return Some(res);
             }
         }
 
         // 2. Try with imports
-        for import_path in &self.imports {
-            let qualified = format!("{}.{}", import_path, name);
+        for import_entry in &self.imports {
+            let qualified = format!("{}.{}", import_entry.module_path, name);
             if let Some(overloads) = self.function_overloads.get(&qualified) {
                 if let Some(res) = find_best_match(overloads) {
+                    // Check visibility for private functions
+                    if res.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if import_entry.module_path != *current_module {
+                                continue; // Private function not visible from this module
+                            }
+                        } else {
+                            continue; // Private function not visible from global scope
+                        }
+                    }
                     return Some(res);
                 }
             }
@@ -952,9 +1755,19 @@ impl TypeContext {
             // Also try parent module sub-access (e.g., import std and access io.println -> std.io.println)
             if let Some(dot_pos) = name.find('.') {
                 let (prefix, rest) = name.split_at(dot_pos);
-                let qualified2 = format!("{}.{}.{}", import_path, prefix, &rest[1..]);
+                let qualified2 = format!("{}.{}.{}", import_entry.module_path, prefix, &rest[1..]);
                 if let Some(overloads) = self.function_overloads.get(&qualified2) {
                     if let Some(res) = find_best_match(overloads) {
+                        // Check visibility for private functions
+                        if res.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if import_entry.module_path != *current_module {
+                                    continue; // Private function not visible from this module
+                                }
+                            } else {
+                                continue; // Private function not visible from global scope
+                            }
+                        }
                         return Some(res);
                     }
                 }
@@ -962,6 +1775,7 @@ impl TypeContext {
         }
 
         // 3. Try qualified lookup (fallback for older code)
+        // Only consider functions from imported modules or the current module
         for (func_mangled, sig) in &self.functions {
             // Extract base name from mangled name (part before '(')
             let base_name = match func_mangled.find('(') {
@@ -971,6 +1785,32 @@ impl TypeContext {
 
             if base_name.ends_with(&format!(".{}", name)) || base_name.ends_with(&format!("::{}", name)) {
                 if self.signature_matches(sig, arg_types) {
+                    // Check if this function is from an imported module or the current module
+                    let from_imported_module = self.imports.iter().any(|import_entry| {
+                        base_name.starts_with(&format!("{}.", import_entry.module_path)) || base_name.starts_with(&format!("{}::", import_entry.module_path))
+                    });
+
+                    let from_current_module = if let Some(ref current_module) = self.current_module {
+                        base_name.starts_with(&format!("{}.", current_module)) || base_name.starts_with(&format!("{}::", current_module))
+                    } else {
+                        false
+                    };
+                    
+                    if !from_imported_module && !from_current_module {
+                        continue; // Skip functions from non-imported modules
+                    }
+                    
+                    // Check visibility for private functions
+                    if sig.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
+                            if func_module != *current_module {
+                                continue; // Private function not visible from this module
+                            }
+                        } else {
+                            continue; // Private function not visible from global scope
+                        }
+                    }
                     return Some(sig);
                 }
             }
@@ -1021,7 +1861,18 @@ impl TypeContext {
     /// in qualified classes (e.g., "HttpClient" matches "std::http::HttpClient")
     pub fn resolve_class(&self, name: &str) -> Option<String> {
         // First try exact match
-        if self.classes.contains_key(name) {
+        if let Some(class_info) = self.classes.get(name) {
+            // Check visibility for private classes
+            if class_info.private {
+                if let Some(ref current_module) = self.current_module {
+                    let class_module = name.rsplit('.').nth(1).unwrap_or("");
+                    if class_module != *current_module {
+                        return None; // Private class not visible from this module
+                    }
+                } else {
+                    return None; // Private class not visible from global scope
+                }
+            }
             // If the exact match contains :: or ., use it; otherwise check if there's also a qualified version
             let exact = name.to_string();
             if exact.contains("::") || exact.contains('.') {
@@ -1030,11 +1881,35 @@ impl TypeContext {
             // Prefer qualified version if available (try :: first, then .)
             for class_name in self.classes.keys() {
                 if class_name.ends_with(&format!("::{}", name)) {
+                    if let Some(ci) = self.classes.get(class_name) {
+                        if ci.private {
+                            if let Some(ref current_module) = self.current_module {
+                                let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                                if class_module != *current_module {
+                                    continue; // Private class not visible
+                                }
+                            } else {
+                                continue; // Private class not visible from global scope
+                            }
+                        }
+                    }
                     return Some(class_name.clone());
                 }
             }
             for class_name in self.classes.keys() {
                 if class_name.ends_with(&format!(".{}", name)) {
+                    if let Some(ci) = self.classes.get(class_name) {
+                        if ci.private {
+                            if let Some(ref current_module) = self.current_module {
+                                let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                                if class_module != *current_module {
+                                    continue; // Private class not visible
+                                }
+                            } else {
+                                continue; // Private class not visible from global scope
+                            }
+                        }
+                    }
                     return Some(class_name.clone());
                 }
             }
@@ -1044,13 +1919,54 @@ impl TypeContext {
         // Try to find a class that ends with ::<name>
         for class_name in self.classes.keys() {
             if class_name.ends_with(&format!("::{}", name)) {
+                if let Some(ci) = self.classes.get(class_name) {
+                    if ci.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                            if class_module != *current_module {
+                                continue; // Private class not visible
+                            }
+                        } else {
+                            continue; // Private class not visible from global scope
+                        }
+                    }
+                }
                 return Some(class_name.clone());
             }
         }
 
         // Try to find a class that ends with .<name>
+        // Only consider classes from imported modules or the current module
         for class_name in self.classes.keys() {
             if class_name.ends_with(&format!(".{}", name)) {
+                if let Some(ci) = self.classes.get(class_name) {
+                    // Check if this class is from an imported module or the current module
+                    let from_imported_module = self.imports.iter().any(|import_entry| {
+                        class_name.starts_with(&format!("{}.", import_entry.module_path)) || class_name.starts_with(&format!("{}::", import_entry.module_path))
+                    });
+
+                    let from_current_module = if let Some(ref current_module) = self.current_module {
+                        class_name.starts_with(&format!("{}.", current_module)) || class_name.starts_with(&format!("{}::", current_module))
+                    } else {
+                        false
+                    };
+                    
+                    if !from_imported_module && !from_current_module {
+                        continue; // Skip classes from non-imported modules
+                    }
+                    
+                    // Check visibility for private classes
+                    if ci.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                            if class_module != *current_module {
+                                continue; // Private class not visible from this module
+                            }
+                        } else {
+                            continue; // Private class not visible from global scope
+                        }
+                    }
+                }
                 return Some(class_name.clone());
             }
         }
@@ -1060,6 +1976,106 @@ impl TypeContext {
 
     pub fn get_method(&self, class_name: &str, method_name: &str) -> Option<&MethodSignature> {
         self.classes.get(class_name).and_then(|c| c.methods.get(method_name))
+    }
+
+    /// Resolve a method call with argument types for overload resolution
+    /// Returns the best matching method signature based on argument types
+    pub fn resolve_method_call(&self, class_name: &str, method_name: &str, arg_types: &[Type]) -> Option<&MethodSignature> {
+        let class_info = self.classes.get(class_name)?;
+        
+        // Helper to find best match among overloads
+        let find_best_match = |overloads: &[String]| -> Option<&MethodSignature> {
+            let mut best_match: Option<&MethodSignature> = None;
+            let mut best_score = usize::MAX;
+
+            for mangled in overloads {
+                if let Some(sig) = class_info.methods.get(mangled) {
+                    if self.method_signature_matches(sig, arg_types) {
+                        let score = self.calculate_method_match_score(sig, arg_types);
+                        if score < best_score {
+                            best_score = score;
+                            best_match = Some(sig);
+                        }
+                    }
+                }
+            }
+            best_match
+        };
+
+        // Try to find overloads for this method
+        if let Some(overloads) = class_info.method_overloads.get(method_name) {
+            return find_best_match(overloads);
+        }
+
+        None
+    }
+
+    /// Check if two types are compatible (assignable)
+    fn types_compatible(&self, from_type: &Type, to_type: &Type) -> bool {
+        // Exact match
+        if from_type == to_type {
+            return true;
+        }
+        
+        // Unknown type is compatible with anything
+        if *from_type == Type::Unknown || *to_type == Type::Unknown {
+            return true;
+        }
+        
+        // Null is compatible with Optional types
+        if *from_type == Type::Null {
+            if let Type::Optional(_) = to_type {
+                return true;
+            }
+        }
+        
+        // Numeric type compatibility
+        match (from_type, to_type) {
+            (Type::Int, Type::Float) => true,
+            (Type::Int8, Type::Int) | (Type::Int8, Type::Int16) | (Type::Int8, Type::Int32) | (Type::Int8, Type::Int64) => true,
+            (Type::Int16, Type::Int) | (Type::Int16, Type::Int32) | (Type::Int16, Type::Int64) => true,
+            (Type::Int32, Type::Int) | (Type::Int32, Type::Int64) => true,
+            (Type::UInt8, Type::UInt16) | (Type::UInt8, Type::UInt32) | (Type::UInt8, Type::UInt64) => true,
+            (Type::UInt16, Type::UInt32) | (Type::UInt16, Type::UInt64) => true,
+            (Type::UInt32, Type::UInt64) => true,
+            (Type::Float32, Type::Float64) | (Type::Float32, Type::Float) => true,
+            (Type::Float64, Type::Float) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if a method signature matches the given argument types
+    fn method_signature_matches(&self, sig: &MethodSignature, arg_types: &[Type]) -> bool {
+        if sig.params.len() != arg_types.len() {
+            return false;
+        }
+
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(ref param_type) = param.type_name {
+                if !self.types_compatible(arg_type, param_type) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Calculate match score for method overload resolution (lower is better)
+    fn calculate_method_match_score(&self, sig: &MethodSignature, arg_types: &[Type]) -> usize {
+        let mut score = 0;
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(ref param_type) = param.type_name {
+                if arg_type == param_type {
+                    score += 1; // Exact match
+                } else if self.types_compatible(arg_type, param_type) {
+                    score += 2; // Compatible but not exact
+                } else {
+                    score += 100; // Incompatible (shouldn't happen if signature_matches returned true)
+                }
+            }
+        }
+        score
     }
 
     pub fn add_error(&mut self, message: String, line: usize) {
@@ -1166,11 +2182,12 @@ impl TypeChecker {
                             is_method: false,
                             is_async: func.is_async,
                             is_native: func.is_native,
+                            private: func.private,
                             mangled_name: None,
                         });
                     }
                 }
-                Stmt::Import { path: _ } => {
+                Stmt::Import { .. } => {
                     // Import handled during module resolution
                 }
                 _ => {}
@@ -1183,7 +2200,7 @@ impl TypeChecker {
             Stmt::Module { path: _ } => {
                 // Module declaration - just for namespacing
             }
-            Stmt::Import { path: _ } => {
+            Stmt::Import { .. } => {
                 // Import handled in collect_definitions
             }
             Stmt::Class(class) => {
@@ -1201,7 +2218,7 @@ impl TypeChecker {
             Stmt::Function(func) => {
                 self.check_function(func);
             }
-            Stmt::Let { name, type_annotation, expr } => {
+            Stmt::Let { name, type_annotation, expr, private } => {
                 // If there's a type annotation, use it for type deduction
                 let expr_type = if let Some(ref type_name) = type_annotation {
                     let expected_type = Type::from_str(type_name);
@@ -1209,7 +2226,7 @@ impl TypeChecker {
                 } else {
                     self.infer_expr(expr)
                 };
-                self.context.add_variable(name, expr_type);
+                self.context.add_variable(name, expr_type, *private);
             }
             Stmt::Assign { name, expr, span } => {
                 let expr_type = self.infer_expr(expr);
@@ -1218,7 +2235,7 @@ impl TypeChecker {
                     // Use expected type for type deduction
                     let expected_type = var_info.type_name.clone();
                     let deduced_type = self.infer_expr_with_expected_type(expr, &Some(expected_type.clone()));
-                    
+
                     if !deduced_type.is_assignable_to(&expected_type) {
                         self.context.add_error(
                             format!(
@@ -1258,7 +2275,93 @@ impl TypeChecker {
                     );
                 } else {
                     // Variable not declared with let, create it (implicit declaration in global/function scope)
-                    self.context.add_variable(name, expr_type);
+                    self.context.add_variable(name, expr_type, false);
+                }
+            }
+            Stmt::AugAssign { target, op, expr, span } => {
+                let var_type = match target {
+                    crate::parser::AugAssignTarget::Variable(name) => {
+                        if let Some(var_info) = self.context.get_variable(name) {
+                            var_info.type_name.clone()
+                        } else {
+                            self.context.add_error_with_location(
+                                format!("Undeclared variable '{}'", name),
+                                span.line,
+                                span.column,
+                                None,
+                                None,
+                            );
+                            return;
+                        }
+                    }
+                    crate::parser::AugAssignTarget::Field { object, name } => {
+                        let obj_type = self.infer_expr(object);
+                        // Get the field type from the object's class
+                        if let Type::Class(class_name) = obj_type {
+                            if let Some(class_info) = self.context.get_class(&class_name) {
+                                if let Some(field_info) = class_info.fields.get(name.as_str()) {
+                                    field_info.type_name.clone()
+                                } else {
+                                    self.context.add_error_with_location(
+                                        format!("Field '{}' not found in class '{}'", name, class_name),
+                                        span.line,
+                                        span.column,
+                                        None,
+                                        None,
+                                    );
+                                    return;
+                                }
+                            } else {
+                                self.context.add_error_with_location(
+                                    format!("Unknown class '{}'", class_name),
+                                    span.line,
+                                    span.column,
+                                    None,
+                                    None,
+                                );
+                                return;
+                            }
+                        } else {
+                            self.context.add_error_with_location(
+                                format!("Cannot access field '{}' on non-class type '{}'", name, obj_type.to_str()),
+                                span.line,
+                                span.column,
+                                None,
+                                None,
+                            );
+                            return;
+                        }
+                    }
+                };
+
+                let expr_type = self.infer_expr(expr);
+
+                // For +=, -=, *=, /=, both operands must be numeric types
+                let op_name = match op {
+                    crate::parser::AugOp::Add => "+=",
+                    crate::parser::AugOp::Subtract => "-=",
+                    crate::parser::AugOp::Multiply => "*=",
+                    crate::parser::AugOp::Divide => "/=",
+                };
+
+                if !var_type.is_numeric() {
+                    self.context.add_error(
+                        format!(
+                            "Cannot use '{}' operator on non-numeric type '{}'",
+                            op_name,
+                            var_type.to_str()
+                        ),
+                        0
+                    );
+                } else if !expr_type.is_numeric() {
+                    self.context.add_error(
+                        format!(
+                            "Cannot use '{}' operator with non-numeric type '{}'",
+                            op_name,
+                            expr_type.to_str()
+                        ),
+                        0
+                    );
                 }
             }
             Stmt::Return(expr) => {
@@ -1319,7 +2422,7 @@ impl TypeChecker {
             Stmt::For { var_name, range, body } => {
                 let _range_type = self.infer_expr(range);
                 // For now, assume ranges are integers
-                self.context.add_variable(var_name, Type::Int);
+                self.context.add_variable(var_name, Type::Int, false);
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
@@ -1343,7 +2446,7 @@ impl TypeChecker {
                 }
                 
                 // Add catch variable (exception object) - currently unknown type
-                self.context.add_variable(catch_var, Type::Unknown);
+                self.context.add_variable(catch_var, Type::Unknown, false);
                 
                 for stmt in catch_block {
                     self.check_stmt(stmt);
@@ -1403,7 +2506,7 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone());
+            self.context.add_variable(&param.name, param_type.clone(), false);
             added_vars.push(param.name.clone());
         }
 
@@ -1454,12 +2557,12 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone());
+            self.context.add_variable(&param.name, param_type.clone(), false);
             added_vars.push(param.name.clone());
         }
 
         // Add 'self' variable
-        self.context.add_variable("self", Type::Class(class_name.to_string()));
+        self.context.add_variable("self", Type::Class(class_name.to_string()), false);
 
         // Check method body
         for stmt in &method.body {
@@ -1508,7 +2611,12 @@ impl TypeChecker {
                             return field_type;
                         }
                     }
-                    // Variable not found in class context - report as undeclared
+                    // Variable not found in class context - check if it's a class name (for static access)
+                    if self.context.get_class(name).is_some() {
+                        // Class name reference - will be handled in Get expression
+                        return Type::Class(name.clone());
+                    }
+                    // Variable not found - report as undeclared
                     self.context.add_error_with_location(
                         format!("Undeclared variable '{}'", name),
                         span.line,
@@ -1520,22 +2628,25 @@ impl TypeChecker {
                 } else if self.context.get_enum(name).is_some() {
                     // Enum type access
                     Type::Enum(name.clone())
+                } else if self.context.get_class(name).is_some() {
+                    // Class name reference (for static access) - will be handled in Get expression
+                    Type::Class(name.clone())
                 } else {
                     // Variable not found in global/function context - check if it's a module alias
                     let mut is_module_alias = false;
-                    for import_path in &self.context.imports {
-                        if let Some(last_dot) = import_path.rfind('.') {
-                            let import_alias = &import_path[last_dot + 1..];
+                    for import_entry in &self.context.imports {
+                        if let Some(last_dot) = import_entry.module_path.rfind('.') {
+                            let import_alias = &import_entry.module_path[last_dot + 1..];
                             if import_alias == name {
                                 is_module_alias = true;
                                 break;
                             }
-                        } else if import_path == name {
+                        } else if import_entry.module_path.as_str() == name {
                             is_module_alias = true;
                             break;
                         }
                     }
-                    
+
                     if is_module_alias {
                         return Type::Unknown;
                     }
@@ -1615,6 +2726,22 @@ impl TypeChecker {
                             Type::Int
                         }
                     }
+                    crate::parser::BinaryOp::Pow => {
+                        // Power operation requires numeric types and returns float
+                        if !is_numeric_type(&left_type) && left_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for power operation, got {}", left_type.to_str()),
+                                0
+                            );
+                        }
+                        if !is_numeric_type(&right_type) && right_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for power operation, got {}", right_type.to_str()),
+                                0
+                            );
+                        }
+                        Type::Float
+                    }
                     crate::parser::BinaryOp::Greater | crate::parser::BinaryOp::Less |
                     crate::parser::BinaryOp::GreaterEqual | crate::parser::BinaryOp::LessEqual => {
                         // Comparison operations require numeric types and return bool
@@ -1645,6 +2772,16 @@ impl TypeChecker {
                             );
                         }
                         Type::Bool
+                    }
+                    crate::parser::UnaryOp::Negate => {
+                        // Negation works on numeric types and returns the same type
+                        if inner_type != Type::Int && inner_type != Type::Float && !inner_type.is_numeric() && inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected numeric type for unary minus, got {}", inner_type.to_str()),
+                                0
+                            );
+                        }
+                        inner_type
                     }
                     crate::parser::UnaryOp::PrefixIncrement | crate::parser::UnaryOp::PostfixIncrement => {
                         // Increment operator works on numeric types and returns the original type
@@ -1690,26 +2827,166 @@ impl TypeChecker {
                             }
                         }
                         return_type
-                    } else if let Some(class_info) = self.context.get_class(func_name) {
-                        // It's a class instantiation - check constructor args
-                        let ctor_sig = class_info.methods.get("constructor").cloned();
-                        if let Some(ref sig) = ctor_sig {
-                            self.check_method_call(sig, args, "constructor", func_name);
-                        } else if !args.is_empty() {
-                            // No explicit constructor but args were provided
-                            self.context.add_error_with_location(
-                                format!("Class '{}' does not accept constructor arguments", func_name),
-                                span.line, span.column, None, None
-                            );
-                        }
-                        // Return type is the class type
-                        Type::Class(func_name.clone())
                     } else {
-                        self.context.add_error_with_location(
-                            format!("Undefined function: '{}'", func_name),
-                            span.line, span.column, None, None
-                        );
-                        Type::Unknown
+                        // Check if it's a class instantiation (possibly generic)
+                        // Parse func_name as a type to handle generic instances like ClassName<T>
+                        let func_name_type = Type::from_str(func_name);
+                        
+                        let (base_class_name, full_return_type) = match &func_name_type {
+                            Type::GenericInstance(base_name, type_args) => {
+                                // This is a generic class instantiation like ClassName<T1, T2>
+                                // Look up the base class
+                                if let Some(class_info) = self.context.get_class(base_name) {
+                                    // Validate type arguments against class type parameters
+                                    if !class_info.type_params.is_empty() {
+                                        if type_args.len() != class_info.type_params.len() {
+                                            self.context.add_error_with_location(
+                                                format!(
+                                                    "Generic class '{}' expects {} type argument(s), got {}",
+                                                    base_name,
+                                                    class_info.type_params.len(),
+                                                    type_args.len()
+                                                ),
+                                                span.line, span.column, None, None
+                                            );
+                                        }
+                                    }
+                                    // Return type is the generic instance
+                                    (base_name.clone(), func_name_type.clone())
+                                } else {
+                                    // Base class not found
+                                    self.context.add_error_with_location(
+                                        format!("Undefined class: '{}'", base_name),
+                                        span.line, span.column, None, None
+                                    );
+                                    return Type::Unknown;
+                                }
+                            }
+                            Type::Class(base_name) => {
+                                // Non-generic class instantiation
+                                if let Some(_class_info) = self.context.get_class(base_name) {
+                                    (base_name.clone(), Type::Class(base_name.clone()))
+                                } else {
+                                    // Not a class, check if it's a type alias or enum
+                                    if let Some(_alias_info) = self.context.get_type_alias(func_name) {
+                                        // Type alias instantiation - treat as the aliased type
+                                        return func_name_type.clone();
+                                    }
+                                    if let Some(_enum_info) = self.context.get_enum(func_name) {
+                                        // Enum instantiation
+                                        return Type::Enum(func_name.to_string());
+                                    }
+                                    // Not found at all
+                                    self.context.add_error_with_location(
+                                        format!("Undefined function: '{}'", func_name),
+                                        span.line, span.column, None, None
+                                    );
+                                    return Type::Unknown;
+                                }
+                            }
+                            _ => {
+                                // Not a valid class type
+                                self.context.add_error_with_location(
+                                    format!("Undefined function: '{}'", func_name),
+                                    span.line, span.column, None, None
+                                );
+                                return Type::Unknown;
+                            }
+                        };
+
+                        // It's a class instantiation - check constructor args
+                        // For generic classes, we need to substitute type parameters in the constructor signature
+                        if let Type::GenericInstance(base_name, type_args) = &func_name_type {
+                            // Look up the base class and get its type parameters
+                            if let Some(class_info) = self.context.get_class(base_name) {
+                                let type_params = class_info.type_params.clone();
+                                
+                                // Try to find a constructor and substitute type parameters
+                                let mut found_matching_ctor = false;
+                                
+                                if let Some(overloads) = class_info.method_overloads.get("constructor") {
+                                    for mangled in overloads {
+                                        if let Some(sig) = class_info.methods.get(mangled) {
+                                            // Substitute type parameters in the constructor signature
+                                            let substituted_params: Vec<crate::types::ParamSignature> = sig.params.iter().map(|p| {
+                                                let substituted_type = p.type_name.as_ref().map(|t| {
+                                                    self.context.substitute_type_params(t, type_args, &type_params)
+                                                });
+                                                crate::types::ParamSignature {
+                                                    name: p.name.clone(),
+                                                    type_name: substituted_type,
+                                                }
+                                            }).collect();
+                                            
+                                            // Check if argument count matches
+                                            let substituted_param_types: Vec<Type> = substituted_params.iter()
+                                                .filter_map(|p| p.type_name.clone())
+                                                .collect();
+                                            
+                                            if substituted_param_types.len() != arg_types.len() {
+                                                continue; // Wrong number of arguments
+                                            }
+                                            
+                                            // Check if all argument types match
+                                            let mut all_match = true;
+                                            for (expected, actual) in substituted_param_types.iter().zip(arg_types.iter()) {
+                                                // Types match if they're equal, or one is assignable to the other
+                                                let types_match = expected == actual 
+                                                    || expected.is_assignable_to(actual)
+                                                    || actual.is_assignable_to(expected)
+                                                    || *expected == Type::Unknown
+                                                    || *actual == Type::Unknown;
+                                                if !types_match {
+                                                    all_match = false;
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if all_match {
+                                                found_matching_ctor = true;
+                                                // Check the method call with substituted signature
+                                                let substituted_sig = MethodSignature {
+                                                    name: sig.name.clone(),
+                                                    params: substituted_params,
+                                                    return_type: sig.return_type.as_ref().map(|t| {
+                                                        self.context.substitute_type_params(t, type_args, &type_params)
+                                                    }),
+                                                    return_optional: sig.return_optional,
+                                                    private: sig.private,
+                                                    is_async: sig.is_async,
+                                                    is_native: sig.is_native,
+                                                    is_static: sig.is_static,
+                                                    mangled_name: sig.mangled_name.clone(),
+                                                };
+                                                self.check_method_call(&substituted_sig, args, "constructor", &base_class_name);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if !found_matching_ctor && !args.is_empty() {
+                                    self.context.add_error_with_location(
+                                        format!("Class '{}' does not accept constructor arguments", base_class_name),
+                                        span.line, span.column, None, None
+                                    );
+                                }
+                            }
+                        } else {
+                            // Non-generic class - use normal resolution
+                            let ctor_sig = self.context.resolve_method_call(&base_class_name, "constructor", &arg_types);
+                            if let Some(sig) = ctor_sig.cloned() {
+                                self.check_method_call(&sig, args, "constructor", &base_class_name);
+                            } else if !args.is_empty() {
+                                self.context.add_error_with_location(
+                                    format!("Class '{}' does not accept constructor arguments", base_class_name),
+                                    span.line, span.column, None, None
+                                );
+                            }
+                        }
+                        
+                        // Return type is the full type (generic instance or plain class)
+                        full_return_type
                     }
                 } else if let Expr::Get { object, name, span: method_span } = callee.as_ref() {
                     // Could be method call OR module.function() call
@@ -1724,10 +3001,12 @@ impl TypeChecker {
 
                     if let Some(class_name) = effective_class {
                         // This is a method call on a class instance or built-in type
-                        let method_sig = self.context.get_class(&class_name)
-                            .and_then(|c| c.methods.get(name).cloned());
+                        let arg_types: Vec<Type> = args.iter()
+                            .map(|arg| self.infer_expr(arg))
+                            .collect();
+                        let method_sig = self.context.resolve_method_call(&class_name, name, &arg_types);
 
-                        if let Some(ref sig) = method_sig {
+                        if let Some(sig) = method_sig.cloned() {
                             // Check visibility
                             let mut visibility_error = None;
                             if sig.private {
@@ -1744,7 +3023,7 @@ impl TypeChecker {
                                 self.context.add_error_with_location(err, method_span.line, method_span.column, None, None);
                             }
 
-                            self.check_method_call(sig, args, name, &class_name);
+                            self.check_method_call(&sig, args, name, &class_name);
                             let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
                             // If calling an async method, return type is Promise<T>
                             if sig.is_async {
@@ -1770,7 +3049,7 @@ impl TypeChecker {
                         // Try to resolve as a qualified module function
                         let func_sig = self.context.resolve_qualified_function(module_name, name);
                         if let Some(sig) = func_sig.cloned() {
-                            let arg_types: Vec<Type> = args.iter()
+                            let _arg_types: Vec<Type> = args.iter()
                                 .map(|arg| self.infer_expr(arg))
                                 .collect();
                             self.check_function_call(&sig, args, &sig.name);
@@ -1784,20 +3063,19 @@ impl TypeChecker {
                             return_type
                         } else if let Some(qualified_class_name) = self.context.resolve_qualified_class(module_name, name) {
                             // It's a qualified class instantiation
-                            if let Some(class_info) = self.context.get_class(&qualified_class_name) {
-                                let ctor_sig = class_info.methods.get("constructor").cloned();
-                                if let Some(ref sig) = ctor_sig {
-                                    self.check_method_call(sig, args, "constructor", &qualified_class_name);
-                                } else if !args.is_empty() {
-                                    self.context.add_error_with_location(
-                                        format!("Class '{}' does not accept constructor arguments", qualified_class_name),
-                                        method_span.line, method_span.column, None, None
-                                    );
-                                }
-                                Type::Class(qualified_class_name)
-                            } else {
-                                Type::Unknown
+                            let arg_types: Vec<Type> = args.iter()
+                                .map(|arg| self.infer_expr(arg))
+                                .collect();
+                            let ctor_sig = self.context.resolve_method_call(&qualified_class_name, "constructor", &arg_types);
+                            if let Some(sig) = ctor_sig.cloned() {
+                                self.check_method_call(&sig, args, "constructor", &qualified_class_name);
+                            } else if !args.is_empty() {
+                                self.context.add_error_with_location(
+                                    format!("Class '{}' does not accept constructor arguments", qualified_class_name),
+                                    method_span.line, method_span.column, None, None
+                                );
                             }
+                            Type::Class(qualified_class_name)
                         } else {
                             self.context.add_error_with_location(
                                 format!("Undefined function or class: '{}.{}'", module_name, name),
@@ -1813,6 +3091,66 @@ impl TypeChecker {
                 }
             }
             Expr::Get { object, name, span } => {
+                // Check for static member access: ClassName.member
+                if let Expr::Variable { name: obj_name, span: _ } = object.as_ref() {
+                    // Check if obj_name is a class name
+                    if let Some(class_info) = self.context.get_class(obj_name) {
+                        // This is static member access
+                        if let Some(field_info) = class_info.fields.get(name) {
+                            if field_info.is_static {
+                                // Check visibility
+                                let mut visibility_error = None;
+                                if field_info.private {
+                                    if let Some(current) = &self.context.current_class {
+                                        if current != obj_name {
+                                            visibility_error = Some(format!("Static field '{}' on class '{}' is private and cannot be accessed from class '{}'", name, obj_name, current));
+                                        }
+                                    } else {
+                                        visibility_error = Some(format!("Static field '{}' on class '{}' is private and cannot be accessed from global scope", name, obj_name));
+                                    }
+                                }
+
+                                let type_name = field_info.type_name.clone();
+
+                                if let Some(err) = visibility_error {
+                                    self.context.add_error_with_location(err, span.line, span.column, None, None);
+                                }
+
+                                return type_name;
+                            } else {
+                                self.context.add_error_with_location(
+                                    format!("Cannot access instance field '{}' on class '{}' without an instance. Use 'self.{}' or make the field static.", name, obj_name, name),
+                                    span.line, span.column, None, None
+                                );
+                                return Type::Unknown;
+                            }
+                        } else if let Some(method_sig) = class_info.methods.get(&format!("{}()", name)) {
+                            // Static method reference (not call) - return function type
+                            if method_sig.is_static {
+                                let param_types: Vec<Type> = method_sig.params.iter()
+                                    .filter_map(|p| p.type_name.clone())
+                                    .collect();
+                                let return_type = method_sig.return_type.clone().unwrap_or(Type::Unknown);
+                                return Type::Function(param_types, Box::new(return_type));
+                            }
+                        }
+                        // Member not found as static - check if it's an instance member
+                        if class_info.fields.contains_key(name) || 
+                           class_info.methods.values().any(|m| m.name == *name) {
+                            self.context.add_error_with_location(
+                                format!("Cannot access instance member '{}' on class '{}' without an instance. Use 'self.{}' or make the member static.", name, obj_name, name),
+                                span.line, span.column, None, None
+                            );
+                            return Type::Unknown;
+                        }
+                        self.context.add_error_with_location(
+                            format!("Member '{}' not found on class '{}'", name, obj_name),
+                            span.line, span.column, None, None
+                        );
+                        return Type::Unknown;
+                    }
+                }
+                
                 let object_type = self.infer_expr(object);
 
                 if let Type::Class(class_name) = object_type {
@@ -1871,12 +3209,12 @@ impl TypeChecker {
 
                     // Also check for enums
                     let direct_name = format!("{}.{}", module_name, name);
-                    if let Some(enum_info) = self.context.get_enum(&direct_name) {
+                    if let Some(_enum_info) = self.context.get_enum(&direct_name) {
                         return Type::Enum(direct_name);
                     }
 
-                    for import_path in &self.context.imports {
-                        let qualified_enum = format!("{}.{}.{}", import_path, module_name, name);
+                    for import_entry in &self.context.imports {
+                        let qualified_enum = format!("{}.{}.{}", import_entry.module_path, module_name, name);
                         if self.context.get_enum(&qualified_enum).is_some() {
                             return Type::Enum(qualified_enum);
                         }
@@ -2118,7 +3456,7 @@ impl TypeChecker {
                     let param_type = param.type_name.as_ref()
                         .map(|t| Type::from_str(t))
                         .unwrap_or(Type::Unknown);
-                    self.context.add_variable(&param.name, param_type);
+                    self.context.add_variable(&param.name, param_type, false);
                     added_vars.push(param.name.clone());
                 }
 
@@ -2238,7 +3576,7 @@ impl TypeChecker {
                         // Add parameters as local variables with expected types
                         let mut added_vars = Vec::new();
                         for (param, param_type) in params.iter().zip(param_types.iter()) {
-                            self.context.add_variable(&param.name, param_type.clone());
+                            self.context.add_variable(&param.name, param_type.clone(), false);
                             added_vars.push(param.name.clone());
                         }
 

@@ -2,7 +2,8 @@ use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, FunctionDef, BinaryOp
 use crate::lexer::Lexer;
 use crate::resolver::ModuleResolver;
 use crate::types::{TypeContext, Type, TypeChecker};
-use sparkler::vm::{Class, Value, Opcode, Function, Method};
+use sparkler::vm::{Class, Value, Function, Method};
+use sparkler::opcodes::Opcode;
 
 pub type Bytecode = sparkler::executor::Bytecode;
 
@@ -234,17 +235,38 @@ pub struct Compiler {
     break_jumps: Vec<Vec<usize>>,
     continue_targets: Vec<usize>,
     current_ctx: CompileContext,
+    pub unsafe_fast: bool,
+    pub enable_type_checking: bool,
+    pub search_paths: Vec<String>,
 }
 
 pub struct CompilerOptions {
     pub enable_type_checking: bool,
     pub search_paths: Vec<String>,
+    pub unsafe_fast: bool,
 }
 
 impl Default for CompilerOptions {
     fn default() -> Self {
         Self {
             enable_type_checking: true,
+            search_paths: vec!["std".to_string()],
+            unsafe_fast: false,
+        }
+    }
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            _source_path: None,
+            _type_context: None,
+            break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            current_ctx: CompileContext::new(),
+            unsafe_fast: false,
+            enable_type_checking: false,
             search_paths: vec!["std".to_string()],
         }
     }
@@ -259,6 +281,9 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            unsafe_fast: false,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
         }
     }
 
@@ -270,28 +295,71 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            unsafe_fast: false,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
         }
     }
 
+    pub fn with_options(source: &str, unsafe_fast: bool) -> Self {
+        Self {
+            source: source.to_string(),
+            _source_path: None,
+            _type_context: None,
+            break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            current_ctx: CompileContext::new(),
+            unsafe_fast,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
+        }
+    }
+
+    pub fn with_path_and_options(source: &str, path: &str, unsafe_fast: bool) -> Self {
+        Self {
+            source: source.to_string(),
+            _source_path: Some(path.to_string()),
+            _type_context: None,
+            break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            current_ctx: CompileContext::new(),
+            unsafe_fast,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
+        }
+    }
+
+
     pub fn compile(&mut self) -> Result<Bytecode, String> {
-        self.compile_with_options(&CompilerOptions::default())
+        let options = CompilerOptions {
+            unsafe_fast: self.unsafe_fast,
+            ..CompilerOptions::default()
+        };
+        self.compile_with_options(&options)
     }
 
     pub fn compile_with_options(&mut self, options: &CompilerOptions) -> Result<Bytecode, String> {
+        self.unsafe_fast = options.unsafe_fast;
+        
         let mut lexer = Lexer::new(&self.source, self._source_path.as_deref().unwrap_or("unknown"));
         let (tokens, token_positions) = lexer.tokenize()?;
 
         let mut parser = Parser::new(tokens, &self.source, self._source_path.as_deref().unwrap_or("unknown"), token_positions);
         let statements = parser.parse()?;
 
-        let mut resolver = None;
         let mut type_context = None;
+        let mut resolver = None;
+
         if options.enable_type_checking {
             let mut resolver_instance = ModuleResolver::new();
+            resolver_instance.enable_type_checking = options.enable_type_checking;
 
             for path in &options.search_paths {
                 if let Ok(full_path) = std::path::PathBuf::from(path).canonicalize() {
                     resolver_instance.add_search_path(full_path);
+                } else {
+                    // If it doesn't exist, try relative to current directory without canonicalize
+                    resolver_instance.add_search_path(std::path::PathBuf::from(path));
                 }
             }
 
@@ -357,7 +425,9 @@ impl Compiler {
                         fields: vec![],
                         methods: interface.methods.clone(),
                         is_native: false,
+                        private: false,
                     };
+
                     classes.push(interface_as_class);
                 }
                 Stmt::Function(func) => {
@@ -369,6 +439,7 @@ impl Compiler {
 
         // Compile classes with methods
         let mut vm_classes = Vec::new();
+        let mut static_methods = Vec::new();  // Collect static methods to add to global functions
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
             // ... (rest of field collection)
@@ -408,41 +479,108 @@ impl Compiler {
                     continue;
                 }
 
-                // Create compiler context for method with "self" as first param
-                let mut method_params = vec!["self".to_string()];
+                // Static methods don't need "self" parameter
+                let mut method_params = if method.is_static {
+                    Vec::new()
+                } else {
+                    vec!["self".to_string()]
+                };
                 method_params.extend(method.params.iter().map(|p| p.name.clone()));
                 let mut method_compiler = if let Some(path) = &class_source_file {
-                    Compiler::with_path(class_source, path)
+                    Compiler::with_path_and_options(class_source, path, self.unsafe_fast)
                 } else {
-                    Compiler::new(class_source)
+                    Compiler::with_options(class_source, self.unsafe_fast)
                 };
                 method_compiler.current_ctx = CompileContext::with_params(method_params);
 
-                for stmt in &method.body {
-                    method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                // Check if this is an auto-generated constructor (empty body, name is "constructor")
+                let is_auto_constructor = method.name == "constructor" && method.body.is_empty();
+
+                if is_auto_constructor {
+                    // Generate field assignment code for auto-generated constructor
+                    if method.params.is_empty() {
+                        // Empty constructor: assign default values from field definitions
+                        for field in &c.fields {
+                            if let Some(default_expr) = &field.default {
+                                let r_self = method_compiler.current_ctx.get_local_reg("self");
+                                let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+
+                                let field_name_idx = method_strings.len();
+                                method_strings.push(field.name.clone());
+                                method_bytecode.push(Opcode::SetProperty as u8);
+                                method_bytecode.push(r_self as u8);
+                                method_bytecode.push(field_name_idx as u8);
+                                method_bytecode.push(r_val as u8);
+                            }
+                        }
+                    } else {
+                        // Constructor with parameters: assign parameter values to fields
+                        for param in &method.params {
+                            let r_self = method_compiler.current_ctx.get_local_reg("self");
+                            let r_param = method_compiler.current_ctx.get_local_reg(&param.name);
+
+                            let field_name_idx = method_strings.len();
+                            method_strings.push(param.name.clone());
+                            method_bytecode.push(Opcode::SetProperty as u8);
+                            method_bytecode.push(r_self as u8);
+                            method_bytecode.push(field_name_idx as u8);
+                            method_bytecode.push(r_param as u8);
+                        }
+                    }
+                } else {
+                    for stmt in &method.body {
+                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                    }
                 }
 
                 // Ensure method returns null if no explicit return
                 // Return is a 2-byte instruction: [opcode, register]
-                let ends_with_return = method_bytecode.len() >= 2 && 
+                let ends_with_return = method_bytecode.len() >= 2 &&
                     method_bytecode[method_bytecode.len() - 2] == Opcode::Return as u8;
-                
+
                 if !ends_with_return {
-                    method_bytecode.push(Opcode::LoadNull as u8);
-                    method_bytecode.push(0); // R0
-                    method_bytecode.push(Opcode::Return as u8);
-                    method_bytecode.push(0); // R0
+                    // Constructors should return self (R1), not null
+                    if method.name == "constructor" {
+                        method_bytecode.push(Opcode::Move as u8);
+                        method_bytecode.push(0); // R0 (return register)
+                        method_bytecode.push(1); // R1 (self)
+                        method_bytecode.push(Opcode::Return as u8);
+                        method_bytecode.push(0); // R0
+                    } else {
+                        method_bytecode.push(Opcode::LoadNull as u8);
+                        method_bytecode.push(0); // R0
+                        method_bytecode.push(Opcode::Return as u8);
+                        method_bytecode.push(0); // R0
+                    }
                 }
 
                 let register_count = method_compiler.current_ctx.register_count();
-                
+
                 // Adjust string indices in method bytecode to match global string table
                 let string_offset = strings.len();
                 strings.extend(method_strings);
                 adjust_string_indices(&mut method_bytecode, string_offset);
 
-                vm_methods.insert(method.name.clone(), Method {
-                    name: method.name.clone(),
+                // Generate mangled name for method overloading support based on argument count
+                let mangled_name = if method.params.is_empty() {
+                    format!("{}()", method.name)
+                } else {
+                    // Build a mangled name with placeholder types based on param count
+                    let mut params = Vec::new();
+                    for _ in 0..method.params.len() {
+                        params.push("T".to_string());
+                    }
+                    format!("{}({})", method.name, params.join(","))
+                };
+
+                // For static methods, also add to global functions list with ClassName::methodName
+                if method.is_static {
+                    let static_method_name = format!("{}::{}", c.name, mangled_name);
+                    static_methods.push((static_method_name, method_bytecode.clone(), register_count, method.params.len()));
+                }
+
+                vm_methods.insert(mangled_name.clone(), Method {
+                    name: mangled_name,
                     bytecode: method_bytecode,
                     register_count,
                 });
@@ -454,6 +592,7 @@ impl Compiler {
                 methods: vm_methods,
                 native_methods: std::collections::HashMap::new(),
                 native_create: None,
+                native_destroy: None,
                 is_native: c.is_native,
                 parent_interfaces: c.parent_interfaces.clone(),
                 vtable: c.methods.iter().map(|m| m.name.clone()).collect(),
@@ -469,9 +608,20 @@ impl Compiler {
 
             let mut func_ctx = type_context.clone().unwrap_or_else(|| TypeContext::new());
             func_ctx.current_method_params = f.params.iter().map(|p| p.name.clone()).collect();
+            
+            // Set current_module based on the function's qualified name
+            // Functions from modules have names like "module.submodule.funcName"
+            // We need to extract the module path (everything before the last dot)
+            if let Some(last_dot) = f.name.rfind('.') {
+                let module_path = &f.name[..last_dot];
+                // Only set current_module if it looks like a module path (contains a dot or is a known module)
+                if module_path.contains('.') || module_path.starts_with("std") {
+                    func_ctx.current_module = Some(module_path.to_string());
+                }
+            }
 
             let func_source = function_sources.get(&f.name).unwrap_or(&self.source);
-            let mut func_compiler = Compiler::new(func_source);
+            let mut func_compiler = Compiler::with_options(func_source, self.unsafe_fast);
             func_compiler.current_ctx = CompileContext::with_params(f.params.iter().map(|p| p.name.clone()).collect());
 
             for stmt in &f.body {
@@ -525,6 +675,21 @@ impl Compiler {
             });
         }
 
+        // Add static methods to global functions
+        for (name, mut bytecode, register_count, param_count) in static_methods {
+            // Adjust string indices in static method bytecode
+            let string_offset = strings.len();
+            adjust_string_indices(&mut bytecode, string_offset);
+            
+            vm_functions.push(Function {
+                name,
+                bytecode,
+                param_count: param_count as u8,
+                register_count,
+                source_file: None,
+            });
+        }
+
         // Compile module-level statements
         self.current_ctx = CompileContext::new();
         for stmt in statements {
@@ -553,6 +718,40 @@ impl Compiler {
         let bytes = (target as u16).to_le_bytes();
         bytecode[pos] = bytes[0];
         bytecode[pos + 1] = bytes[1];
+    }
+
+    fn emit_overflow_check(&mut self, r_op1: usize, r_op2: usize, r_res: usize, op_type: i64, bytecode: &mut Vec<u8>, strings: &mut Vec<String>) {
+        // We'll use a native function call for overflow checking
+        let arg_start = self.current_ctx.allocate_regs(4);
+        
+        // Arg 1: Left operand
+        bytecode.push(Opcode::Move as u8);
+        bytecode.push(arg_start as u8);
+        bytecode.push(r_op1 as u8);
+        
+        // Arg 2: Right operand
+        bytecode.push(Opcode::Move as u8);
+        bytecode.push((arg_start + 1) as u8);
+        bytecode.push(r_op2 as u8);
+        
+        // Arg 3: Result
+        bytecode.push(Opcode::Move as u8);
+        bytecode.push((arg_start + 2) as u8);
+        bytecode.push(r_res as u8);
+        
+        // Arg 4: Operation type (0: Add, 1: Sub, 2: Mul)
+        bytecode.push(Opcode::LoadInt as u8);
+        bytecode.push((arg_start + 3) as u8);
+        bytecode.extend_from_slice(&op_type.to_le_bytes());
+
+        let name_idx = strings.len();
+        strings.push("std.math.check_overflow".to_string());
+
+        bytecode.push(Opcode::CallNative as u8);
+        bytecode.push(0 as u8);        // dummy destination
+        bytecode.push(name_idx as u8); // function name index
+        bytecode.push(arg_start as u8);// arg_start
+        bytecode.push(4u8);            // arg_count: 4 arguments (op1, op2, result, type)
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
@@ -605,6 +804,108 @@ impl Compiler {
                     bytecode.push(Opcode::Move as u8);
                     bytecode.push(rd as u8);
                     bytecode.push(r as u8);
+                }
+            }
+
+            Stmt::AugAssign { target, op, expr, .. } => {
+                match target {
+                    crate::parser::AugAssignTarget::Variable(name) => {
+                        // Compile: name += expr  =>  name = name + expr
+                        // Get the register for the variable (must already exist)
+                        let r_var = self.current_ctx.get_local_reg(name);
+
+                        // Compile the right-hand side expression
+                        let r_expr = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+
+                        // Perform the operation: r_var = r_var op r_expr
+                        // We need a temp register for the result
+                        let r_temp = self.current_ctx.allocate_reg();
+                        match op {
+                            crate::parser::AugOp::Add => {
+                                bytecode.push(Opcode::Add as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Subtract => {
+                                bytecode.push(Opcode::Subtract as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Multiply => {
+                                bytecode.push(Opcode::Multiply as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Divide => {
+                                bytecode.push(Opcode::Divide as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                        }
+
+                        // Store result back to variable
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(r_var as u8);
+                        bytecode.push(r_temp as u8);
+                    }
+                    crate::parser::AugAssignTarget::Field { object, name } => {
+                        // Compile: obj.field += expr  =>  obj.field = obj.field + expr
+                        // First, compile the object expression
+                        let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+
+                        // Get the current field value into a register
+                        let r_field = self.current_ctx.allocate_reg();
+                        let field_name_idx = strings.len();
+                        strings.push(name.clone());
+                        bytecode.push(Opcode::GetProperty as u8);
+                        bytecode.push(r_field as u8);
+                        bytecode.push(r_obj as u8);
+                        bytecode.push(field_name_idx as u8);
+
+                        // Compile the right-hand side expression
+                        let r_expr = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+
+                        // Perform the operation
+                        let r_result = self.current_ctx.allocate_reg();
+                        match op {
+                            crate::parser::AugOp::Add => {
+                                bytecode.push(Opcode::Add as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Subtract => {
+                                bytecode.push(Opcode::Subtract as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Multiply => {
+                                bytecode.push(Opcode::Multiply as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Divide => {
+                                bytecode.push(Opcode::Divide as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                        }
+
+                        // Store result back to field
+                        let field_name_idx = strings.len();
+                        strings.push(name.clone());
+                        bytecode.push(Opcode::SetProperty as u8);
+                        bytecode.push(r_obj as u8);
+                        bytecode.push(field_name_idx as u8);
+                        bytecode.push(r_result as u8);
+                    }
                 }
             }
 
@@ -917,8 +1218,59 @@ impl Compiler {
             }
 
             Expr::Binary { left, op, right, .. } => {
+                // Handle power operator specially - compiles to native std.math.pow call
+                if *op == BinaryOp::Pow {
+                    let r_left = self.compile_expr(left, bytecode, strings, classes, type_context)?;
+                    let r_right = self.compile_expr(right, bytecode, strings, classes, type_context)?;
+                    let rd = self.current_ctx.allocate_reg();
+
+                    // Compile as: std.math.pow(base, exponent)
+                    // Arguments must be in consecutive registers for CallNative
+                    // Move arguments to consecutive registers if needed
+                    let arg_start = rd + 1;  // Use registers after return register
+
+                    // Move left operand to arg_start if needed
+                    if r_left != arg_start {
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push(arg_start as u8);
+                        bytecode.push(r_left as u8);
+                    }
+
+                    // Move right operand to arg_start + 1 if needed
+                    if r_right != arg_start + 1 {
+                        bytecode.push(Opcode::Move as u8);
+                        bytecode.push((arg_start + 1) as u8);
+                        bytecode.push(r_right as u8);
+                    }
+
+                    // Call native function: std.math.pow(base, exponent)
+                    let name_idx = strings.len();
+                    strings.push("std.math.pow".to_string());
+
+                    bytecode.push(Opcode::CallNative as u8);
+                    bytecode.push(rd as u8);       // destination register
+                    bytecode.push(name_idx as u8); // function name index
+                    bytecode.push(arg_start as u8);// arg_start: first arg register
+                    bytecode.push(2u8);            // arg_count: 2 arguments
+
+                    return Ok(rd);
+                }
+
                 let r1 = self.compile_expr(left, bytecode, strings, classes, type_context)?;
                 let r2 = self.compile_expr(right, bytecode, strings, classes, type_context)?;
+
+                // Add safety checks for division and modulo (division by zero)
+                if !self.unsafe_fast && (*op == BinaryOp::Divide || *op == BinaryOp::Modulo) {
+                    let name_idx = strings.len();
+                    strings.push("std.math.check_div_zero".to_string());
+                    
+                    bytecode.push(Opcode::CallNative as u8);
+                    bytecode.push(0u8);            // dummy destination: R0
+                    bytecode.push(name_idx as u8); // function name index
+                    bytecode.push(r2 as u8);       // arg_start: divisor register
+                    bytecode.push(1u8);            // arg_count: 1 argument (divisor)
+                }
+
                 let rd = self.current_ctx.allocate_reg();
 
                 let opcode = match op {
@@ -935,12 +1287,25 @@ impl Compiler {
                     BinaryOp::GreaterEqual => Opcode::GreaterEqual,
                     BinaryOp::Less => Opcode::Less,
                     BinaryOp::LessEqual => Opcode::LessEqual,
+                    BinaryOp::Pow => unreachable!("Pow operator handled separately"),
                 };
 
                 bytecode.push(opcode as u8);
                 bytecode.push(rd as u8);
                 bytecode.push(r1 as u8);
                 bytecode.push(r2 as u8);
+
+                // Add overflow checks for arithmetic operations (only for integers)
+                if !self.unsafe_fast && matches!(op, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply) {
+                    let op_type = match op {
+                        BinaryOp::Add => 0i64,
+                        BinaryOp::Subtract => 1i64,
+                        BinaryOp::Multiply => 2i64,
+                        _ => unreachable!(),
+                    };
+                    self.emit_overflow_check(r1, r2, rd, op_type, bytecode, strings);
+                }
+
                 Ok(rd)
             }
 
@@ -954,9 +1319,38 @@ impl Compiler {
                         bytecode.push(r as u8);
                         Ok(rd)
                     }
+                    UnaryOp::Negate => {
+                        // Negation: subtract value from zero
+                        let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                        let rd = self.current_ctx.allocate_reg();
+                        let r_zero = self.current_ctx.allocate_reg();
+                        
+                        // Load 0 (works for both int and float)
+                        bytecode.push(Opcode::LoadInt as u8);
+                        bytecode.push(r_zero as u8);
+                        bytecode.extend_from_slice(&0i64.to_le_bytes());
+                        
+                        // Subtract: rd = 0 - r
+                        bytecode.push(Opcode::Subtract as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(r_zero as u8);
+                        bytecode.push(r as u8);
+
+                        if !self.unsafe_fast {
+                            self.emit_overflow_check(r_zero, r, rd, 1, bytecode, strings);
+                        }
+                        Ok(rd)
+                    }
                     UnaryOp::PrefixIncrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
                             let r_var = self.current_ctx.get_local_reg(name);
+
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_var as u8);
+
                             let r_one = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::LoadInt as u8);
                             bytecode.push(r_one as u8);
@@ -967,18 +1361,71 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
 
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_var, 0, bytecode, strings);
+                            }
+
                             let rd = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::Move as u8);
                             bytecode.push(rd as u8);
                             bytecode.push(r_var as u8);
                             Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: load field, increment, store back, return new value
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_field as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Add as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_field, 0, bytecode, strings);
+                            }
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+                            Ok(rd)
                         } else {
-                            Err("Prefix increment requires a variable".to_string())
+                            Err("Prefix increment requires a variable or field access".to_string())
                         }
                     }
                     UnaryOp::PrefixDecrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
                             let r_var = self.current_ctx.get_local_reg(name);
+
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_var as u8);
+
                             let r_one = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::LoadInt as u8);
                             bytecode.push(r_one as u8);
@@ -989,13 +1436,59 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
 
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_var, 1, bytecode, strings);
+                            }
+
                             let rd = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::Move as u8);
                             bytecode.push(rd as u8);
                             bytecode.push(r_var as u8);
                             Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: load field, decrement, store back, return new value
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_field as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Subtract as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_field, 1, bytecode, strings);
+                            }
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+                            Ok(rd)
                         } else {
-                            Err("Prefix decrement requires a variable".to_string())
+                            Err("Prefix decrement requires a variable or field access".to_string())
                         }
                     }
                     UnaryOp::PostfixIncrement => {
@@ -1015,9 +1508,52 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_var, 0, bytecode, strings);
+                            }
+
+                            Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: save original value, increment field, return original
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            // Save original value for return
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Add as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_field, 0, bytecode, strings);
+                            }
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
                             Ok(rd)
                         } else {
-                            Err("Postfix increment requires a variable".to_string())
+                            Err("Postfix increment requires a variable or field access".to_string())
                         }
                     }
                     UnaryOp::PostfixDecrement | UnaryOp::Decrement => {
@@ -1037,9 +1573,52 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_var, 1, bytecode, strings);
+                            }
+
+                            Ok(rd)
+                        } else if let Expr::Get { object, name, .. } = expr.as_ref() {
+                            // For obj.field: save original value, decrement field, return original
+                            let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                            let r_field = self.current_ctx.allocate_reg();
+                            let idx = strings.len();
+                            strings.push(name.clone());
+                            bytecode.push(Opcode::GetProperty as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+
+                            // Save original value for return
+                            let rd = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(r_field as u8);
+
+                            let r_one = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::LoadInt as u8);
+                            bytecode.push(r_one as u8);
+                            bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                            bytecode.push(Opcode::Subtract as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_field as u8);
+                            bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_field, 1, bytecode, strings);
+                            }
+
+                            // Store back to property
+                            bytecode.push(Opcode::SetProperty as u8);
+                            bytecode.push(r_obj as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(r_field as u8);
+
                             Ok(rd)
                         } else {
-                            Err("Decrement requires a variable".to_string())
+                            Err("Decrement requires a variable or field access".to_string())
                         }
                     }
                 }
@@ -1077,18 +1656,59 @@ impl Compiler {
                     let mut is_method = false;
                     let mut is_native = false;
                     if let Some(ctx) = type_context {
-                        if let Some(resolved_class) = ctx.resolve_class(func_name) {
-                            resolved_name = resolved_class;
-                            is_class = true;
-                        } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
-                            // Use mangled name for overloaded function resolution
-                            resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
-                            is_native = sig.is_native;
-                        } else if let Some(current_class) = &ctx.current_class {
-                            // Check if it's a method on current class
-                            if let Some(class_info) = ctx.get_class(current_class) {
-                                if class_info.methods.contains_key(func_name) {
-                                    is_method = true;
+                        // Check for function call first if there are arguments (to handle str() function vs str class)
+                        if !args.is_empty() {
+                            if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
+                                resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
+                                is_native = sig.is_native;
+                            } else if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                                resolved_name = resolved_class;
+                                is_class = true;
+                            }
+                        } else {
+                            // No arguments - check class first (for class instantiation without constructor args)
+                            if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                                resolved_name = resolved_class;
+                                is_class = true;
+                            } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
+                                resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
+                                is_native = sig.is_native;
+                            }
+                        }
+                        
+                        // If neither class nor function was found, try fallback resolution
+                        if !is_class && !is_native {
+                            // Check if this might be a private class from another module
+                            // by searching for classes that end with the function name
+                            // Only error if the class is from a DIFFERENT module and is private
+                            for (class_name, class_info) in &ctx.classes {
+                                if class_name.ends_with(&format!(".{}", func_name)) {
+                                    // Check if this class is from an imported module
+                                    let from_imported_module = ctx.imports.iter().any(|import_entry| {
+                                        class_name.starts_with(&format!("{}.", import_entry.module_path))
+                                    });
+
+                                    // Check if this class is from the current module
+                                    let from_current_module = if let Some(ref current_module) = ctx.current_module {
+                                        class_name.starts_with(&format!("{}.", current_module))
+                                    } else {
+                                        false
+                                    };
+
+                                    // Only error if the class is from an imported module but NOT from the current module
+                                    if from_imported_module && !from_current_module && class_info.private {
+                                        // Found a private class from a different module - generate an error
+                                        return Err(format!("Class '{}' is private and cannot be accessed from this module", func_name));
+                                    }
+                                }
+                            }
+                            
+                            if let Some(current_class) = &ctx.current_class {
+                                // Check if it's a method on current class
+                                if let Some(class_info) = ctx.get_class(current_class) {
+                                    if class_info.methods.contains_key(func_name) {
+                                        is_method = true;
+                                    }
                                 }
                             }
                         }
@@ -1111,11 +1731,10 @@ impl Compiler {
                         bytecode.push(0); // arg_count (not used for class creation)
 
                         // 2. Call constructor if it exists
-                        // Note: For now we assume a constructor exists if args are provided, 
-                        // or we could check the class definition.
+                        // Check if class has constructor overloads
                         let has_constructor = if let Some(ctx) = type_context {
                             if let Some(class_info) = ctx.get_class(&resolved_name) {
-                                class_info.methods.contains_key("constructor")
+                                class_info.method_overloads.contains_key("constructor")
                             } else { true }
                         } else { true };
 
@@ -1133,8 +1752,22 @@ impl Compiler {
                                 bytecode.push(r as u8);
                             }
 
+                            // Generate mangled constructor name based on argument count
+                            // For empty constructor: "constructor()"
+                            // For constructor with args: "constructor(T1,T2,...)"
+                            let mangled_ctor = if args.is_empty() {
+                                "constructor()".to_string()
+                            } else {
+                                // Build a mangled name with placeholder types based on arg count
+                                let mut params = Vec::new();
+                                for _ in 0..args.len() {
+                                    params.push("T".to_string());
+                                }
+                                format!("constructor({})", params.join(","))
+                            };
+                            
                             let constructor_idx = strings.len();
-                            strings.push("constructor".to_string());
+                            strings.push(mangled_ctor);
                             bytecode.push(Opcode::Invoke as u8);
                             let r_unused = self.current_ctx.allocate_reg();
                             bytecode.push(r_unused as u8);
@@ -1159,9 +1792,20 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        let idx = strings.len();
-                        strings.push(func_name.clone());
+                        // Generate mangled method name based on argument count
+                        let mangled_method = if args.is_empty() {
+                            format!("{}()", func_name)
+                        } else {
+                            let mut params = Vec::new();
+                            for _ in 0..args.len() {
+                                params.push("T".to_string());
+                            }
+                            format!("{}({})", func_name, params.join(","))
+                        };
                         
+                        let idx = strings.len();
+                        strings.push(mangled_method);
+
                         // Check if this is an interface method
                         let is_interface_method = if let Some(ctx) = type_context {
                             if let Some(current_class) = &ctx.current_class {
@@ -1170,7 +1814,7 @@ impl Compiler {
                                 } else { false }
                             } else { false }
                         } else { false };
-                        
+
                         if is_interface_method {
                             bytecode.push(Opcode::InvokeInterface as u8);
                         } else {
@@ -1191,8 +1835,14 @@ impl Compiler {
                         }
 
                         let idx = strings.len();
-                        strings.push(resolved_name);
-                        
+                        // For native functions, use the base name (not mangled name) for lookup
+                        let call_name = if is_native {
+                            func_name.clone()
+                        } else {
+                            resolved_name.clone()
+                        };
+                        strings.push(call_name.clone());
+
                         // Use CallNative for native functions, Call for bytecode functions
                         if is_native {
                             bytecode.push(Opcode::CallNative as u8);
@@ -1209,50 +1859,143 @@ impl Compiler {
                         }
                     }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
-                    let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
-                    let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
+                    // Check if this is a static method call: ClassName.method()
+                    let (is_static_call, obj_name) = if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                        if let Some(ctx) = type_context {
+                            if let Some(class_info) = ctx.get_class(obj_name) {
+                                // Check if the method exists and is static
+                                let mangled_method = if args.is_empty() {
+                                    format!("{}()", name)
+                                } else {
+                                    let mut params = Vec::new();
+                                    for _ in 0..args.len() {
+                                        params.push("T".to_string());
+                                    }
+                                    format!("{}({})", name, params.join(","))
+                                };
+                                (class_info.methods.get(&mangled_method)
+                                    .map(|m| m.is_static)
+                                    .unwrap_or(false), obj_name.clone())
+                            } else { (false, String::new()) }
+                        } else { (false, String::new()) }
+                    } else { (false, String::new()) };
 
-                    // First arg for Invoke is the object (self)
-                    bytecode.push(Opcode::Move as u8);
-                    bytecode.push(contiguous_start as u8);
-                    bytecode.push(r_obj as u8);
+                    if is_static_call {
+                        // Static method call - no self parameter needed
+                        let contiguous_start = self.current_ctx.allocate_regs(args.len());
+                        for (i, &r) in arg_regs.iter().enumerate() {
+                            let r_arg = contiguous_start + i;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_arg as u8);
+                            bytecode.push(r as u8);
+                        }
 
-                    for (i, &r) in arg_regs.iter().enumerate() {
-                        let r_arg = contiguous_start + 1 + i;
+                        // Generate mangled method name (same as stored in class)
+                        let mangled_method = if args.is_empty() {
+                            format!("{}()", name)
+                        } else {
+                            let mut params = Vec::new();
+                            for _ in 0..args.len() {
+                                params.push("T".to_string());
+                            }
+                            format!("{}({})", name, params.join(","))
+                        };
+
+                        // Static methods are looked up by ClassName::mangled_name
+                        let full_method_name = format!("{}::{}", obj_name, mangled_method);
+                        let idx = strings.len();
+                        strings.push(full_method_name);
+
+                        // Use Call for static methods
+                        bytecode.push(Opcode::Call as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push(args.len() as u8);
+                    } else {
+                        // Instance method call
+                        let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
+                        let contiguous_start = self.current_ctx.allocate_regs(args.len() + 1);
+
+                        // First arg for Invoke is the object (self)
                         bytecode.push(Opcode::Move as u8);
-                        bytecode.push(r_arg as u8);
-                        bytecode.push(r as u8);
-                    }
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push(r_obj as u8);
 
-                    let idx = strings.len();
-                    strings.push(name.clone());
-                    
-                    // Check if this is an interface method call
-                    let is_interface_method = if let Some(ctx) = type_context {
-                        // Try to get the type of the object
-                        if let Expr::Variable { .. } = object.as_ref() {
-                            if let Some(current_class) = &ctx.current_class {
-                                if let Some(class_info) = ctx.get_class(current_class) {
-                                    class_info.is_interface || !class_info.parent_interfaces.is_empty()
+                        for (i, &r) in arg_regs.iter().enumerate() {
+                            let r_arg = contiguous_start + 1 + i;
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_arg as u8);
+                            bytecode.push(r as u8);
+                        }
+
+                        // Generate mangled method name based on argument count
+                        let mangled_method = if args.is_empty() {
+                            format!("{}()", name)
+                        } else {
+                            let mut params = Vec::new();
+                            for _ in 0..args.len() {
+                                params.push("T".to_string());
+                            }
+                            format!("{}({})", name, params.join(","))
+                        };
+
+                        let idx = strings.len();
+                        strings.push(mangled_method);
+
+                        // Check if this is an interface method call
+                        let is_interface_method = if let Some(ctx) = type_context {
+                            // Try to get the type of the object
+                            if let Expr::Variable { .. } = object.as_ref() {
+                                if let Some(current_class) = &ctx.current_class {
+                                    if let Some(class_info) = ctx.get_class(current_class) {
+                                        class_info.is_interface || !class_info.parent_interfaces.is_empty()
+                                    } else { false }
                                 } else { false }
                             } else { false }
-                        } else { false }
-                    } else { false };
-                    
-                    if is_interface_method {
-                        bytecode.push(Opcode::InvokeInterface as u8);
-                    } else {
-                        bytecode.push(Opcode::Invoke as u8);
+                        } else { false };
+
+                        if is_interface_method {
+                            bytecode.push(Opcode::InvokeInterface as u8);
+                        } else {
+                            bytecode.push(Opcode::Invoke as u8);
+                        }
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        bytecode.push(contiguous_start as u8);
+                        bytecode.push((args.len() + 1) as u8);
                     }
-                    bytecode.push(rd as u8);
-                    bytecode.push(idx as u8);
-                    bytecode.push(contiguous_start as u8);
-                    bytecode.push((args.len() + 1) as u8);
                 }
                 Ok(rd)
             }
 
             Expr::Get { object, name, .. } => {
+                // Check if this is static member access: ClassName.member
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if let Some(ctx) = type_context {
+                        // Check if obj_name is a class
+                        if ctx.get_class(obj_name).is_some() || ctx.get_interface(obj_name).is_some() {
+                            // This is static member access
+                            if let Some(class_info) = ctx.get_class(obj_name) {
+                                if let Some(field_info) = class_info.fields.get(name) {
+                                    if field_info.is_static {
+                                        // Load static field value - treat as global variable
+                                        let rd = self.current_ctx.allocate_reg();
+                                        let idx = strings.len();
+                                        strings.push(format!("static_{}.{}", obj_name, name));
+                                        bytecode.push(Opcode::LoadLocal as u8);
+                                        bytecode.push(rd as u8);
+                                        bytecode.push(idx as u8);
+                                        return Ok(rd);
+                                    }
+                                }
+                            }
+                            // For static methods, they'll be handled when the Call is processed
+                            // Just return a placeholder for now
+                        }
+                    }
+                }
+                
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.allocate_reg();
                 let idx = strings.len();
@@ -1265,6 +2008,26 @@ impl Compiler {
             }
 
             Expr::Set { object, name, value, .. } => {
+                // Check if this is static field assignment: ClassName.field = value
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if let Some(ctx) = type_context {
+                        if let Some(class_info) = ctx.get_class(obj_name) {
+                            if let Some(field_info) = class_info.fields.get(name) {
+                                if field_info.is_static {
+                                    // Static field assignment - treat as global variable
+                                    let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
+                                    let idx = strings.len();
+                                    strings.push(format!("static_{}.{}", obj_name, name));
+                                    bytecode.push(Opcode::StoreLocal as u8);
+                                    bytecode.push(idx as u8);
+                                    bytecode.push(r_val as u8);
+                                    return Ok(r_val);
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
                 let idx = strings.len();
@@ -1350,8 +2113,8 @@ impl Compiler {
                     if !el_type.is_pod() {
                         let r_el = el_regs[i];
                         let constructor_idx = strings.len();
-                        strings.push("constructor".to_string());
-                        
+                        strings.push("constructor()".to_string());
+
                         let contiguous_call_start = self.current_ctx.allocate_regs(1);
                         bytecode.push(Opcode::Move as u8);
                         bytecode.push(contiguous_call_start as u8);
@@ -1382,9 +2145,12 @@ impl Compiler {
             }
 
             Expr::Cast { expr, target_type, .. } => {
+                // Note: Cast expressions are no longer generated by the parser.
+                // All type conversions are now handled via native function calls.
+                // This code is kept for backwards compatibility but should not be reached.
                 let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.allocate_reg();
-                bytecode.push(Opcode::Cast as u8);
+                bytecode.push(Opcode::Convert as u8);
                 bytecode.push(rd as u8);
                 bytecode.push(r as u8);
                 match target_type {
@@ -1442,12 +2208,12 @@ impl Compiler {
                 // 2. Call constructor if it exists
                 let has_constructor = if let Some(ctx) = type_context {
                     if let Some(class_info) = ctx.get_class(&class_name) {
-                        class_info.methods.contains_key("constructor")
-                    } else { 
-                        false 
+                        class_info.method_overloads.contains_key("constructor")
+                    } else {
+                        false
                     }
-                } else { 
-                    false 
+                } else {
+                    false
                 };
                 
                 if has_constructor {
@@ -1455,9 +2221,10 @@ impl Compiler {
                     bytecode.push(Opcode::Move as u8);
                     bytecode.push(contiguous_start as u8);
                     bytecode.push(rd as u8);
-                    
+
+                    // Use mangled constructor name for empty constructor
                     let constructor_idx = strings.len();
-                    strings.push("constructor".to_string());
+                    strings.push("constructor()".to_string());
                     bytecode.push(Opcode::Invoke as u8);
                     let r_unused = self.current_ctx.allocate_reg();
                     bytecode.push(r_unused as u8);
@@ -1542,6 +2309,7 @@ impl Compiler {
                     BinaryOp::And | BinaryOp::Or |
                     BinaryOp::Greater | BinaryOp::GreaterEqual |
                     BinaryOp::Less | BinaryOp::LessEqual => Type::Bool,
+                    BinaryOp::Pow => Type::Float,  // std.math.pow returns float
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply |
                     BinaryOp::Divide | BinaryOp::Modulo => {
                         // Try to get type from left operand
