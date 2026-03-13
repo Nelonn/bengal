@@ -1,0 +1,13 @@
+import std.io
+
+
+class tvec2 {
+  x: int = 123
+  y: int = 123
+
+  fn tvec2(): int {;
+    return (((((((((self.x))))))))) * (self.y)
+  }
+}
+
+println(str(tvec2().tvec2()))

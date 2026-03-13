@@ -1,0 +1,14 @@
+import std.io
+
+class Human {
+  name: str
+
+  constructor(name: str) {
+    self.name = name
+  }
+}
+
+let q = Human("sghdhgsdghsdgsdhsghdghdhsgdshdgdshg")
+let q2 = Human("q")
+println(q.name)
+println(q2.name)
