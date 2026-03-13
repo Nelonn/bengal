@@ -418,7 +418,7 @@ impl NativeModule {
     }
 
     pub fn class_method(mut self, class_name: &str, method_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains('.') {
+        let full_class_name = if class_name.contains('.') || class_name.contains("::") {
             class_name.to_string()
         } else {
             format!("{}.{}", self.name, class_name)
@@ -428,7 +428,7 @@ impl NativeModule {
     }
 
     pub fn class_native_create(mut self, class_name: &str, func: NativeFn) -> Self {
-        let full_class_name = if class_name.contains('.') {
+        let full_class_name = if class_name.contains('.') || class_name.contains("::") {
             class_name.to_string()
         } else {
             format!("{}.{}", self.name, class_name)
