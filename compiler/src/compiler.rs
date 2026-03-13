@@ -1346,17 +1346,17 @@ impl Compiler {
                             for (class_name, class_info) in &ctx.classes {
                                 if class_name.ends_with(&format!(".{}", func_name)) {
                                     // Check if this class is from an imported module
-                                    let from_imported_module = ctx.imports.iter().any(|import_path| {
-                                        class_name.starts_with(&format!("{}.", import_path))
+                                    let from_imported_module = ctx.imports.iter().any(|import_entry| {
+                                        class_name.starts_with(&format!("{}.", import_entry.module_path))
                                     });
-                                    
+
                                     // Check if this class is from the current module
                                     let from_current_module = if let Some(ref current_module) = ctx.current_module {
                                         class_name.starts_with(&format!("{}.", current_module))
                                     } else {
                                         false
                                     };
-                                    
+
                                     // Only error if the class is from an imported module but NOT from the current module
                                     if from_imported_module && !from_current_module && class_info.private {
                                         // Found a private class from a different module - generate an error

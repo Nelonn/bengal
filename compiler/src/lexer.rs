@@ -31,6 +31,7 @@ pub enum Token {
     Continue,
     Constructor,
     Static,
+    As,
 
     TypeInt,
     TypeFloat,
@@ -457,6 +458,7 @@ impl Lexer {
             "continue" => Token::Continue,
             "constructor" => Token::Constructor,
             "static" => Token::Static,
+            "as" => Token::As,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,

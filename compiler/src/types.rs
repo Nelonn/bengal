@@ -373,6 +373,23 @@ pub struct TypeAliasInfo {
     pub private: bool,
 }
 
+/// Represents what a single import brings into scope
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    /// The full module path that was imported (e.g., "std.io")
+    pub module_path: String,
+    /// The alias or name this import brings into scope
+    /// - For "import std.io": Some("io")
+    /// - For "import std.io as myio": Some("myio")
+    /// - For "import std.io.println": Some("println")
+    /// - For "import std": None (module import, access via std.xxx)
+    pub alias: Option<String>,
+    /// The kind of import
+    pub kind: crate::parser::ImportKind,
+    /// All members brought into scope (for wildcard imports)
+    pub members: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeContext {
     pub classes: HashMap<String, ClassInfo>,
@@ -389,7 +406,10 @@ pub struct TypeContext {
     pub current_method_return: Option<Type>,
     pub current_async_inner_return: Option<Type>,
     pub current_method_params: Vec<String>,
-    pub imports: Vec<String>,
+    /// List of imports with their scope information
+    pub imports: Vec<ImportEntry>,
+    /// Raw import paths for backward compatibility
+    pub import_paths: Vec<String>,
     pub errors: Vec<TypeError>,
     // Type annotations for expressions (line -> column -> type)
     // Used to store inferred types for object literals
@@ -421,6 +441,7 @@ impl TypeContext {
             current_async_inner_return: None,
             current_method_params: Vec::new(),
             imports: Vec::new(),
+            import_paths: Vec::new(),
             errors: Vec::new(),
             expr_types: HashMap::new(),
         };
@@ -468,7 +489,7 @@ impl TypeContext {
         };
         self.add_function("std.json.parse", json_parse);
 
-        self.imports.push("std.json".to_string());
+        self.import_paths.push("std.json".to_string());
 
         // Reflection
         let reflect_typeof = FunctionSignature {
@@ -519,7 +540,7 @@ impl TypeContext {
         };
         self.add_function("std.reflect.fields", reflect_fields);
 
-        self.imports.push("std.reflect".to_string());
+        self.import_paths.push("std.reflect".to_string());
 
         // Built-in types methods
         // str methods
@@ -931,14 +952,48 @@ impl TypeContext {
         // If we have matches, find the best one based on imports and visibility
         if !matching_sigs.is_empty() {
             // First, try to find a match from an imported module that is not private
-            for import_path in &self.imports {
+            for import_entry in &self.imports {
                 for sig in &matching_sigs {
-                    if sig.name.starts_with(&format!("{}.", import_path)) {
+                    // Check if function is from the imported module
+                    let from_imported_module = match import_entry.kind {
+                        crate::parser::ImportKind::Module => {
+                            // Module import: function should be under import_entry.module_path.*
+                            sig.name.starts_with(&format!("{}.", import_entry.module_path))
+                        }
+                        crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                            // Simple/aliased import: function should be under the module path
+                            // Also check if the function name is in the members list (for wildcard-like behavior)
+                            let from_module = sig.name.starts_with(&format!("{}.", import_entry.module_path));
+                            let from_members = import_entry.members.iter().any(|m| {
+                                sig.name.ends_with(&format!(".{}", m)) || sig.name == *m
+                            });
+                            from_module || from_members
+                        }
+                        crate::parser::ImportKind::Member => {
+                            // Member import: function name should match the alias
+                            if let Some(ref alias) = import_entry.alias {
+                                sig.name.ends_with(&format!(".{}", alias))
+                            } else {
+                                false
+                            }
+                        }
+                        crate::parser::ImportKind::Wildcard => {
+                            // Wildcard: function should be directly under the module path
+                            // or in the members list
+                            let from_module = sig.name.starts_with(&format!("{}.", import_entry.module_path));
+                            let from_members = import_entry.members.iter().any(|m| {
+                                sig.name.ends_with(&format!(".{}", m)) || sig.name == *m
+                            });
+                            from_module || from_members
+                        }
+                    };
+
+                    if from_imported_module {
                         // Check visibility
                         if sig.private {
                             // Private functions are only visible within the same module
                             if let Some(ref current_module) = self.current_module {
-                                if *import_path == *current_module {
+                                if import_entry.module_path == *current_module {
                                     return Some(sig); // Visible - same module
                                 }
                             }
@@ -949,7 +1004,7 @@ impl TypeContext {
                     }
                 }
             }
-            
+
             // If no imported match found, return the first non-private match
             for sig in &matching_sigs {
                 if !sig.private {
@@ -963,7 +1018,7 @@ impl TypeContext {
 
     /// Try to resolve a module-qualified function name (e.g., "math.sin" with import "std.math")
     pub fn resolve_qualified_function(&self, module_alias: &str, member_name: &str) -> Option<&FunctionSignature> {
-        // First try direct lookup
+        // First try direct lookup (e.g., "std.io.println" when user wrote "io.println")
         let direct_name = format!("{}.{}", module_alias, member_name);
         if let Some(mangled_names) = self.function_overloads.get(&direct_name) {
             if let Some(first_mangled) = mangled_names.first() {
@@ -971,13 +1026,12 @@ impl TypeContext {
                     // Check visibility: private functions are only visible within the same module
                     if sig.private {
                         if let Some(ref current_module) = self.current_module {
-                            // Check if the function's module matches the current module
                             let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
                             if func_module != *current_module {
-                                return None; // Private function not visible from this module
+                                return None;
                             }
                         } else {
-                            return None; // Private function not visible from global scope
+                            return None;
                         }
                     }
                     return Some(sig);
@@ -986,45 +1040,49 @@ impl TypeContext {
         }
 
         // Try to find an import that matches the module alias
-        for import_path in &self.imports {
-            // Case 1: Import ends with the alias (e.g., import std.math and access math.sin)
-            if let Some(last_dot) = import_path.rfind('.') {
-                let import_alias = &import_path[last_dot + 1..];
-                if import_alias == module_alias {
-                    let qualified_name = format!("{}.{}", import_path, member_name);
-                    if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
-                        if let Some(first_mangled) = mangled_names.first() {
-                            if let Some(sig) = self.functions.get(first_mangled) {
-                                // Check visibility: private functions are only visible within the same module
-                                if sig.private {
-                                    if let Some(ref current_module) = self.current_module {
-                                        // Check if the function's module matches the current module
-                                        if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
-                                            return None; // Private function not visible from this module
-                                        }
-                                    } else {
-                                        return None; // Private function not visible from global scope
-                                    }
-                                }
-                                return Some(sig);
-                            }
-                        }
-                    }
+        for import_entry in &self.imports {
+            let module_matches = match &import_entry.alias {
+                Some(alias) => alias == module_alias,
+                None => {
+                    // No alias - check if the last component of the module path matches
+                    import_entry.module_path.ends_with(&format!(".{}", module_alias))
+                        || import_entry.module_path == module_alias
                 }
-            } else if import_path == module_alias {
-                // Import is exactly the alias (no dots, e.g., import math and access math.sin)
-                let qualified_name = format!("{}.{}", import_path, member_name);
+            };
+
+            if module_matches {
+                // Build the qualified name based on import kind
+                let qualified_name = match import_entry.kind {
+                    crate::parser::ImportKind::Module => {
+                        // import std -> std.io.println
+                        format!("{}.{}.{}", import_entry.module_path, module_alias, member_name)
+                    }
+                    crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                        // import std.io -> std.io.println
+                        format!("{}.{}", import_entry.module_path, member_name)
+                    }
+                    crate::parser::ImportKind::Member => {
+                        // import std.io.println - shouldn't reach here for qualified access
+                        continue;
+                    }
+                    crate::parser::ImportKind::Wildcard => {
+                        // import std.io.* -> std.io.println
+                        format!("{}.{}", import_entry.module_path, member_name)
+                    }
+                };
+
                 if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                     if let Some(first_mangled) = mangled_names.first() {
                         if let Some(sig) = self.functions.get(first_mangled) {
-                            // Check visibility: private functions are only visible within the same module
+                            // Check visibility
                             if sig.private {
                                 if let Some(ref current_module) = self.current_module {
-                                    if *import_path != *current_module {
-                                        return None; // Private function not visible from this module
+                                    if !import_entry.module_path.ends_with(&format!(".{}", current_module)) 
+                                        && import_entry.module_path != *current_module {
+                                        return None;
                                     }
                                 } else {
-                                    return None; // Private function not visible from global scope
+                                    return None;
                                 }
                             }
                             return Some(sig);
@@ -1032,20 +1090,44 @@ impl TypeContext {
                     }
                 }
             }
+        }
 
-            // Case 2: Import is a parent module (e.g., import std and access io.println -> std.io.println)
+        // Fallback: check import_paths for backward compatibility
+        for import_path in &self.import_paths {
+            if let Some(last_dot) = import_path.rfind('.') {
+                let import_alias = &import_path[last_dot + 1..];
+                if import_alias == module_alias {
+                    let qualified_name = format!("{}.{}", import_path, member_name);
+                    if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
+                        if let Some(first_mangled) = mangled_names.first() {
+                            if let Some(sig) = self.functions.get(first_mangled) {
+                                if sig.private {
+                                    if let Some(ref current_module) = self.current_module {
+                                        if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                            return None;
+                                        }
+                                    } else {
+                                        return None;
+                                    }
+                                }
+                                return Some(sig);
+                            }
+                        }
+                    }
+                }
+            }
+
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, member_name);
             if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                 if let Some(first_mangled) = mangled_names.first() {
                     if let Some(sig) = self.functions.get(first_mangled) {
-                        // Check visibility: private functions are only visible within the same module
                         if sig.private {
                             if let Some(ref current_module) = self.current_module {
                                 if !qualified_name.ends_with(&format!(".{}", current_module)) {
-                                    return None; // Private function not visible from this module
+                                    return None;
                                 }
                             } else {
-                                return None; // Private function not visible from global scope
+                                return None;
                             }
                         }
                         return Some(sig);
@@ -1062,37 +1144,75 @@ impl TypeContext {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, class_name);
         if let Some(class_info) = self.classes.get(&direct_name) {
-            // Check visibility: private classes are only visible within the same module
             if class_info.private {
                 if let Some(ref current_module) = self.current_module {
-                    // Check if the class's module matches the current module
                     let class_module = direct_name.rsplit('.').nth(1).unwrap_or("");
                     if class_module != *current_module {
-                        return None; // Private class not visible from this module
+                        return None;
                     }
                 } else {
-                    return None; // Private class not visible from global scope
+                    return None;
                 }
             }
             return Some(direct_name);
         }
 
         // Try to find an import that matches the module alias
-        for import_path in &self.imports {
-            // Case 1: Import ends with the alias
+        for import_entry in &self.imports {
+            let module_matches = match &import_entry.alias {
+                Some(alias) => alias == module_alias,
+                None => {
+                    import_entry.module_path.ends_with(&format!(".{}", module_alias))
+                        || import_entry.module_path == module_alias
+                }
+            };
+
+            if module_matches {
+                let qualified_name = match import_entry.kind {
+                    crate::parser::ImportKind::Module => {
+                        format!("{}.{}.{}", import_entry.module_path, module_alias, class_name)
+                    }
+                    crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                        format!("{}.{}", import_entry.module_path, class_name)
+                    }
+                    crate::parser::ImportKind::Member => {
+                        continue;
+                    }
+                    crate::parser::ImportKind::Wildcard => {
+                        format!("{}.{}", import_entry.module_path, class_name)
+                    }
+                };
+
+                if let Some(class_info) = self.classes.get(&qualified_name) {
+                    if class_info.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if !import_entry.module_path.ends_with(&format!(".{}", current_module)) 
+                                && import_entry.module_path != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    return Some(qualified_name);
+                }
+            }
+        }
+
+        // Fallback to import_paths for backward compatibility
+        for import_path in &self.import_paths {
             if let Some(last_dot) = import_path.rfind('.') {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, class_name);
                     if let Some(class_info) = self.classes.get(&qualified_name) {
-                        // Check visibility: private classes are only visible within the same module
                         if class_info.private {
                             if let Some(ref current_module) = self.current_module {
                                 if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
-                                    return None; // Private class not visible from this module
+                                    return None;
                                 }
                             } else {
-                                return None; // Private class not visible from global scope
+                                return None;
                             }
                         }
                         return Some(qualified_name);
@@ -1101,31 +1221,28 @@ impl TypeContext {
             } else if import_path == module_alias {
                 let qualified_name = format!("{}.{}", import_path, class_name);
                 if let Some(class_info) = self.classes.get(&qualified_name) {
-                    // Check visibility: private classes are only visible within the same module
                     if class_info.private {
                         if let Some(ref current_module) = self.current_module {
                             if *import_path != *current_module {
-                                return None; // Private class not visible from this module
+                                return None;
                             }
                         } else {
-                            return None; // Private class not visible from global scope
+                            return None;
                         }
                     }
                     return Some(qualified_name);
                 }
             }
 
-            // Case 2: Import is a parent module
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, class_name);
             if let Some(class_info) = self.classes.get(&qualified_name) {
-                // Check visibility: private classes are only visible within the same module
                 if class_info.private {
                     if let Some(ref current_module) = self.current_module {
                         if !qualified_name.ends_with(&format!(".{}", current_module)) {
-                            return None; // Private class not visible from this module
+                            return None;
                         }
                     } else {
-                        return None; // Private class not visible from global scope
+                        return None;
                     }
                 }
                 return Some(qualified_name);
@@ -1140,37 +1257,75 @@ impl TypeContext {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, var_name);
         if let Some(var) = self.variables.get(&direct_name) {
-            // Check visibility: private variables are only visible within the same module
             if var.private {
                 if let Some(ref current_module) = self.current_module {
-                    // Check if the variable's module matches the current module
                     let var_module = var.name.rsplit('.').nth(1).unwrap_or("");
                     if var_module != *current_module {
-                        return None; // Private variable not visible from this module
+                        return None;
                     }
                 } else {
-                    return None; // Private variable not visible from global scope
+                    return None;
                 }
             }
             return Some(var);
         }
 
         // Try to find an import that matches the module alias
-        for import_path in &self.imports {
-            // Case 1: Import ends with the alias
+        for import_entry in &self.imports {
+            let module_matches = match &import_entry.alias {
+                Some(alias) => alias == module_alias,
+                None => {
+                    import_entry.module_path.ends_with(&format!(".{}", module_alias))
+                        || import_entry.module_path == module_alias
+                }
+            };
+
+            if module_matches {
+                let qualified_name = match import_entry.kind {
+                    crate::parser::ImportKind::Module => {
+                        format!("{}.{}.{}", import_entry.module_path, module_alias, var_name)
+                    }
+                    crate::parser::ImportKind::Simple | crate::parser::ImportKind::Aliased(_) => {
+                        format!("{}.{}", import_entry.module_path, var_name)
+                    }
+                    crate::parser::ImportKind::Member => {
+                        continue;
+                    }
+                    crate::parser::ImportKind::Wildcard => {
+                        format!("{}.{}", import_entry.module_path, var_name)
+                    }
+                };
+
+                if let Some(var) = self.variables.get(&qualified_name) {
+                    if var.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if !import_entry.module_path.ends_with(&format!(".{}", current_module))
+                                && import_entry.module_path != *current_module {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    return Some(var);
+                }
+            }
+        }
+
+        // Fallback to import_paths for backward compatibility
+        for import_path in &self.import_paths {
             if let Some(last_dot) = import_path.rfind('.') {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, var_name);
                     if let Some(var) = self.variables.get(&qualified_name) {
-                        // Check visibility: private variables are only visible within the same module
                         if var.private {
                             if let Some(ref current_module) = self.current_module {
                                 if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
-                                    return None; // Private variable not visible from this module
+                                    return None;
                                 }
                             } else {
-                                return None; // Private variable not visible from global scope
+                                return None;
                             }
                         }
                         return Some(var);
@@ -1179,31 +1334,28 @@ impl TypeContext {
             } else if import_path == module_alias {
                 let qualified_name = format!("{}.{}", import_path, var_name);
                 if let Some(var) = self.variables.get(&qualified_name) {
-                    // Check visibility: private variables are only visible within the same module
                     if var.private {
                         if let Some(ref current_module) = self.current_module {
                             if *import_path != *current_module {
-                                return None; // Private variable not visible from this module
+                                return None;
                             }
                         } else {
-                            return None; // Private variable not visible from global scope
+                            return None;
                         }
                     }
                     return Some(var);
                 }
             }
 
-            // Case 2: Import is a parent module
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, var_name);
             if let Some(var) = self.variables.get(&qualified_name) {
-                // Check visibility: private variables are only visible within the same module
                 if var.private {
                     if let Some(ref current_module) = self.current_module {
                         if !qualified_name.ends_with(&format!(".{}", current_module)) {
-                            return None; // Private variable not visible from this module
+                            return None;
                         }
                     } else {
-                        return None; // Private variable not visible from global scope
+                        return None;
                     }
                 }
                 return Some(var);
@@ -1259,14 +1411,14 @@ impl TypeContext {
         }
 
         // 2. Try with imports
-        for import_path in &self.imports {
-            let qualified = format!("{}.{}", import_path, name);
+        for import_entry in &self.imports {
+            let qualified = format!("{}.{}", import_entry.module_path, name);
             if let Some(overloads) = self.function_overloads.get(&qualified) {
                 if let Some(res) = find_best_match(overloads) {
                     // Check visibility for private functions
                     if res.private {
                         if let Some(ref current_module) = self.current_module {
-                            if *import_path != *current_module {
+                            if import_entry.module_path != *current_module {
                                 continue; // Private function not visible from this module
                             }
                         } else {
@@ -1280,13 +1432,13 @@ impl TypeContext {
             // Also try parent module sub-access (e.g., import std and access io.println -> std.io.println)
             if let Some(dot_pos) = name.find('.') {
                 let (prefix, rest) = name.split_at(dot_pos);
-                let qualified2 = format!("{}.{}.{}", import_path, prefix, &rest[1..]);
+                let qualified2 = format!("{}.{}.{}", import_entry.module_path, prefix, &rest[1..]);
                 if let Some(overloads) = self.function_overloads.get(&qualified2) {
                     if let Some(res) = find_best_match(overloads) {
                         // Check visibility for private functions
                         if res.private {
                             if let Some(ref current_module) = self.current_module {
-                                if *import_path != *current_module {
+                                if import_entry.module_path != *current_module {
                                     continue; // Private function not visible from this module
                                 }
                             } else {
@@ -1311,10 +1463,10 @@ impl TypeContext {
             if base_name.ends_with(&format!(".{}", name)) || base_name.ends_with(&format!("::{}", name)) {
                 if self.signature_matches(sig, arg_types) {
                     // Check if this function is from an imported module or the current module
-                    let from_imported_module = self.imports.iter().any(|import_path| {
-                        base_name.starts_with(&format!("{}.", import_path)) || base_name.starts_with(&format!("{}::", import_path))
+                    let from_imported_module = self.imports.iter().any(|import_entry| {
+                        base_name.starts_with(&format!("{}.", import_entry.module_path)) || base_name.starts_with(&format!("{}::", import_entry.module_path))
                     });
-                    
+
                     let from_current_module = if let Some(ref current_module) = self.current_module {
                         base_name.starts_with(&format!("{}.", current_module)) || base_name.starts_with(&format!("{}::", current_module))
                     } else {
@@ -1466,10 +1618,10 @@ impl TypeContext {
             if class_name.ends_with(&format!(".{}", name)) {
                 if let Some(ci) = self.classes.get(class_name) {
                     // Check if this class is from an imported module or the current module
-                    let from_imported_module = self.imports.iter().any(|import_path| {
-                        class_name.starts_with(&format!("{}.", import_path)) || class_name.starts_with(&format!("{}::", import_path))
+                    let from_imported_module = self.imports.iter().any(|import_entry| {
+                        class_name.starts_with(&format!("{}.", import_entry.module_path)) || class_name.starts_with(&format!("{}::", import_entry.module_path))
                     });
-                    
+
                     let from_current_module = if let Some(ref current_module) = self.current_module {
                         class_name.starts_with(&format!("{}.", current_module)) || class_name.starts_with(&format!("{}::", current_module))
                     } else {
@@ -1712,7 +1864,7 @@ impl TypeChecker {
                         });
                     }
                 }
-                Stmt::Import { path: _ } => {
+                Stmt::Import { .. } => {
                     // Import handled during module resolution
                 }
                 _ => {}
@@ -1725,7 +1877,7 @@ impl TypeChecker {
             Stmt::Module { path: _ } => {
                 // Module declaration - just for namespacing
             }
-            Stmt::Import { path: _ } => {
+            Stmt::Import { .. } => {
                 // Import handled in collect_definitions
             }
             Stmt::Class(class) => {
@@ -2073,14 +2225,14 @@ impl TypeChecker {
                 } else {
                     // Variable not found in global/function context - check if it's a module alias
                     let mut is_module_alias = false;
-                    for import_path in &self.context.imports {
-                        if let Some(last_dot) = import_path.rfind('.') {
-                            let import_alias = &import_path[last_dot + 1..];
+                    for import_entry in &self.context.imports {
+                        if let Some(last_dot) = import_entry.module_path.rfind('.') {
+                            let import_alias = &import_entry.module_path[last_dot + 1..];
                             if import_alias == name {
                                 is_module_alias = true;
                                 break;
                             }
-                        } else if import_path == name {
+                        } else if import_entry.module_path.as_str() == name {
                             is_module_alias = true;
                             break;
                         }
@@ -2502,8 +2654,8 @@ impl TypeChecker {
                         return Type::Enum(direct_name);
                     }
 
-                    for import_path in &self.context.imports {
-                        let qualified_enum = format!("{}.{}.{}", import_path, module_name, name);
+                    for import_entry in &self.context.imports {
+                        let qualified_enum = format!("{}.{}.{}", import_entry.module_path, module_name, name);
                         if self.context.get_enum(&qualified_enum).is_some() {
                             return Type::Enum(qualified_enum);
                         }

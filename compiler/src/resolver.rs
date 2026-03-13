@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use crate::lexer::Lexer;
-use crate::parser::{Parser, Stmt};
+use crate::parser::{Parser, Stmt, ImportKind};
 use crate::types::{TypeChecker, TypeContext, Type, FunctionSignature, ParamSignature};
 
 pub struct ModuleResolver {
@@ -160,25 +160,127 @@ impl ModuleResolver {
 
     pub fn process_imports(&mut self, statements: &[Stmt]) -> Result<(), String> {
         for stmt in statements {
-            if let Stmt::Import { path } = stmt {
+            if let Stmt::Import { path, kind } = stmt {
                 let module_name = path.join(".");
+
+                // For wildcard imports, we need to load the module to discover its members
+                // For other imports, load the module path
+                let load_path = match kind {
+                    ImportKind::Wildcard => {
+                        // For wildcard, load the parent module
+                        if path.len() > 1 {
+                            path[..path.len()-1].to_vec()
+                        } else {
+                            path.clone()
+                        }
+                    }
+                    ImportKind::Member => {
+                        // For member imports, load the parent module
+                        if path.len() > 1 {
+                            path[..path.len()-1].to_vec()
+                        } else {
+                            path.clone()
+                        }
+                    }
+                    ImportKind::Simple => {
+                        // For simple imports, load the module itself
+                        path.clone()
+                    }
+                    ImportKind::Module => {
+                        // For module imports, load the module
+                        path.clone()
+                    }
+                    ImportKind::Aliased(_) => {
+                        // For aliased imports, load the module
+                        path.clone()
+                    }
+                };
                 
+                let load_module_name = load_path.join(".");
+
                 // Only load if not already loaded
-                if !self.loaded_modules.contains_key(&module_name) {
-                    self.resolve_and_load(path)?;
-                    
+                if !self.loaded_modules.contains_key(&load_module_name) {
+                    self.resolve_and_load(&load_path)?;
+
                     // Recursively process imports in the loaded module
-                    if let Some(info) = self.loaded_modules.get(&module_name) {
+                    if let Some(info) = self.loaded_modules.get(&load_module_name) {
                         let sub_statements = info.statements.clone();
                         self.process_imports(&sub_statements)?;
                     }
                 }
 
-                // Register the import in the type context
-                let import_path = path.join(".");
-                if !self.type_context.imports.contains(&import_path) {
-                    self.type_context.imports.push(import_path);
+                // Determine the alias and module path for the import entry
+                let (alias, module_path) = match kind {
+                    ImportKind::Module => {
+                        // import std -> module_path = "std", alias = None
+                        (None, module_name.clone())
+                    }
+                    ImportKind::Simple => {
+                        // import std.io -> module_path = "std.io", alias = Some("io")
+                        // This brings all members into scope directly (like wildcard)
+                        let alias = path.last().cloned();
+                        (alias, module_name.clone())
+                    }
+                    ImportKind::Aliased(ref alias_str) => {
+                        // import std.io as myio -> module_path = "std.io", alias = Some("myio")
+                        (Some(alias_str.clone()), module_name.clone())
+                    }
+                    ImportKind::Member => {
+                        // import std.io.println -> module_path = "std.io", alias = Some("println")
+                        let module_path = if path.len() > 1 {
+                            path[..path.len()-1].join(".")
+                        } else {
+                            module_name.clone()
+                        };
+                        let alias = path.last().cloned();
+                        (alias, module_path)
+                    }
+                    ImportKind::Wildcard => {
+                        // import std.io.* -> module_path = "std.io", alias = None, members populated later
+                        let module_path = if path.len() > 1 {
+                            path[..path.len()-1].join(".")
+                        } else {
+                            module_name.clone()
+                        };
+                        (None, module_path)
+                    }
+                };
+
+                // Create import entry
+                let mut import_entry = crate::types::ImportEntry {
+                    module_path: module_path.clone(),
+                    alias,
+                    kind: kind.clone(),
+                    members: Vec::new(),
+                };
+
+                // For wildcard and simple imports, discover members from the loaded module
+                if matches!(kind, ImportKind::Wildcard | ImportKind::Simple) {
+                    if let Some(info) = self.loaded_modules.get(&module_path) {
+                        // Extract function names from the module
+                        for stmt in &info.statements {
+                            match stmt {
+                                Stmt::Function(func) => {
+                                    import_entry.members.push(func.name.clone());
+                                }
+                                Stmt::Class(class) => {
+                                    import_entry.members.push(class.name.clone());
+                                }
+                                Stmt::Interface(iface) => {
+                                    import_entry.members.push(iface.name.clone());
+                                }
+                                Stmt::Let { name, .. } => {
+                                    import_entry.members.push(name.clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
+
+                // Register the import in the type context
+                self.type_context.imports.push(import_entry);
+                self.type_context.import_paths.push(module_name);
             }
         }
         Ok(())

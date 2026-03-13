@@ -12,10 +12,24 @@ impl Span {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportKind {
+    /// import std.io - brings io into scope, use io.println()
+    Simple,
+    /// import std - brings std into scope, use std.io.println()
+    Module,
+    /// import std.io.println - brings println into scope, use println()
+    Member,
+    /// import std.io as io - brings io into scope as alias, use io.println()
+    Aliased(String),
+    /// import std.io.* - brings all members of std.io into scope, use println()
+    Wildcard,
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Module { path: Vec<String> },
-    Import { path: Vec<String> },
+    Import { path: Vec<String>, kind: ImportKind },
     Class(ClassDef),
     Interface(InterfaceDef),
     Enum(EnumDef),
@@ -433,7 +447,17 @@ impl Parser {
     fn parse_import(&mut self) -> Result<Stmt, String> {
         let mut path = Vec::new();
 
+        // Parse the import path (e.g., std.io.println)
         loop {
+            // Check for wildcard (*)
+            if self.match_token(&Token::Star) {
+                // Wildcard import (e.g., import std.io.*)
+                if path.is_empty() {
+                    return self.error("Cannot use wildcard without a module path");
+                }
+                return Ok(Stmt::Import { path, kind: ImportKind::Wildcard });
+            }
+
             if let Token::Identifier(part) = self.advance() {
                 path.push(part);
             } else {
@@ -447,7 +471,28 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Import { path })
+        // Check for aliased import (e.g., import std.io as io)
+        if self.match_token(&Token::As) {
+            if let Token::Identifier(alias) = self.advance() {
+                return Ok(Stmt::Import { path, kind: ImportKind::Aliased(alias) });
+            } else {
+                return self.error("Expected identifier after 'as'");
+            }
+        }
+
+        // Determine import kind based on path length and context
+        // - Single element: Module (import std -> std.io.println)
+        // - Multiple elements: Simple (import std.io -> println())
+        // - Three+ elements: Member (import std.io.println -> println())
+        let kind = if path.len() == 1 {
+            ImportKind::Module
+        } else if path.len() >= 3 {
+            ImportKind::Member
+        } else {
+            ImportKind::Simple
+        };
+
+        Ok(Stmt::Import { path, kind })
     }
 
     fn parse_module(&mut self) -> Result<Stmt, String> {
