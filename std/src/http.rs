@@ -468,3 +468,151 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
 
     Ok(Value::Promise(promise))
 }
+
+// CamelCase aliases for Bengal API compatibility
+pub fn native_http_client_set_timeout_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_set_timeout(args)
+}
+
+pub fn native_http_client_set_base_url_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_set_base_url(args)
+}
+
+pub fn native_http_client_add_header_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_add_header(args)
+}
+
+pub fn native_http_client_get_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_get(args)
+}
+
+pub fn native_http_client_post_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_post(args)
+}
+
+// Additional HttpClient methods
+pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> Result<Value, Value> {
+    let state = get_http_client_state(args)?;
+    if args.len() < 2 {
+        return Err(Value::String(
+            "set_redirect_policy requires policy argument".to_string(),
+        ));
+    }
+
+    let policy = match &args[1] {
+        Value::Int64(n) => *n as i32,
+        Value::UInt64(n) => *n as i32,
+        Value::Int32(n) => *n,
+        _ => return Err(Value::String("policy must be an integer".to_string())),
+    };
+
+    let mut state = state.lock().unwrap();
+    state.redirect_policy = match policy {
+        0 => "Follow".to_string(),
+        1 => "Limited".to_string(),
+        2 => "None".to_string(),
+        _ => "Follow".to_string(),
+    };
+    Ok(Value::Null)
+}
+
+pub fn native_http_client_set_max_redirects(args: &mut Vec<Value>) -> Result<Value, Value> {
+    let state = get_http_client_state(args)?;
+    if args.len() < 2 {
+        return Err(Value::String(
+            "set_max_redirects requires max argument".to_string(),
+        ));
+    }
+
+    let max = match &args[1] {
+        Value::Int64(n) => *n as u32,
+        Value::UInt64(n) => *n as u32,
+        Value::Int32(n) => *n as u32,
+        Value::UInt32(n) => *n,
+        _ => return Err(Value::String("max must be an integer".to_string())),
+    };
+
+    let mut state = state.lock().unwrap();
+    state.max_redirects = max;
+    Ok(Value::Null)
+}
+
+pub fn native_http_client_set_proxy(args: &mut Vec<Value>) -> Result<Value, Value> {
+    let state = get_http_client_state(args)?;
+    if args.len() < 3 {
+        return Err(Value::String(
+            "set_proxy requires host and port arguments".to_string(),
+        ));
+    }
+
+    let host = args[1].to_string();
+    let port = match &args[2] {
+        Value::Int64(n) => *n as u16,
+        Value::UInt64(n) => *n as u16,
+        Value::Int32(n) => *n as u16,
+        Value::UInt32(n) => *n as u16,
+        _ => return Err(Value::String("port must be an integer".to_string())),
+    };
+
+    let mut state = state.lock().unwrap();
+    state.proxy_host = Some(host);
+    state.proxy_port = Some(port);
+    Ok(Value::Null)
+}
+
+pub fn native_http_client_set_verify_ssl(args: &mut Vec<Value>) -> Result<Value, Value> {
+    let state = get_http_client_state(args)?;
+    if args.len() < 2 {
+        return Err(Value::String(
+            "set_verify_ssl requires verify argument".to_string(),
+        ));
+    }
+
+    let verify = match &args[1] {
+        Value::Bool(b) => *b,
+        _ => return Err(Value::String("verify must be a boolean".to_string())),
+    };
+
+    let mut state = state.lock().unwrap();
+    state.verify_ssl = verify;
+    Ok(Value::Null)
+}
+
+// CamelCase aliases for additional methods
+pub fn native_http_client_set_redirect_policy_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_set_redirect_policy(args)
+}
+
+pub fn native_http_client_set_max_redirects_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_set_max_redirects(args)
+}
+
+pub fn native_http_client_set_proxy_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_set_proxy(args)
+}
+
+pub fn native_http_client_set_verify_ssl_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+    native_http_client_set_verify_ssl(args)
+}
+
+// HttpClient native_create callback
+pub fn native_http_client_native_create(args: &mut Vec<Value>) -> Result<Value, Value> {
+    // Initialize the HttpClient instance with default state
+    if args.is_empty() {
+        return Err(Value::String(
+            "HttpClient constructor requires instance".to_string(),
+        ));
+    }
+
+    if let Value::Instance(instance) = &args[0] {
+        let state = Arc::new(Mutex::new(HttpClientState::default()));
+        let instance_lock = instance.lock().unwrap();
+        let mut native_data = instance_lock.native_data.lock().unwrap();
+        *native_data = Some(Box::new(state) as Box<dyn Any + Send + Sync>);
+        drop(native_data);
+        drop(instance_lock);
+        Ok(Value::Null)
+    } else {
+        Err(Value::String("Expected HttpClient instance".to_string()))
+    }
+}

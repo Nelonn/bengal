@@ -1128,14 +1128,19 @@ impl TypeContext {
     pub fn resolve_class(&self, name: &str) -> Option<String> {
         // First try exact match
         if self.classes.contains_key(name) {
-            // If the exact match contains ::, use it; otherwise check if there's also a qualified version
+            // If the exact match contains :: or ., use it; otherwise check if there's also a qualified version
             let exact = name.to_string();
-            if exact.contains("::") {
+            if exact.contains("::") || exact.contains('.') {
                 return Some(exact);
             }
-            // Prefer qualified version if available
+            // Prefer qualified version if available (try :: first, then .)
             for class_name in self.classes.keys() {
                 if class_name.ends_with(&format!("::{}", name)) {
+                    return Some(class_name.clone());
+                }
+            }
+            for class_name in self.classes.keys() {
+                if class_name.ends_with(&format!(".{}", name)) {
                     return Some(class_name.clone());
                 }
             }
@@ -1145,6 +1150,13 @@ impl TypeContext {
         // Try to find a class that ends with ::<name>
         for class_name in self.classes.keys() {
             if class_name.ends_with(&format!("::{}", name)) {
+                return Some(class_name.clone());
+            }
+        }
+
+        // Try to find a class that ends with .<name>
+        for class_name in self.classes.keys() {
+            if class_name.ends_with(&format!(".{}", name)) {
                 return Some(class_name.clone());
             }
         }
