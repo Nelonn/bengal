@@ -107,6 +107,10 @@ impl Type {
             "float64" => Type::Float64,
             "any" => Type::Any,
             "self" => Type::SelfType,
+            // Recognize type parameters: single uppercase letter (T, U, V, etc.) or uppercase followed by single digit (T1, U2)
+            _ if s.len() <= 2 && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && s.chars().skip(1).all(|c| c.is_ascii_digit()) => {
+                Type::TypeParameter(s.to_string())
+            }
             _ => Type::Class(s.to_string()),
         }
     }
@@ -1172,6 +1176,47 @@ impl TypeContext {
             return Some(sig);
         }
         None
+    }
+
+    /// Substitute type parameters in a type with actual type arguments
+    /// E.g., TypeParameter("T") with mapping {"T": Str} -> Str
+    pub fn substitute_type_params(&self, ty: &Type, type_args: &[Type], type_params: &[String]) -> Type {
+        match ty {
+            Type::TypeParameter(param_name) => {
+                // Find the corresponding type argument
+                if let Some(idx) = type_params.iter().position(|p| p == param_name) {
+                    if let Some(arg) = type_args.get(idx) {
+                        return arg.clone();
+                    }
+                }
+                ty.clone()
+            }
+            Type::Array(inner) => {
+                Type::Array(Box::new(self.substitute_type_params(inner, type_args, type_params)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type_params(inner, type_args, type_params)))
+            }
+            Type::Promise(inner) => {
+                Type::Promise(Box::new(self.substitute_type_params(inner, type_args, type_params)))
+            }
+            Type::GenericInstance(name, args) => {
+                let substituted_args: Vec<Type> = args
+                    .iter()
+                    .map(|arg| self.substitute_type_params(arg, type_args, type_params))
+                    .collect();
+                Type::GenericInstance(name.clone(), substituted_args)
+            }
+            Type::Function(params, return_type) => {
+                let substituted_params: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.substitute_type_params(p, type_args, type_params))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_type_params(return_type, type_args, type_params));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => ty.clone(),
+        }
     }
 
     /// Get all overloaded versions of a function by base name
@@ -2782,26 +2827,166 @@ impl TypeChecker {
                             }
                         }
                         return_type
-                    } else if let Some(_class_info) = self.context.get_class(func_name) {
-                        // It's a class instantiation - check constructor args
-                        let ctor_sig = self.context.resolve_method_call(func_name, "constructor", &arg_types);
-                        if let Some(sig) = ctor_sig.cloned() {
-                            self.check_method_call(&sig, args, "constructor", func_name);
-                        } else if !args.is_empty() {
-                            // No explicit constructor but args were provided
-                            self.context.add_error_with_location(
-                                format!("Class '{}' does not accept constructor arguments", func_name),
-                                span.line, span.column, None, None
-                            );
-                        }
-                        // Return type is the class type
-                        Type::Class(func_name.clone())
                     } else {
-                        self.context.add_error_with_location(
-                            format!("Undefined function: '{}'", func_name),
-                            span.line, span.column, None, None
-                        );
-                        Type::Unknown
+                        // Check if it's a class instantiation (possibly generic)
+                        // Parse func_name as a type to handle generic instances like ClassName<T>
+                        let func_name_type = Type::from_str(func_name);
+                        
+                        let (base_class_name, full_return_type) = match &func_name_type {
+                            Type::GenericInstance(base_name, type_args) => {
+                                // This is a generic class instantiation like ClassName<T1, T2>
+                                // Look up the base class
+                                if let Some(class_info) = self.context.get_class(base_name) {
+                                    // Validate type arguments against class type parameters
+                                    if !class_info.type_params.is_empty() {
+                                        if type_args.len() != class_info.type_params.len() {
+                                            self.context.add_error_with_location(
+                                                format!(
+                                                    "Generic class '{}' expects {} type argument(s), got {}",
+                                                    base_name,
+                                                    class_info.type_params.len(),
+                                                    type_args.len()
+                                                ),
+                                                span.line, span.column, None, None
+                                            );
+                                        }
+                                    }
+                                    // Return type is the generic instance
+                                    (base_name.clone(), func_name_type.clone())
+                                } else {
+                                    // Base class not found
+                                    self.context.add_error_with_location(
+                                        format!("Undefined class: '{}'", base_name),
+                                        span.line, span.column, None, None
+                                    );
+                                    return Type::Unknown;
+                                }
+                            }
+                            Type::Class(base_name) => {
+                                // Non-generic class instantiation
+                                if let Some(_class_info) = self.context.get_class(base_name) {
+                                    (base_name.clone(), Type::Class(base_name.clone()))
+                                } else {
+                                    // Not a class, check if it's a type alias or enum
+                                    if let Some(_alias_info) = self.context.get_type_alias(func_name) {
+                                        // Type alias instantiation - treat as the aliased type
+                                        return func_name_type.clone();
+                                    }
+                                    if let Some(_enum_info) = self.context.get_enum(func_name) {
+                                        // Enum instantiation
+                                        return Type::Enum(func_name.to_string());
+                                    }
+                                    // Not found at all
+                                    self.context.add_error_with_location(
+                                        format!("Undefined function: '{}'", func_name),
+                                        span.line, span.column, None, None
+                                    );
+                                    return Type::Unknown;
+                                }
+                            }
+                            _ => {
+                                // Not a valid class type
+                                self.context.add_error_with_location(
+                                    format!("Undefined function: '{}'", func_name),
+                                    span.line, span.column, None, None
+                                );
+                                return Type::Unknown;
+                            }
+                        };
+
+                        // It's a class instantiation - check constructor args
+                        // For generic classes, we need to substitute type parameters in the constructor signature
+                        if let Type::GenericInstance(base_name, type_args) = &func_name_type {
+                            // Look up the base class and get its type parameters
+                            if let Some(class_info) = self.context.get_class(base_name) {
+                                let type_params = class_info.type_params.clone();
+                                
+                                // Try to find a constructor and substitute type parameters
+                                let mut found_matching_ctor = false;
+                                
+                                if let Some(overloads) = class_info.method_overloads.get("constructor") {
+                                    for mangled in overloads {
+                                        if let Some(sig) = class_info.methods.get(mangled) {
+                                            // Substitute type parameters in the constructor signature
+                                            let substituted_params: Vec<crate::types::ParamSignature> = sig.params.iter().map(|p| {
+                                                let substituted_type = p.type_name.as_ref().map(|t| {
+                                                    self.context.substitute_type_params(t, type_args, &type_params)
+                                                });
+                                                crate::types::ParamSignature {
+                                                    name: p.name.clone(),
+                                                    type_name: substituted_type,
+                                                }
+                                            }).collect();
+                                            
+                                            // Check if argument count matches
+                                            let substituted_param_types: Vec<Type> = substituted_params.iter()
+                                                .filter_map(|p| p.type_name.clone())
+                                                .collect();
+                                            
+                                            if substituted_param_types.len() != arg_types.len() {
+                                                continue; // Wrong number of arguments
+                                            }
+                                            
+                                            // Check if all argument types match
+                                            let mut all_match = true;
+                                            for (expected, actual) in substituted_param_types.iter().zip(arg_types.iter()) {
+                                                // Types match if they're equal, or one is assignable to the other
+                                                let types_match = expected == actual 
+                                                    || expected.is_assignable_to(actual)
+                                                    || actual.is_assignable_to(expected)
+                                                    || *expected == Type::Unknown
+                                                    || *actual == Type::Unknown;
+                                                if !types_match {
+                                                    all_match = false;
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if all_match {
+                                                found_matching_ctor = true;
+                                                // Check the method call with substituted signature
+                                                let substituted_sig = MethodSignature {
+                                                    name: sig.name.clone(),
+                                                    params: substituted_params,
+                                                    return_type: sig.return_type.as_ref().map(|t| {
+                                                        self.context.substitute_type_params(t, type_args, &type_params)
+                                                    }),
+                                                    return_optional: sig.return_optional,
+                                                    private: sig.private,
+                                                    is_async: sig.is_async,
+                                                    is_native: sig.is_native,
+                                                    is_static: sig.is_static,
+                                                    mangled_name: sig.mangled_name.clone(),
+                                                };
+                                                self.check_method_call(&substituted_sig, args, "constructor", &base_class_name);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if !found_matching_ctor && !args.is_empty() {
+                                    self.context.add_error_with_location(
+                                        format!("Class '{}' does not accept constructor arguments", base_class_name),
+                                        span.line, span.column, None, None
+                                    );
+                                }
+                            }
+                        } else {
+                            // Non-generic class - use normal resolution
+                            let ctor_sig = self.context.resolve_method_call(&base_class_name, "constructor", &arg_types);
+                            if let Some(sig) = ctor_sig.cloned() {
+                                self.check_method_call(&sig, args, "constructor", &base_class_name);
+                            } else if !args.is_empty() {
+                                self.context.add_error_with_location(
+                                    format!("Class '{}' does not accept constructor arguments", base_class_name),
+                                    span.line, span.column, None, None
+                                );
+                            }
+                        }
+                        
+                        // Return type is the full type (generic instance or plain class)
+                        full_return_type
                     }
                 } else if let Expr::Get { object, name, span: method_span } = callee.as_ref() {
                     // Could be method call OR module.function() call
