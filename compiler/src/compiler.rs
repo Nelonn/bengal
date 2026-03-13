@@ -358,7 +358,9 @@ impl Compiler {
                         fields: vec![],
                         methods: interface.methods.clone(),
                         is_native: false,
+                        private: false,
                     };
+
                     classes.push(interface_as_class);
                 }
                 Stmt::Function(func) => {
@@ -530,6 +532,17 @@ impl Compiler {
 
             let mut func_ctx = type_context.clone().unwrap_or_else(|| TypeContext::new());
             func_ctx.current_method_params = f.params.iter().map(|p| p.name.clone()).collect();
+            
+            // Set current_module based on the function's qualified name
+            // Functions from modules have names like "module.submodule.funcName"
+            // We need to extract the module path (everything before the last dot)
+            if let Some(last_dot) = f.name.rfind('.') {
+                let module_path = &f.name[..last_dot];
+                // Only set current_module if it looks like a module path (contains a dot or is a known module)
+                if module_path.contains('.') || module_path.starts_with("std") {
+                    func_ctx.current_module = Some(module_path.to_string());
+                }
+            }
 
             let func_source = function_sources.get(&f.name).unwrap_or(&self.source);
             let mut func_compiler = Compiler::new(func_source);
@@ -1326,11 +1339,38 @@ impl Compiler {
                             // Use mangled name for overloaded function resolution
                             resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
                             is_native = sig.is_native;
-                        } else if let Some(current_class) = &ctx.current_class {
-                            // Check if it's a method on current class
-                            if let Some(class_info) = ctx.get_class(current_class) {
-                                if class_info.methods.contains_key(func_name) {
-                                    is_method = true;
+                        } else {
+                            // Check if this might be a private class from another module
+                            // by searching for classes that end with the function name
+                            // Only error if the class is from a DIFFERENT module and is private
+                            for (class_name, class_info) in &ctx.classes {
+                                if class_name.ends_with(&format!(".{}", func_name)) {
+                                    // Check if this class is from an imported module
+                                    let from_imported_module = ctx.imports.iter().any(|import_path| {
+                                        class_name.starts_with(&format!("{}.", import_path))
+                                    });
+                                    
+                                    // Check if this class is from the current module
+                                    let from_current_module = if let Some(ref current_module) = ctx.current_module {
+                                        class_name.starts_with(&format!("{}.", current_module))
+                                    } else {
+                                        false
+                                    };
+                                    
+                                    // Only error if the class is from an imported module but NOT from the current module
+                                    if from_imported_module && !from_current_module && class_info.private {
+                                        // Found a private class from a different module - generate an error
+                                        return Err(format!("Class '{}' is private and cannot be accessed from this module", func_name));
+                                    }
+                                }
+                            }
+                            
+                            if let Some(current_class) = &ctx.current_class {
+                                // Check if it's a method on current class
+                                if let Some(class_info) = ctx.get_class(current_class) {
+                                    if class_info.methods.contains_key(func_name) {
+                                        is_method = true;
+                                    }
                                 }
                             }
                         }

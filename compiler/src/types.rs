@@ -265,6 +265,7 @@ pub struct FunctionSignature {
     pub is_method: bool,
     pub is_async: bool,
     pub is_native: bool,
+    pub private: bool,
     /// Mangled name for VM lookup (includes type information for overloading)
     pub mangled_name: Option<String>,
 }
@@ -307,6 +308,7 @@ pub struct ClassInfo {
     pub vtable: Vec<String>,  // Ordered list of virtual method names
     pub is_interface: bool,
     pub is_native: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +321,7 @@ pub struct InterfaceInfo {
     /// Map from base method name to list of mangled names (for overload resolution)
     pub method_overloads: HashMap<String, Vec<String>>,
     pub vtable: Vec<String>,  // Ordered list of method names for vtable
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +349,7 @@ pub struct MethodSignature {
 pub struct EnumInfo {
     pub name: String,
     pub variants: HashMap<String, EnumVariantInfo>,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +362,7 @@ pub struct EnumVariantInfo {
 pub struct VariableInfo {
     pub name: String,
     pub type_name: Type,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +370,7 @@ pub struct TypeAliasInfo {
     pub name: String,
     pub type_params: Vec<String>,
     pub aliased_type: Type,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +385,7 @@ pub struct TypeContext {
     pub enums: HashMap<String, EnumInfo>,
     pub type_aliases: HashMap<String, TypeAliasInfo>,
     pub current_class: Option<String>,
+    pub current_module: Option<String>,
     pub current_method_return: Option<Type>,
     pub current_async_inner_return: Option<Type>,
     pub current_method_params: Vec<String>,
@@ -409,6 +416,7 @@ impl TypeContext {
             enums: HashMap::new(),
             type_aliases: HashMap::new(),
             current_class: None,
+            current_module: None,
             current_method_return: None,
             current_async_inner_return: None,
             current_method_params: Vec::new(),
@@ -439,6 +447,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.json.stringify", json_stringify);
@@ -454,6 +463,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.json.parse", json_parse);
@@ -472,6 +482,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.reflect.type_of", reflect_typeof);
@@ -487,6 +498,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.reflect.class_name", reflect_class_name);
@@ -502,6 +514,7 @@ impl TypeContext {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         };
         self.add_function("std.reflect.fields", reflect_fields);
@@ -556,6 +569,7 @@ impl TypeContext {
             vtable: vec!["length".to_string(), "trim".to_string(), "split".to_string()],
             is_native: true,
             is_interface: false,
+            private: false,
             parent_interfaces: vec![],
             type_params: vec![],
         });
@@ -595,6 +609,7 @@ impl TypeContext {
             vtable: vec!["length".to_string(), "add".to_string()],
             is_native: true,
             is_interface: false,
+            private: false,
             parent_interfaces: vec![],
             type_params: vec!["T".to_string()],
         });
@@ -708,6 +723,7 @@ impl TypeContext {
             vtable,
             is_interface: false,
             is_native: class.is_native,
+            private: class.private,
         });
     }
 
@@ -755,6 +771,7 @@ impl TypeContext {
             methods,
             method_overloads,
             vtable,
+            private: interface.private,
         });
     }
 
@@ -782,6 +799,7 @@ impl TypeContext {
             name: alias.name.clone(),
             type_params: alias.type_params.clone(),
             aliased_type,
+            private: alias.private,
         });
     }
 
@@ -817,6 +835,7 @@ impl TypeContext {
         self.enums.insert(enum_def.name.clone(), EnumInfo {
             name: enum_def.name.clone(),
             variants,
+            private: enum_def.private,
         });
     }
 
@@ -828,10 +847,11 @@ impl TypeContext {
         self.enums.get(enum_name).and_then(|e| e.variants.get(variant_name))
     }
 
-    pub fn add_variable(&mut self, name: &str, type_name: Type) {
+    pub fn add_variable(&mut self, name: &str, type_name: Type, private: bool) {
         self.variables.insert(name.to_string(), VariableInfo {
             name: name.to_string(),
             type_name,
+            private,
         });
     }
 
@@ -880,15 +900,61 @@ impl TypeContext {
         // Try to find overloads by base name
         if let Some(mangled_names) = self.function_overloads.get(name) {
             if let Some(first_mangled) = mangled_names.first() {
-                return self.functions.get(first_mangled);
+                if let Some(sig) = self.functions.get(first_mangled) {
+                    // Check visibility for private functions
+                    if sig.private {
+                        // Private functions are only visible within the same module
+                        if let Some(ref current_module) = self.current_module {
+                            let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
+                            if func_module != *current_module {
+                                return None; // Private function not visible from this module
+                            }
+                        } else {
+                            return None; // Private function not visible from global scope
+                        }
+                    }
+                    return Some(sig);
+                }
             }
         }
 
         // Try to find a function that ends with ::<name> or .<name>
         // Prefer exact module match if we're in a module context
+        // First, collect all matching functions
+        let mut matching_sigs: Vec<&FunctionSignature> = Vec::new();
         for (func_name, sig) in &self.functions {
-            if func_name.ends_with(&format!("::{}", name)) || func_name.ends_with(&format!(".{}", name)) {
-                return Some(sig);
+            if func_name.ends_with(&format!(".{}", name)) {
+                matching_sigs.push(sig);
+            }
+        }
+
+        // If we have matches, find the best one based on imports and visibility
+        if !matching_sigs.is_empty() {
+            // First, try to find a match from an imported module that is not private
+            for import_path in &self.imports {
+                for sig in &matching_sigs {
+                    if sig.name.starts_with(&format!("{}.", import_path)) {
+                        // Check visibility
+                        if sig.private {
+                            // Private functions are only visible within the same module
+                            if let Some(ref current_module) = self.current_module {
+                                if *import_path == *current_module {
+                                    return Some(sig); // Visible - same module
+                                }
+                            }
+                            // Not visible from this module
+                            continue;
+                        }
+                        return Some(sig); // Public function from imported module
+                    }
+                }
+            }
+            
+            // If no imported match found, return the first non-private match
+            for sig in &matching_sigs {
+                if !sig.private {
+                    return Some(sig);
+                }
             }
         }
 
@@ -901,7 +967,21 @@ impl TypeContext {
         let direct_name = format!("{}.{}", module_alias, member_name);
         if let Some(mangled_names) = self.function_overloads.get(&direct_name) {
             if let Some(first_mangled) = mangled_names.first() {
-                return self.functions.get(first_mangled);
+                if let Some(sig) = self.functions.get(first_mangled) {
+                    // Check visibility: private functions are only visible within the same module
+                    if sig.private {
+                        if let Some(ref current_module) = self.current_module {
+                            // Check if the function's module matches the current module
+                            let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
+                            if func_module != *current_module {
+                                return None; // Private function not visible from this module
+                            }
+                        } else {
+                            return None; // Private function not visible from global scope
+                        }
+                    }
+                    return Some(sig);
+                }
             }
         }
 
@@ -914,7 +994,20 @@ impl TypeContext {
                     let qualified_name = format!("{}.{}", import_path, member_name);
                     if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                         if let Some(first_mangled) = mangled_names.first() {
-                            return self.functions.get(first_mangled);
+                            if let Some(sig) = self.functions.get(first_mangled) {
+                                // Check visibility: private functions are only visible within the same module
+                                if sig.private {
+                                    if let Some(ref current_module) = self.current_module {
+                                        // Check if the function's module matches the current module
+                                        if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                            return None; // Private function not visible from this module
+                                        }
+                                    } else {
+                                        return None; // Private function not visible from global scope
+                                    }
+                                }
+                                return Some(sig);
+                            }
                         }
                     }
                 }
@@ -923,7 +1016,19 @@ impl TypeContext {
                 let qualified_name = format!("{}.{}", import_path, member_name);
                 if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                     if let Some(first_mangled) = mangled_names.first() {
-                        return self.functions.get(first_mangled);
+                        if let Some(sig) = self.functions.get(first_mangled) {
+                            // Check visibility: private functions are only visible within the same module
+                            if sig.private {
+                                if let Some(ref current_module) = self.current_module {
+                                    if *import_path != *current_module {
+                                        return None; // Private function not visible from this module
+                                    }
+                                } else {
+                                    return None; // Private function not visible from global scope
+                                }
+                            }
+                            return Some(sig);
+                        }
                     }
                 }
             }
@@ -932,7 +1037,19 @@ impl TypeContext {
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, member_name);
             if let Some(mangled_names) = self.function_overloads.get(&qualified_name) {
                 if let Some(first_mangled) = mangled_names.first() {
-                    return self.functions.get(first_mangled);
+                    if let Some(sig) = self.functions.get(first_mangled) {
+                        // Check visibility: private functions are only visible within the same module
+                        if sig.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if !qualified_name.ends_with(&format!(".{}", current_module)) {
+                                    return None; // Private function not visible from this module
+                                }
+                            } else {
+                                return None; // Private function not visible from global scope
+                            }
+                        }
+                        return Some(sig);
+                    }
                 }
             }
         }
@@ -944,7 +1061,19 @@ impl TypeContext {
     pub fn resolve_qualified_class(&self, module_alias: &str, class_name: &str) -> Option<String> {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, class_name);
-        if self.classes.contains_key(&direct_name) {
+        if let Some(class_info) = self.classes.get(&direct_name) {
+            // Check visibility: private classes are only visible within the same module
+            if class_info.private {
+                if let Some(ref current_module) = self.current_module {
+                    // Check if the class's module matches the current module
+                    let class_module = direct_name.rsplit('.').nth(1).unwrap_or("");
+                    if class_module != *current_module {
+                        return None; // Private class not visible from this module
+                    }
+                } else {
+                    return None; // Private class not visible from global scope
+                }
+            }
             return Some(direct_name);
         }
 
@@ -955,20 +1084,50 @@ impl TypeContext {
                 let import_alias = &import_path[last_dot + 1..];
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, class_name);
-                    if self.classes.contains_key(&qualified_name) {
+                    if let Some(class_info) = self.classes.get(&qualified_name) {
+                        // Check visibility: private classes are only visible within the same module
+                        if class_info.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                    return None; // Private class not visible from this module
+                                }
+                            } else {
+                                return None; // Private class not visible from global scope
+                            }
+                        }
                         return Some(qualified_name);
                     }
                 }
             } else if import_path == module_alias {
                 let qualified_name = format!("{}.{}", import_path, class_name);
-                if self.classes.contains_key(&qualified_name) {
+                if let Some(class_info) = self.classes.get(&qualified_name) {
+                    // Check visibility: private classes are only visible within the same module
+                    if class_info.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if *import_path != *current_module {
+                                return None; // Private class not visible from this module
+                            }
+                        } else {
+                            return None; // Private class not visible from global scope
+                        }
+                    }
                     return Some(qualified_name);
                 }
             }
 
             // Case 2: Import is a parent module
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, class_name);
-            if self.classes.contains_key(&qualified_name) {
+            if let Some(class_info) = self.classes.get(&qualified_name) {
+                // Check visibility: private classes are only visible within the same module
+                if class_info.private {
+                    if let Some(ref current_module) = self.current_module {
+                        if !qualified_name.ends_with(&format!(".{}", current_module)) {
+                            return None; // Private class not visible from this module
+                        }
+                    } else {
+                        return None; // Private class not visible from global scope
+                    }
+                }
                 return Some(qualified_name);
             }
         }
@@ -981,6 +1140,18 @@ impl TypeContext {
         // First try direct lookup
         let direct_name = format!("{}.{}", module_alias, var_name);
         if let Some(var) = self.variables.get(&direct_name) {
+            // Check visibility: private variables are only visible within the same module
+            if var.private {
+                if let Some(ref current_module) = self.current_module {
+                    // Check if the variable's module matches the current module
+                    let var_module = var.name.rsplit('.').nth(1).unwrap_or("");
+                    if var_module != *current_module {
+                        return None; // Private variable not visible from this module
+                    }
+                } else {
+                    return None; // Private variable not visible from global scope
+                }
+            }
             return Some(var);
         }
 
@@ -992,12 +1163,32 @@ impl TypeContext {
                 if import_alias == module_alias {
                     let qualified_name = format!("{}.{}", import_path, var_name);
                     if let Some(var) = self.variables.get(&qualified_name) {
+                        // Check visibility: private variables are only visible within the same module
+                        if var.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if !import_path.ends_with(&format!(".{}", current_module)) && *import_path != *current_module {
+                                    return None; // Private variable not visible from this module
+                                }
+                            } else {
+                                return None; // Private variable not visible from global scope
+                            }
+                        }
                         return Some(var);
                     }
                 }
             } else if import_path == module_alias {
                 let qualified_name = format!("{}.{}", import_path, var_name);
                 if let Some(var) = self.variables.get(&qualified_name) {
+                    // Check visibility: private variables are only visible within the same module
+                    if var.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if *import_path != *current_module {
+                                return None; // Private variable not visible from this module
+                            }
+                        } else {
+                            return None; // Private variable not visible from global scope
+                        }
+                    }
                     return Some(var);
                 }
             }
@@ -1005,6 +1196,16 @@ impl TypeContext {
             // Case 2: Import is a parent module
             let qualified_name = format!("{}.{}.{}", import_path, module_alias, var_name);
             if let Some(var) = self.variables.get(&qualified_name) {
+                // Check visibility: private variables are only visible within the same module
+                if var.private {
+                    if let Some(ref current_module) = self.current_module {
+                        if !qualified_name.ends_with(&format!(".{}", current_module)) {
+                            return None; // Private variable not visible from this module
+                        }
+                    } else {
+                        return None; // Private variable not visible from global scope
+                    }
+                }
                 return Some(var);
             }
         }
@@ -1042,6 +1243,17 @@ impl TypeContext {
         // 1. Try as a full name (with overloads)
         if let Some(overloads) = self.function_overloads.get(name) {
             if let Some(res) = find_best_match(overloads) {
+                // Check visibility for private functions
+                if res.private {
+                    if let Some(ref current_module) = self.current_module {
+                        let func_module = res.name.rsplit('.').nth(1).unwrap_or("");
+                        if func_module != *current_module {
+                            return None; // Private function not visible from this module
+                        }
+                    } else {
+                        return None; // Private function not visible from global scope
+                    }
+                }
                 return Some(res);
             }
         }
@@ -1051,6 +1263,16 @@ impl TypeContext {
             let qualified = format!("{}.{}", import_path, name);
             if let Some(overloads) = self.function_overloads.get(&qualified) {
                 if let Some(res) = find_best_match(overloads) {
+                    // Check visibility for private functions
+                    if res.private {
+                        if let Some(ref current_module) = self.current_module {
+                            if *import_path != *current_module {
+                                continue; // Private function not visible from this module
+                            }
+                        } else {
+                            continue; // Private function not visible from global scope
+                        }
+                    }
                     return Some(res);
                 }
             }
@@ -1061,6 +1283,16 @@ impl TypeContext {
                 let qualified2 = format!("{}.{}.{}", import_path, prefix, &rest[1..]);
                 if let Some(overloads) = self.function_overloads.get(&qualified2) {
                     if let Some(res) = find_best_match(overloads) {
+                        // Check visibility for private functions
+                        if res.private {
+                            if let Some(ref current_module) = self.current_module {
+                                if *import_path != *current_module {
+                                    continue; // Private function not visible from this module
+                                }
+                            } else {
+                                continue; // Private function not visible from global scope
+                            }
+                        }
                         return Some(res);
                     }
                 }
@@ -1068,6 +1300,7 @@ impl TypeContext {
         }
 
         // 3. Try qualified lookup (fallback for older code)
+        // Only consider functions from imported modules or the current module
         for (func_mangled, sig) in &self.functions {
             // Extract base name from mangled name (part before '(')
             let base_name = match func_mangled.find('(') {
@@ -1077,6 +1310,32 @@ impl TypeContext {
 
             if base_name.ends_with(&format!(".{}", name)) || base_name.ends_with(&format!("::{}", name)) {
                 if self.signature_matches(sig, arg_types) {
+                    // Check if this function is from an imported module or the current module
+                    let from_imported_module = self.imports.iter().any(|import_path| {
+                        base_name.starts_with(&format!("{}.", import_path)) || base_name.starts_with(&format!("{}::", import_path))
+                    });
+                    
+                    let from_current_module = if let Some(ref current_module) = self.current_module {
+                        base_name.starts_with(&format!("{}.", current_module)) || base_name.starts_with(&format!("{}::", current_module))
+                    } else {
+                        false
+                    };
+                    
+                    if !from_imported_module && !from_current_module {
+                        continue; // Skip functions from non-imported modules
+                    }
+                    
+                    // Check visibility for private functions
+                    if sig.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let func_module = sig.name.rsplit('.').nth(1).unwrap_or("");
+                            if func_module != *current_module {
+                                continue; // Private function not visible from this module
+                            }
+                        } else {
+                            continue; // Private function not visible from global scope
+                        }
+                    }
                     return Some(sig);
                 }
             }
@@ -1127,7 +1386,18 @@ impl TypeContext {
     /// in qualified classes (e.g., "HttpClient" matches "std::http::HttpClient")
     pub fn resolve_class(&self, name: &str) -> Option<String> {
         // First try exact match
-        if self.classes.contains_key(name) {
+        if let Some(class_info) = self.classes.get(name) {
+            // Check visibility for private classes
+            if class_info.private {
+                if let Some(ref current_module) = self.current_module {
+                    let class_module = name.rsplit('.').nth(1).unwrap_or("");
+                    if class_module != *current_module {
+                        return None; // Private class not visible from this module
+                    }
+                } else {
+                    return None; // Private class not visible from global scope
+                }
+            }
             // If the exact match contains :: or ., use it; otherwise check if there's also a qualified version
             let exact = name.to_string();
             if exact.contains("::") || exact.contains('.') {
@@ -1136,11 +1406,35 @@ impl TypeContext {
             // Prefer qualified version if available (try :: first, then .)
             for class_name in self.classes.keys() {
                 if class_name.ends_with(&format!("::{}", name)) {
+                    if let Some(ci) = self.classes.get(class_name) {
+                        if ci.private {
+                            if let Some(ref current_module) = self.current_module {
+                                let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                                if class_module != *current_module {
+                                    continue; // Private class not visible
+                                }
+                            } else {
+                                continue; // Private class not visible from global scope
+                            }
+                        }
+                    }
                     return Some(class_name.clone());
                 }
             }
             for class_name in self.classes.keys() {
                 if class_name.ends_with(&format!(".{}", name)) {
+                    if let Some(ci) = self.classes.get(class_name) {
+                        if ci.private {
+                            if let Some(ref current_module) = self.current_module {
+                                let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                                if class_module != *current_module {
+                                    continue; // Private class not visible
+                                }
+                            } else {
+                                continue; // Private class not visible from global scope
+                            }
+                        }
+                    }
                     return Some(class_name.clone());
                 }
             }
@@ -1150,13 +1444,54 @@ impl TypeContext {
         // Try to find a class that ends with ::<name>
         for class_name in self.classes.keys() {
             if class_name.ends_with(&format!("::{}", name)) {
+                if let Some(ci) = self.classes.get(class_name) {
+                    if ci.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                            if class_module != *current_module {
+                                continue; // Private class not visible
+                            }
+                        } else {
+                            continue; // Private class not visible from global scope
+                        }
+                    }
+                }
                 return Some(class_name.clone());
             }
         }
 
         // Try to find a class that ends with .<name>
+        // Only consider classes from imported modules or the current module
         for class_name in self.classes.keys() {
             if class_name.ends_with(&format!(".{}", name)) {
+                if let Some(ci) = self.classes.get(class_name) {
+                    // Check if this class is from an imported module or the current module
+                    let from_imported_module = self.imports.iter().any(|import_path| {
+                        class_name.starts_with(&format!("{}.", import_path)) || class_name.starts_with(&format!("{}::", import_path))
+                    });
+                    
+                    let from_current_module = if let Some(ref current_module) = self.current_module {
+                        class_name.starts_with(&format!("{}.", current_module)) || class_name.starts_with(&format!("{}::", current_module))
+                    } else {
+                        false
+                    };
+                    
+                    if !from_imported_module && !from_current_module {
+                        continue; // Skip classes from non-imported modules
+                    }
+                    
+                    // Check visibility for private classes
+                    if ci.private {
+                        if let Some(ref current_module) = self.current_module {
+                            let class_module = class_name.rsplit('.').nth(1).unwrap_or("");
+                            if class_module != *current_module {
+                                continue; // Private class not visible from this module
+                            }
+                        } else {
+                            continue; // Private class not visible from global scope
+                        }
+                    }
+                }
                 return Some(class_name.clone());
             }
         }
@@ -1372,6 +1707,7 @@ impl TypeChecker {
                             is_method: false,
                             is_async: func.is_async,
                             is_native: func.is_native,
+                            private: func.private,
                             mangled_name: None,
                         });
                     }
@@ -1407,7 +1743,7 @@ impl TypeChecker {
             Stmt::Function(func) => {
                 self.check_function(func);
             }
-            Stmt::Let { name, type_annotation, expr } => {
+            Stmt::Let { name, type_annotation, expr, private } => {
                 // If there's a type annotation, use it for type deduction
                 let expr_type = if let Some(ref type_name) = type_annotation {
                     let expected_type = Type::from_str(type_name);
@@ -1415,7 +1751,7 @@ impl TypeChecker {
                 } else {
                     self.infer_expr(expr)
                 };
-                self.context.add_variable(name, expr_type);
+                self.context.add_variable(name, expr_type, *private);
             }
             Stmt::Assign { name, expr, span } => {
                 let expr_type = self.infer_expr(expr);
@@ -1464,7 +1800,7 @@ impl TypeChecker {
                     );
                 } else {
                     // Variable not declared with let, create it (implicit declaration in global/function scope)
-                    self.context.add_variable(name, expr_type);
+                    self.context.add_variable(name, expr_type, false);
                 }
             }
             Stmt::Return(expr) => {
@@ -1525,7 +1861,7 @@ impl TypeChecker {
             Stmt::For { var_name, range, body } => {
                 let _range_type = self.infer_expr(range);
                 // For now, assume ranges are integers
-                self.context.add_variable(var_name, Type::Int);
+                self.context.add_variable(var_name, Type::Int, false);
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
@@ -1549,7 +1885,7 @@ impl TypeChecker {
                 }
                 
                 // Add catch variable (exception object) - currently unknown type
-                self.context.add_variable(catch_var, Type::Unknown);
+                self.context.add_variable(catch_var, Type::Unknown, false);
                 
                 for stmt in catch_block {
                     self.check_stmt(stmt);
@@ -1609,7 +1945,7 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone());
+            self.context.add_variable(&param.name, param_type.clone(), false);
             added_vars.push(param.name.clone());
         }
 
@@ -1660,12 +1996,12 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone());
+            self.context.add_variable(&param.name, param_type.clone(), false);
             added_vars.push(param.name.clone());
         }
 
         // Add 'self' variable
-        self.context.add_variable("self", Type::Class(class_name.to_string()));
+        self.context.add_variable("self", Type::Class(class_name.to_string()), false);
 
         // Check method body
         for stmt in &method.body {
@@ -2409,7 +2745,7 @@ impl TypeChecker {
                     let param_type = param.type_name.as_ref()
                         .map(|t| Type::from_str(t))
                         .unwrap_or(Type::Unknown);
-                    self.context.add_variable(&param.name, param_type);
+                    self.context.add_variable(&param.name, param_type, false);
                     added_vars.push(param.name.clone());
                 }
 
@@ -2529,7 +2865,7 @@ impl TypeChecker {
                         // Add parameters as local variables with expected types
                         let mut added_vars = Vec::new();
                         for (param, param_type) in params.iter().zip(param_types.iter()) {
-                            self.context.add_variable(&param.name, param_type.clone());
+                            self.context.add_variable(&param.name, param_type.clone(), false);
                             added_vars.push(param.name.clone());
                         }
 

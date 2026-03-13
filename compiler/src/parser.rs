@@ -21,7 +21,7 @@ pub enum Stmt {
     Enum(EnumDef),
     Function(FunctionDef),
     TypeAlias(TypeAliasDef),
-    Let { name: String, type_annotation: Option<String>, expr: Expr },
+    Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool },
     Assign { name: String, expr: Expr, span: Span },
     Return(Option<Expr>),
     Expr(Expr),
@@ -41,12 +41,14 @@ pub struct TypeAliasDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub aliased_type: String,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub name: String,
     pub variants: Vec<EnumVariant>,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,7 @@ pub struct FunctionDef {
     pub body: Block,
     pub is_async: bool,
     pub is_native: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +77,7 @@ pub struct ClassDef {
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
     pub is_native: bool,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +86,7 @@ pub struct InterfaceDef {
     pub type_params: Vec<String>,
     pub parent_interfaces: Vec<String>,
     pub methods: Vec<Method>,
+    pub private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -338,12 +343,14 @@ impl Parser {
 
         let mut is_native = false;
         let mut is_async = false;
+        let mut is_private = false;
 
-        // Only consume async/native if followed by fn (for function declarations)
+        // Only consume async/native/private if followed by fn (for function declarations)
         // This allows async to be used for lambdas in expressions
-        while self.check(&Token::Native) || self.check(&Token::Async) {
+        while self.check(&Token::Native) || self.check(&Token::Async) || self.check(&Token::Private) {
             let is_current_async = self.match_token(&Token::Async);
             let is_current_native = if !is_current_async { self.match_token(&Token::Native) } else { false };
+            let is_current_private = if !is_current_async && !is_current_native { self.match_token(&Token::Private) } else { false };
 
             if is_current_async {
                 // Check if followed by fn (possibly with native in between: async native fn)
@@ -361,6 +368,8 @@ impl Parser {
                 }
             } else if is_current_native {
                 is_native = true;
+            } else if is_current_private {
+                is_private = true;
             }
             self.skip_newlines();
         }
@@ -370,17 +379,17 @@ impl Parser {
         } else if self.match_token(&Token::Import) {
             self.parse_import()?
         } else if self.match_token(&Token::Class) {
-            self.parse_class(is_native)?
+            self.parse_class(is_native, is_private)?
         } else if self.match_token(&Token::Interface) {
-            self.parse_interface()?
+            self.parse_interface(is_private)?
         } else if self.match_token(&Token::Enum) {
-            self.parse_enum()?
+            self.parse_enum(is_private)?
         } else if self.match_token(&Token::Fn) {
-            self.parse_function_ext(false, is_async, is_native)?
+            self.parse_function_ext(is_private, is_async, is_native)?
         } else if self.match_token(&Token::Type) {
-            self.parse_type_alias()?
+            self.parse_type_alias(is_private)?
         } else if self.match_token(&Token::Let) {
-            self.parse_let()?
+            self.parse_let(is_private)?
         } else if self.match_token(&Token::Return) {
             self.parse_return()?
         } else if self.match_token(&Token::If) {
@@ -461,7 +470,7 @@ impl Parser {
         Ok(Stmt::Module { path })
     }
 
-    fn parse_class(&mut self, is_native_class: bool) -> Result<Stmt, String> {
+    fn parse_class(&mut self, is_native_class: bool, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected class name"),
@@ -594,10 +603,10 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, is_native: is_native_class }))
+        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, is_native: is_native_class, private: is_private }))
     }
 
-    fn parse_interface(&mut self) -> Result<Stmt, String> {
+    fn parse_interface(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected interface name"),
@@ -670,7 +679,7 @@ impl Parser {
             return self.error_generic("Expected '}' to close interface");
         }
 
-        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods }))
+        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, private: is_private }))
     }
 
     fn parse_interface_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
@@ -713,7 +722,7 @@ impl Parser {
         Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false, is_static: false })
     }
 
-    fn parse_enum(&mut self) -> Result<Stmt, String> {
+    fn parse_enum(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected enum name"),
@@ -749,10 +758,10 @@ impl Parser {
             return self.error("Expected '}' to close enum");
         }
 
-        Ok(Stmt::Enum(EnumDef { name, variants }))
+        Ok(Stmt::Enum(EnumDef { name, variants, private: is_private }))
     }
 
-    fn parse_type_alias(&mut self) -> Result<Stmt, String> {
+    fn parse_type_alias(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected type alias name"),
@@ -786,10 +795,10 @@ impl Parser {
         // Parse the aliased type name
         let (aliased_type, _) = self.parse_type()?;
 
-        Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type }))
+        Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type, private: is_private }))
     }
 
-    fn parse_function_ext(&mut self, _is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
+    fn parse_function_ext(&mut self, is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected function name"),
@@ -847,7 +856,8 @@ impl Parser {
             return_optional, 
             body, 
             is_async, 
-            is_native 
+            is_native,
+            private: is_private
         }))
     }
 
@@ -1089,7 +1099,7 @@ impl Parser {
         Ok((type_str, optional))
     }
 
-    fn parse_let(&mut self) -> Result<Stmt, String> {
+    fn parse_let(&mut self, is_private: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected variable name after 'let'"),
@@ -1112,7 +1122,7 @@ impl Parser {
 
         let expr = self.parse_expression()?;
 
-        Ok(Stmt::Let { name, type_annotation, expr })
+        Ok(Stmt::Let { name, type_annotation, expr, private: is_private })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, String> {

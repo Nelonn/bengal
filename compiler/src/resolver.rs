@@ -207,7 +207,8 @@ impl ModuleResolver {
 
         // Now type check all loaded modules (skip function registration since they're already registered with qualified names)
         for (module_name, statements) in &module_statements {
-            let ctx = self.type_context.clone();
+            let mut ctx = self.type_context.clone();
+            ctx.current_module = Some(module_name.clone());
             let mut type_checker = TypeChecker::with_context(ctx);
             let _ = type_checker.check_with_options(statements, true);
 
@@ -223,7 +224,8 @@ impl ModuleResolver {
         }
 
         // Type check main statements
-        let ctx = self.type_context.clone();
+        let mut ctx = self.type_context.clone();
+        ctx.current_module = None; // Clear module context for main file (global scope)
         let mut type_checker = TypeChecker::with_context(ctx);
 
         match type_checker.check(main_statements) {
@@ -275,13 +277,19 @@ impl ModuleResolver {
                     let mut class_with_module = class.clone();
                     class_with_module.name = format!("{}.{}", module_name, class.name);
                     self.type_context.add_class(&class_with_module);
-                    self.type_context.add_class(class); // Also add without module for now
+                    // Only add unqualified version for public classes (private classes should only be accessible within their module)
+                    if !class.private {
+                        self.type_context.add_class(class);
+                    }
                 }
                 Stmt::Interface(interface) => {
                     let mut interface_with_module = interface.clone();
                     interface_with_module.name = format!("{}.{}", module_name, interface.name);
                     self.type_context.add_interface(&interface_with_module);
-                    self.type_context.add_interface(interface); // Also add without module for now
+                    // Only add unqualified version for public interfaces
+                    if !interface.private {
+                        self.type_context.add_interface(interface);
+                    }
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
@@ -304,10 +312,11 @@ impl ModuleResolver {
                         is_method: false,
                         is_async: func.is_async,
                         is_native: func.is_native,
+                        private: func.private,
                         mangled_name: None,
                     });
                 }
-                Stmt::Let { name, type_annotation, expr: _ } => {
+                Stmt::Let { name, type_annotation, expr: _, private } => {
                     // Register module-level variables (e.g., math.PI)
                     let var_type = if let Some(ref ty) = type_annotation {
                         Type::from_str(ty)
@@ -319,6 +328,7 @@ impl ModuleResolver {
                     self.type_context.variables.insert(qualified_name, crate::types::VariableInfo {
                         name: name.clone(),
                         type_name: var_type,
+                        private: *private,
                     });
                 }
                 _ => {}
@@ -339,6 +349,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -354,6 +365,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -368,6 +380,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -382,6 +395,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -393,6 +407,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
 
@@ -408,6 +423,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.cos", FunctionSignature {
@@ -421,6 +437,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.tan", FunctionSignature {
@@ -434,6 +451,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.sqrt", FunctionSignature {
@@ -447,6 +465,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.min", FunctionSignature {
@@ -463,6 +482,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
         self.type_context.add_function("std.math.max", FunctionSignature {
@@ -479,6 +499,7 @@ impl ModuleResolver {
             is_method: false,
             is_async: false,
             is_native: true,
+            private: false,
             mangled_name: None,
         });
     }
