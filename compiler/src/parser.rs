@@ -310,26 +310,9 @@ impl Parser {
     }
 
     fn require_statement_terminator(&mut self) -> Result<(), String> {
-        // Check if we're at EOF or end of block
-        if self.check(&Token::Eof) || self.check(&Token::RBrace) {
-            return Ok(());
-        }
-        
         // Consume all consecutive semicolons and newlines (allows ;; for empty statements)
-        let mut found_terminator = false;
         while self.check(&Token::Semicolon) || self.check(&Token::Newline) {
             self.advance();
-            found_terminator = true;
-        }
-        
-        if !found_terminator {
-            // No valid terminator found
-            let span = self.compute_span(self.pos);
-            let filename = std::path::Path::new(&self.path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&self.path);
-            return Err(format!("{}:{}:{}: error: Expected ';' or newline after statement", filename, span.line, span.column));
         }
         
         Ok(())
@@ -342,6 +325,7 @@ impl Parser {
         while !self.check(&Token::Eof) {
             let stmt = self.parse_statement()?;
             if let Some(s) = stmt {
+                let s = self.maybe_parse_else_if(s)?;
                 statements.push(s);
             }
             self.skip_newlines();
@@ -389,6 +373,7 @@ impl Parser {
             self.skip_newlines();
         }
 
+        self.skip_newlines();
         let stmt = if self.match_token(&Token::Module) {
             self.parse_module()?
         } else if self.match_token(&Token::Import) {
@@ -425,6 +410,7 @@ impl Parser {
             let expr = self.parse_expression()?;
 
             if self.match_token(&Token::Equal) {
+                self.skip_newlines();
                 if let Expr::Variable { name, span } = expr {
                     let value = self.parse_expression()?;
                     Stmt::Assign { name, expr: value, span }
@@ -456,6 +442,7 @@ impl Parser {
                 if path.is_empty() {
                     return self.error("Cannot use wildcard without a module path");
                 }
+                self.skip_newlines();
                 return Ok(Stmt::Import { path, kind: ImportKind::Wildcard });
             }
 
@@ -493,6 +480,7 @@ impl Parser {
             ImportKind::Simple
         };
 
+        self.skip_newlines();
         Ok(Stmt::Import { path, kind })
     }
 
@@ -513,6 +501,7 @@ impl Parser {
             }
         }
 
+        self.skip_newlines();
         Ok(Stmt::Module { path })
     }
 
@@ -1151,7 +1140,8 @@ impl Parser {
             _ => return self.error("Expected variable name after 'let'"),
         };
 
-        let type_annotation = if self.match_token(&Token::Colon) {
+        let type_annotation = if self.check(&Token::Colon) {
+            self.advance();
             let (type_name, optional) = self.parse_type()?;
             if optional {
                 Some(type_name + "?")
@@ -1162,9 +1152,11 @@ impl Parser {
             None
         };
 
+        self.skip_newlines();
         if !self.match_token(&Token::Equal) {
             return self.error("Expected '=' in let statement");
         }
+        self.skip_newlines();
 
         let expr = self.parse_expression()?;
 
@@ -1397,20 +1389,42 @@ impl Parser {
     }
 
     fn parse_or(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_and()?;
+        let mut expr = self.parse_and()?;
 
         loop {
-            break;
+            if self.match_token(&Token::DoubleOr) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::Or,
+                    right: Box::new(self.parse_and()?),
+                    span,
+                };
+            } else {
+                break;
+            }
         }
 
         Ok(expr)
     }
 
     fn parse_and(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_range()?;
+        let mut expr = self.parse_range()?;
 
         loop {
-            break;
+            if self.match_token(&Token::DoubleAnd) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::And,
+                    right: Box::new(self.parse_range()?),
+                    span,
+                };
+            } else {
+                break;
+            }
         }
 
         Ok(expr)
@@ -1437,6 +1451,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::BangEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1445,6 +1460,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::DoubleEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1465,6 +1481,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::RAngle) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1473,6 +1490,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::GreaterEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1481,6 +1499,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::LAngle) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1489,6 +1508,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::LessEqual) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1509,6 +1529,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::Plus) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1517,6 +1538,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::Minus) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1537,6 +1559,7 @@ impl Parser {
 
         loop {
             if self.match_token(&Token::Star) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1545,6 +1568,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::Slash) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1553,6 +1577,7 @@ impl Parser {
                     span,
                 };
             } else if self.match_token(&Token::Percent) {
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -1573,6 +1598,7 @@ impl Parser {
 
         // ** is right-associative, so we parse it differently
         if self.match_token(&Token::StarStar) {
+            self.skip_newlines();
             let span = self.compute_span(self.pos - 1);
             let right = self.parse_exponential()?;  // Right-associative: recurse for right side
             expr = Expr::Binary {
@@ -1712,6 +1738,7 @@ impl Parser {
                 if !self.match_token(&Token::RParen) {
                     return self.error_expr("Expected ')' after arguments");
                 }
+                self.skip_newlines();
                 
                 // Check if this is a cast expression (str(x), int(x), float(x), bool(x))
                 if args.len() == 1 {
@@ -1754,6 +1781,7 @@ impl Parser {
                 if !self.match_token(&Token::RBracket) {
                     return self.error_expr("Expected ']' after array index");
                 }
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Index {
                     object: Box::new(expr),
@@ -1764,6 +1792,7 @@ impl Parser {
                 // Class instantiation with {} or object literal
                 let span = self.compute_span(self.pos - 1);
                 let fields = self.parse_object_literal()?;
+                self.skip_newlines();
                 
                 // If expr is a Variable (class name), this is class instantiation
                 // Otherwise, it's a standalone object literal (type inferred from context)
@@ -1781,6 +1810,7 @@ impl Parser {
                     Token::Identifier(n) => n,
                     _ => return self.error_expr("Expected identifier after '.'"),
                 };
+                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Get {
                     object: Box::new(expr),
@@ -1928,17 +1958,18 @@ impl Parser {
                 _ => return self.error_generic("Expected parameter name in lambda"),
             };
 
-            // Lambda parameters require type annotations
-            if !self.match_token(&Token::Colon) {
-                return self.error_generic(&format!("Expected ':' after parameter name '{}' in lambda. Lambda parameters require type annotations.", name));
-            }
+            // Optional type annotation
+            let type_name = if self.match_token(&Token::Colon) {
+                let (mut t_name, optional) = self.parse_type()?;
+                if optional {
+                    t_name = t_name + "?";
+                }
+                Some(t_name)
+            } else {
+                None
+            };
 
-            let (mut t_name, optional) = self.parse_type()?;
-            if optional {
-                t_name = t_name + "?";
-            }
-
-            params.push(LambdaParam { name, type_name: Some(t_name) });
+            params.push(LambdaParam { name, type_name });
 
             if !self.match_token(&Token::Comma) {
                 break;
@@ -1992,36 +2023,41 @@ impl Parser {
         let saved_pos = self.pos;
 
         // Try to parse lambda parameters
-        let mut is_lambda = true;
-        let mut found_colon_after_params = false;
+        let mut found_params_end = false;
 
         // Skip potential parameters
         self.skip_newlines();
+        
+        // Simple case: () { ... }
+        if self.match_token(&Token::RParen) {
+            self.skip_newlines();
+            if self.check(&Token::LBrace) || self.check(&Token::Colon) {
+                self.pos = saved_pos;
+                return true;
+            }
+        }
+        
+        self.pos = saved_pos;
+        self.skip_newlines();
+
         if !self.check(&Token::RParen) {
-            // There are parameters - they should have type annotations
+            // There are parameters - they might have type annotations
             loop {
                 // Parameter name - must be identifier
                 if !matches!(self.peek(), Token::Identifier(_)) {
-                    is_lambda = false;
                     break;
                 }
                 self.advance();
 
-                // Must have colon for type annotation
-                if !self.match_token(&Token::Colon) {
-                    is_lambda = false;
-                    break;
+                // Optional colon for type annotation
+                if self.match_token(&Token::Colon) {
+                    // Type name
+                    if self.check_type_token() {
+                        self.advance();
+                        // Optional '?'
+                        self.match_token(&Token::Question);
+                    }
                 }
-
-                // Type name
-                if !self.check_type_token() {
-                    is_lambda = false;
-                    break;
-                }
-                self.advance();
-
-                // Optional '?'
-                self.match_token(&Token::Question);
 
                 // Check for comma or end
                 if !self.match_token(&Token::Comma) {
@@ -2031,21 +2067,19 @@ impl Parser {
             }
         }
 
-        if is_lambda {
-            // Should have closing paren
-            if self.match_token(&Token::RParen) {
-                self.skip_newlines();
-                // Check for colon (return type) or brace (body without return type)
-                if self.check(&Token::Colon) || self.check(&Token::LBrace) {
-                    found_colon_after_params = true;
-                }
+        // Should have closing paren
+        if self.match_token(&Token::RParen) {
+            self.skip_newlines();
+            // Check for colon (return type) or brace (body without return type)
+            if self.check(&Token::Colon) || self.check(&Token::LBrace) {
+                found_params_end = true;
             }
         }
 
         // Restore position
         self.pos = saved_pos;
 
-        found_colon_after_params
+        found_params_end
     }
 
     /// Check if current position looks like an async lambda (called after 'async' was consumed)

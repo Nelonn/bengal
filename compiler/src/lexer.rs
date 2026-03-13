@@ -55,6 +55,9 @@ pub enum Token {
     Question,
     Range,
 
+    DoubleAnd,
+    DoubleOr,
+
     Plus,
     PlusPlus,
     Minus,
@@ -276,6 +279,24 @@ impl Lexer {
                 }
             }
             '%' => { self.advance(); Ok(Token::Percent) }
+            '&' => {
+                self.advance();
+                if self.peek() == Some('&') {
+                    self.advance();
+                    Ok(Token::DoubleAnd)
+                } else {
+                    Err(self.error("Expected '&' after '&'"))
+                }
+            }
+            '|' => {
+                self.advance();
+                if self.peek() == Some('|') {
+                    self.advance();
+                    Ok(Token::DoubleOr)
+                } else {
+                    Err(self.error("Expected '|' after '|'"))
+                }
+            }
             '/' => {
                 self.advance();
                 Ok(Token::Slash)

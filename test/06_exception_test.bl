@@ -398,19 +398,3 @@ test("Exception with number conversion", () {
     }
     assertTrue(caught)
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All exception tests passed!")
-}
-if (!allPassed) {
-    println("Some exception tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

@@ -173,6 +173,8 @@ pub fn register_all(vm: &mut VM) {
         .function("smoothstep", math::native_math_smoothstep)
         .function("toRadians", math::native_math_to_radians)
         .function("toDegrees", math::native_math_to_degrees)
+        .function("check_overflow", math::native_math_check_overflow)
+        .function("check_div_zero", math::native_math_check_div_zero)
         .register(vm);
 
     NativeModule::new("std.test")

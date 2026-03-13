@@ -9,6 +9,7 @@ pub struct ModuleResolver {
     loaded_modules: HashMap<String, ModuleInfo>,
     search_paths: Vec<PathBuf>,
     type_context: TypeContext,
+    pub enable_type_checking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ impl ModuleResolver {
             loaded_modules: HashMap::new(),
             search_paths,
             type_context: TypeContext::new(),
+            enable_type_checking: true,
         }
     }
 
@@ -51,6 +53,7 @@ impl ModuleResolver {
             loaded_modules: HashMap::new(),
             search_paths,
             type_context: TypeContext::new(),
+            enable_type_checking: true,
         }
     }
 
@@ -82,7 +85,7 @@ impl ModuleResolver {
         // Create module info
         let mut classes = Vec::new();
         let mut interfaces = Vec::new();
-        let functions = Vec::new();
+        let mut functions = Vec::new();
 
         for stmt in &statements {
             match stmt {
@@ -91,6 +94,9 @@ impl ModuleResolver {
                 }
                 Stmt::Interface(interface) => {
                     interfaces.push(interface.name.clone());
+                }
+                Stmt::Function(func) => {
+                    functions.push(func.name.clone());
                 }
                 _ => {}
             }
@@ -280,7 +286,13 @@ impl ModuleResolver {
 
                 // Register the import in the type context
                 self.type_context.imports.push(import_entry);
-                self.type_context.import_paths.push(module_name);
+                self.type_context.import_paths.push(module_name.clone());
+
+                // Register all members from the loaded module into the type context
+                if let Some(info) = self.loaded_modules.get(&module_name) {
+                    let statements = info.statements.clone();
+                    self.register_module_types(&module_name, &statements);
+                }
             }
         }
         Ok(())
@@ -291,6 +303,10 @@ impl ModuleResolver {
     }
 
     pub fn build_type_context_with_source(&mut self, main_statements: &[Stmt], main_source: &str, main_source_path: Option<&str>) -> Result<TypeContext, String> {
+        if !self.enable_type_checking {
+            return Ok(TypeContext::new());
+        }
+
         // First, process all imports
         self.process_imports(main_statements)?;
 
@@ -302,6 +318,9 @@ impl ModuleResolver {
 
         for (module_name, statements) in &module_statements {
             self.register_module_types(module_name, statements);
+            if !self.type_context.import_paths.contains(module_name) {
+                self.type_context.import_paths.push(module_name.clone());
+            }
         }
 
         // Register native functions (always available, no import required)
@@ -309,20 +328,22 @@ impl ModuleResolver {
 
         // Now type check all loaded modules (skip function registration since they're already registered with qualified names)
         for (module_name, statements) in &module_statements {
-            let mut ctx = self.type_context.clone();
-            ctx.current_module = Some(module_name.clone());
-            let mut type_checker = TypeChecker::with_context(ctx);
-            let _ = type_checker.check_with_options(statements, true);
+            if self.enable_type_checking {
+                let mut ctx = self.type_context.clone();
+                ctx.current_module = Some(module_name.clone());
+                let mut type_checker = TypeChecker::with_context(ctx);
+                let _ = type_checker.check_with_options(statements, true);
 
-            // Log errors but continue
-            if type_checker.get_context().has_errors() {
-                for error in type_checker.get_context().get_errors() {
-                    eprintln!("Type error in module '{}': {}", module_name, error.message);
+                // Log errors but continue
+                if type_checker.get_context().has_errors() {
+                    for error in type_checker.get_context().get_errors() {
+                        eprintln!("Type error in module '{}': {}", module_name, error.message);
+                    }
                 }
-            }
 
-            // Merge the context back (including errors)
-            self.type_context = type_checker.get_context().clone();
+                // Merge the context back (including errors)
+                self.type_context = type_checker.get_context().clone();
+            }
         }
 
         // Type check main statements
@@ -330,9 +351,28 @@ impl ModuleResolver {
         ctx.current_module = None; // Clear module context for main file (global scope)
         let mut type_checker = TypeChecker::with_context(ctx);
 
-        match type_checker.check(main_statements) {
-            Ok(ctx) => Ok(ctx.clone()),
+        let result = type_checker.check(main_statements);
+        
+        if !self.enable_type_checking {
+            let current_ctx = type_checker.get_context().clone();
+            self.type_context = current_ctx.clone();
+            return Ok(current_ctx);
+        }
+
+        match result {
+            Ok(ctx) => {
+                self.type_context = ctx.clone();
+                Ok(ctx.clone())
+            },
             Err(errors) => {
+                let current_ctx = type_checker.get_context().clone();
+                self.type_context = current_ctx.clone();
+                
+                if !self.enable_type_checking {
+                    return Ok(current_ctx);
+                }
+
+                // If type checking is enabled, report errors and fail
                 let mut error_msg = String::new();
                 let source_lines: Vec<&str> = main_source.lines().collect();
                 
@@ -406,7 +446,7 @@ impl ModuleResolver {
                     }).collect();
 
                     let full_name = format!("{}.{}", module_name, func.name);
-                    self.type_context.add_function(&full_name, FunctionSignature {
+                    let sig = FunctionSignature {
                         name: full_name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
@@ -416,7 +456,14 @@ impl ModuleResolver {
                         is_native: func.is_native,
                         private: func.private,
                         mangled_name: None,
-                    });
+                    };
+
+                    self.type_context.add_function(&full_name, sig.clone());
+                    
+                    // Also add unqualified version for public functions
+                    if !func.private {
+                        self.type_context.add_function(&func.name, sig);
+                    }
                 }
                 Stmt::Let { name, type_annotation, expr: _, private } => {
                     // Register module-level variables (e.g., math.PI)
@@ -604,6 +651,61 @@ impl ModuleResolver {
             private: false,
             mangled_name: None,
         });
+
+        // Register std.test native functions
+        self.type_context.add_function("std.test.addFailure", FunctionSignature {
+            name: "std.test.addFailure".to_string(),
+            params: vec![ParamSignature {
+                name: "message".to_string(),
+                type_name: Some(Type::Str),
+            }],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.test.recordPass", FunctionSignature {
+            name: "std.test.recordPass".to_string(),
+            params: vec![],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.test.setCurrentTest", FunctionSignature {
+            name: "std.test.setCurrentTest".to_string(),
+            params: vec![ParamSignature {
+                name: "name".to_string(),
+                type_name: Some(Type::Str),
+            }],
+            return_type: None,
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
+        self.type_context.add_function("std.test.assertSame", FunctionSignature {
+            name: "std.test.assertSame".to_string(),
+            params: vec![
+                ParamSignature { name: "expected".to_string(), type_name: Some(Type::Any) },
+                ParamSignature { name: "actual".to_string(), type_name: Some(Type::Any) },
+            ],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            is_method: false,
+            is_async: false,
+            is_native: true,
+            private: false,
+            mangled_name: None,
+        });
     }
 
     pub fn get_loaded_modules(&self) -> &HashMap<String, ModuleInfo> {
@@ -612,5 +714,9 @@ impl ModuleResolver {
 
     pub fn get_type_context(&self) -> &TypeContext {
         &self.type_context
+    }
+
+    pub fn get_type_context_cloned(&self) -> Option<TypeContext> {
+        Some(self.type_context.clone())
     }
 }

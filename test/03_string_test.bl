@@ -310,19 +310,3 @@ test("String multiline", () {
     assertStringContains(s, "Line 2")
     assertStringContains(s, "Line 3")
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All string tests passed!")
-}
-if (!allPassed) {
-    println("Some string tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

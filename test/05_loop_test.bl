@@ -395,19 +395,3 @@ test("Loop variable after loop", () {
     // i should be accessible after loop
     assertTrue(i >= 5)
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All loop tests passed!")
-}
-if (!allPassed) {
-    println("Some loop tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

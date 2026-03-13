@@ -431,19 +431,3 @@ test("Class self reference", () {
     obj.doubleValue()
     assertEquals(10, obj.getValue())
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All class tests passed!")
-}
-if (!allPassed) {
-    println("Some class tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

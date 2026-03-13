@@ -443,19 +443,3 @@ test("State machine transitions", () {
     assertEquals(3, sm.getState())
     assertEquals(3, sm.getTransitions())
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All comprehensive tests passed!")
-}
-if (!allPassed) {
-    println("Some comprehensive tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

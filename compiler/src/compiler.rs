@@ -235,17 +235,38 @@ pub struct Compiler {
     break_jumps: Vec<Vec<usize>>,
     continue_targets: Vec<usize>,
     current_ctx: CompileContext,
+    pub unsafe_fast: bool,
+    pub enable_type_checking: bool,
+    pub search_paths: Vec<String>,
 }
 
 pub struct CompilerOptions {
     pub enable_type_checking: bool,
     pub search_paths: Vec<String>,
+    pub unsafe_fast: bool,
 }
 
 impl Default for CompilerOptions {
     fn default() -> Self {
         Self {
             enable_type_checking: true,
+            search_paths: vec!["std".to_string()],
+            unsafe_fast: false,
+        }
+    }
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            _source_path: None,
+            _type_context: None,
+            break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            current_ctx: CompileContext::new(),
+            unsafe_fast: false,
+            enable_type_checking: false,
             search_paths: vec!["std".to_string()],
         }
     }
@@ -260,6 +281,9 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            unsafe_fast: false,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
         }
     }
 
@@ -271,28 +295,71 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            unsafe_fast: false,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
         }
     }
 
+    pub fn with_options(source: &str, unsafe_fast: bool) -> Self {
+        Self {
+            source: source.to_string(),
+            _source_path: None,
+            _type_context: None,
+            break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            current_ctx: CompileContext::new(),
+            unsafe_fast,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
+        }
+    }
+
+    pub fn with_path_and_options(source: &str, path: &str, unsafe_fast: bool) -> Self {
+        Self {
+            source: source.to_string(),
+            _source_path: Some(path.to_string()),
+            _type_context: None,
+            break_jumps: Vec::new(),
+            continue_targets: Vec::new(),
+            current_ctx: CompileContext::new(),
+            unsafe_fast,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
+        }
+    }
+
+
     pub fn compile(&mut self) -> Result<Bytecode, String> {
-        self.compile_with_options(&CompilerOptions::default())
+        let options = CompilerOptions {
+            unsafe_fast: self.unsafe_fast,
+            ..CompilerOptions::default()
+        };
+        self.compile_with_options(&options)
     }
 
     pub fn compile_with_options(&mut self, options: &CompilerOptions) -> Result<Bytecode, String> {
+        self.unsafe_fast = options.unsafe_fast;
+        
         let mut lexer = Lexer::new(&self.source, self._source_path.as_deref().unwrap_or("unknown"));
         let (tokens, token_positions) = lexer.tokenize()?;
 
         let mut parser = Parser::new(tokens, &self.source, self._source_path.as_deref().unwrap_or("unknown"), token_positions);
         let statements = parser.parse()?;
 
-        let mut resolver = None;
         let mut type_context = None;
+        let mut resolver = None;
+
         if options.enable_type_checking {
             let mut resolver_instance = ModuleResolver::new();
+            resolver_instance.enable_type_checking = options.enable_type_checking;
 
             for path in &options.search_paths {
                 if let Ok(full_path) = std::path::PathBuf::from(path).canonicalize() {
                     resolver_instance.add_search_path(full_path);
+                } else {
+                    // If it doesn't exist, try relative to current directory without canonicalize
+                    resolver_instance.add_search_path(std::path::PathBuf::from(path));
                 }
             }
 
@@ -420,9 +487,9 @@ impl Compiler {
                 };
                 method_params.extend(method.params.iter().map(|p| p.name.clone()));
                 let mut method_compiler = if let Some(path) = &class_source_file {
-                    Compiler::with_path(class_source, path)
+                    Compiler::with_path_and_options(class_source, path, self.unsafe_fast)
                 } else {
-                    Compiler::new(class_source)
+                    Compiler::with_options(class_source, self.unsafe_fast)
                 };
                 method_compiler.current_ctx = CompileContext::with_params(method_params);
 
@@ -545,7 +612,7 @@ impl Compiler {
             }
 
             let func_source = function_sources.get(&f.name).unwrap_or(&self.source);
-            let mut func_compiler = Compiler::new(func_source);
+            let mut func_compiler = Compiler::with_options(func_source, self.unsafe_fast);
             func_compiler.current_ctx = CompileContext::with_params(f.params.iter().map(|p| p.name.clone()).collect());
 
             for stmt in &f.body {
@@ -642,6 +709,40 @@ impl Compiler {
         let bytes = (target as u16).to_le_bytes();
         bytecode[pos] = bytes[0];
         bytecode[pos + 1] = bytes[1];
+    }
+
+    fn emit_overflow_check(&mut self, r_op1: usize, r_op2: usize, r_res: usize, op_type: i64, bytecode: &mut Vec<u8>, strings: &mut Vec<String>) {
+        // We'll use a native function call for overflow checking
+        let arg_start = self.current_ctx.allocate_regs(4);
+        
+        // Arg 1: Left operand
+        bytecode.push(Opcode::Move as u8);
+        bytecode.push(arg_start as u8);
+        bytecode.push(r_op1 as u8);
+        
+        // Arg 2: Right operand
+        bytecode.push(Opcode::Move as u8);
+        bytecode.push((arg_start + 1) as u8);
+        bytecode.push(r_op2 as u8);
+        
+        // Arg 3: Result
+        bytecode.push(Opcode::Move as u8);
+        bytecode.push((arg_start + 2) as u8);
+        bytecode.push(r_res as u8);
+        
+        // Arg 4: Operation type (0: Add, 1: Sub, 2: Mul)
+        bytecode.push(Opcode::LoadInt as u8);
+        bytecode.push((arg_start + 3) as u8);
+        bytecode.extend_from_slice(&op_type.to_le_bytes());
+
+        let name_idx = strings.len();
+        strings.push("std.math.check_overflow".to_string());
+
+        bytecode.push(Opcode::CallNative as u8);
+        bytecode.push(0 as u8);        // dummy destination
+        bytecode.push(name_idx as u8); // function name index
+        bytecode.push(arg_start as u8);// arg_start
+        bytecode.push(4u8);            // arg_count: 4 arguments (op1, op2, result, type)
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
@@ -1006,41 +1107,54 @@ impl Compiler {
                     let r_left = self.compile_expr(left, bytecode, strings, classes, type_context)?;
                     let r_right = self.compile_expr(right, bytecode, strings, classes, type_context)?;
                     let rd = self.current_ctx.allocate_reg();
-                    
+
                     // Compile as: std.math.pow(base, exponent)
                     // Arguments must be in consecutive registers for CallNative
                     // Move arguments to consecutive registers if needed
                     let arg_start = rd + 1;  // Use registers after return register
-                    
+
                     // Move left operand to arg_start if needed
                     if r_left != arg_start {
                         bytecode.push(Opcode::Move as u8);
                         bytecode.push(arg_start as u8);
                         bytecode.push(r_left as u8);
                     }
-                    
+
                     // Move right operand to arg_start + 1 if needed
                     if r_right != arg_start + 1 {
                         bytecode.push(Opcode::Move as u8);
                         bytecode.push((arg_start + 1) as u8);
                         bytecode.push(r_right as u8);
                     }
-                    
+
                     // Call native function: std.math.pow(base, exponent)
                     let name_idx = strings.len();
                     strings.push("std.math.pow".to_string());
-                    
+
                     bytecode.push(Opcode::CallNative as u8);
                     bytecode.push(rd as u8);       // destination register
                     bytecode.push(name_idx as u8); // function name index
                     bytecode.push(arg_start as u8);// arg_start: first arg register
                     bytecode.push(2u8);            // arg_count: 2 arguments
-                    
+
                     return Ok(rd);
                 }
-                
+
                 let r1 = self.compile_expr(left, bytecode, strings, classes, type_context)?;
                 let r2 = self.compile_expr(right, bytecode, strings, classes, type_context)?;
+
+                // Add safety checks for division and modulo (division by zero)
+                if !self.unsafe_fast && (*op == BinaryOp::Divide || *op == BinaryOp::Modulo) {
+                    let name_idx = strings.len();
+                    strings.push("std.math.check_div_zero".to_string());
+                    
+                    bytecode.push(Opcode::CallNative as u8);
+                    bytecode.push(0u8);            // dummy destination: R0
+                    bytecode.push(name_idx as u8); // function name index
+                    bytecode.push(r2 as u8);       // arg_start: divisor register
+                    bytecode.push(1u8);            // arg_count: 1 argument (divisor)
+                }
+
                 let rd = self.current_ctx.allocate_reg();
 
                 let opcode = match op {
@@ -1064,6 +1178,18 @@ impl Compiler {
                 bytecode.push(rd as u8);
                 bytecode.push(r1 as u8);
                 bytecode.push(r2 as u8);
+
+                // Add overflow checks for arithmetic operations (only for integers)
+                if !self.unsafe_fast && matches!(op, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply) {
+                    let op_type = match op {
+                        BinaryOp::Add => 0i64,
+                        BinaryOp::Subtract => 1i64,
+                        BinaryOp::Multiply => 2i64,
+                        _ => unreachable!(),
+                    };
+                    self.emit_overflow_check(r1, r2, rd, op_type, bytecode, strings);
+                }
+
                 Ok(rd)
             }
 
@@ -1093,11 +1219,22 @@ impl Compiler {
                         bytecode.push(rd as u8);
                         bytecode.push(r_zero as u8);
                         bytecode.push(r as u8);
+
+                        if !self.unsafe_fast {
+                            self.emit_overflow_check(r_zero, r, rd, 1, bytecode, strings);
+                        }
                         Ok(rd)
                     }
                     UnaryOp::PrefixIncrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
                             let r_var = self.current_ctx.get_local_reg(name);
+
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_var as u8);
+
                             let r_one = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::LoadInt as u8);
                             bytecode.push(r_one as u8);
@@ -1107,6 +1244,10 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_var, 0, bytecode, strings);
+                            }
 
                             let rd = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::Move as u8);
@@ -1124,6 +1265,12 @@ impl Compiler {
                             bytecode.push(r_obj as u8);
                             bytecode.push(idx as u8);
 
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_field as u8);
+
                             let r_one = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::LoadInt as u8);
                             bytecode.push(r_one as u8);
@@ -1133,6 +1280,10 @@ impl Compiler {
                             bytecode.push(r_field as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_field, 0, bytecode, strings);
+                            }
 
                             // Store back to property
                             bytecode.push(Opcode::SetProperty as u8);
@@ -1152,6 +1303,13 @@ impl Compiler {
                     UnaryOp::PrefixDecrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
                             let r_var = self.current_ctx.get_local_reg(name);
+
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_var as u8);
+
                             let r_one = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::LoadInt as u8);
                             bytecode.push(r_one as u8);
@@ -1161,6 +1319,10 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_var, 1, bytecode, strings);
+                            }
 
                             let rd = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::Move as u8);
@@ -1178,6 +1340,12 @@ impl Compiler {
                             bytecode.push(r_obj as u8);
                             bytecode.push(idx as u8);
 
+                            // Save original value for overflow check
+                            let r_orig = self.current_ctx.allocate_reg();
+                            bytecode.push(Opcode::Move as u8);
+                            bytecode.push(r_orig as u8);
+                            bytecode.push(r_field as u8);
+
                             let r_one = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::LoadInt as u8);
                             bytecode.push(r_one as u8);
@@ -1187,6 +1355,10 @@ impl Compiler {
                             bytecode.push(r_field as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(r_orig, r_one, r_field, 1, bytecode, strings);
+                            }
 
                             // Store back to property
                             bytecode.push(Opcode::SetProperty as u8);
@@ -1220,6 +1392,11 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_var, 0, bytecode, strings);
+                            }
+
                             Ok(rd)
                         } else if let Expr::Get { object, name, .. } = expr.as_ref() {
                             // For obj.field: save original value, increment field, return original
@@ -1247,6 +1424,10 @@ impl Compiler {
                             bytecode.push(r_field as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_field, 0, bytecode, strings);
+                            }
 
                             // Store back to property
                             bytecode.push(Opcode::SetProperty as u8);
@@ -1276,6 +1457,11 @@ impl Compiler {
                             bytecode.push(r_var as u8);
                             bytecode.push(r_var as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_var, 1, bytecode, strings);
+                            }
+
                             Ok(rd)
                         } else if let Expr::Get { object, name, .. } = expr.as_ref() {
                             // For obj.field: save original value, decrement field, return original
@@ -1303,6 +1489,10 @@ impl Compiler {
                             bytecode.push(r_field as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_one as u8);
+
+                            if !self.unsafe_fast {
+                                self.emit_overflow_check(rd, r_one, r_field, 1, bytecode, strings);
+                            }
 
                             // Store back to property
                             bytecode.push(Opcode::SetProperty as u8);

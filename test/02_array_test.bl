@@ -313,19 +313,3 @@ test("Empty array length", () {
     let arr: int[] = []
     assertLength(arr, 0)
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All array tests passed!")
-}
-if (!allPassed) {
-    println("Some array tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

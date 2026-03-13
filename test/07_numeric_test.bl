@@ -373,18 +373,57 @@ test("Boolean in numeric context", () {
     assertTrue(t != f)
 })
 
-// ============== Print Summary ==============
+// ============== Safety Checks ==============
 
-println("")
-test.summary()
+test("Division by zero throws", () {
+    assertThrows(() {
+        let x = 10 / 0
+    })
+    assertThrows(() {
+        let x = 10 % 0
+    })
+})
 
-// ============== Exit Status ==============
+test("Float division by zero throws", () {
+    assertThrows(() {
+        let x = 10.0 / 0.0
+    })
+})
 
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All numeric tests passed!")
-}
-if (!allPassed) {
-    println("Some numeric tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}
+test("Integer overflow addition throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let x = max_int + 1
+    })
+})
+
+test("Integer overflow subtraction throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let min_int = (0 - max_int) - 1
+        let x = min_int - 1
+    })
+})
+
+test("Integer overflow multiplication throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let x = max_int * 2
+    })
+})
+
+test("Increment overflow throws", () {
+    assertThrows(() {
+        let x = 9223372036854775807
+        x++
+    })
+})
+
+test("Decrement overflow throws", () {
+    assertThrows(() {
+        let max_int = 9223372036854775807
+        let min_int = (0 - max_int) - 1
+        let x = min_int
+        x--
+    })
+})

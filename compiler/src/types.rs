@@ -27,6 +27,7 @@ pub enum Type {
     Promise(Box<Type>),
     Array(Box<Type>),
     Null,
+    Any,
     Unknown,
     // Generics support
     TypeParameter(String),                    // T (type parameter)
@@ -104,6 +105,7 @@ impl Type {
             "uint64" => Type::UInt64,
             "float32" => Type::Float32,
             "float64" => Type::Float64,
+            "any" => Type::Any,
             "self" => Type::SelfType,
             _ => Type::Class(s.to_string()),
         }
@@ -186,11 +188,14 @@ impl Type {
                 format!("({}) -> {}", params_str.join(", "), return_type.to_str())
             }
             Type::SelfType => "self".to_string(),
+            Type::Any => "any".to_string(),
         }
     }
 
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         match (self, other) {
+            (_, Type::Any) => true,
+            (Type::Any, _) => true,
             (Type::Null, Type::Optional(_)) => true,
             (Type::Null, Type::Promise(_)) => true,
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),

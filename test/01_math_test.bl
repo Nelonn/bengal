@@ -287,19 +287,3 @@ test("Stress: Multiple pow calculations", () {
     }
     assertTrue(result > 50)  // Should accumulate to significant value
 })
-
-// ============== Print Summary ==============
-
-println("")
-test.summary()
-
-// ============== Exit Status ==============
-
-let allPassed = test.runAll()
-if (allPassed) {
-    println("All math tests passed!")
-}
-if (!allPassed) {
-    println("Some math tests failed!")
-    println("Failed: " + str(test.failedCount()) + " / " + str(test.totalCount()))
-}

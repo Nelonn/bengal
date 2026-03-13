@@ -6,7 +6,7 @@ use clap::Parser;
 
 mod repl;
 
-async fn run_file(source_file: &str, debug: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool) -> Result<(), Box<dyn std::error::Error>> {
     let source = match fs::read_to_string(source_file) {
         Ok(content) => content,
         Err(e) => {
@@ -14,7 +14,8 @@ async fn run_file(source_file: &str, debug: bool) -> Result<(), Box<dyn std::err
         }
     };
 
-    let mut compiler = Compiler::with_path(&source, source_file);
+    let mut compiler = Compiler::with_path_and_options(&source, source_file, unsafe_fast);
+    compiler.enable_type_checking = false;
     let bytecode = match compiler.compile() {
         Ok(bc) => bc,
         Err(e) => {
@@ -38,7 +39,7 @@ async fn run_file(source_file: &str, debug: bool) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-async fn run_tests(test_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_tests(test_path: &str, unsafe_fast: bool) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(test_path);
     let mut files_to_test = Vec::new();
 
@@ -64,7 +65,7 @@ async fn run_tests(test_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         print!("Testing: {}... ", file_name);
         std::io::Write::flush(&mut std::io::stdout())?;
 
-        match run_file(&file_name, false).await {
+        match run_file(&file_name, false, unsafe_fast).await {
             Ok(_) => {
                 println!("PASS");
                 passed += 1;
@@ -126,6 +127,10 @@ struct Args {
     /// Enable debug mode with breakpoints
     #[arg(long)]
     debug: bool,
+
+    /// Disable safety checks (overflow, division by zero) for faster execution
+    #[arg(long)]
+    unsafe_fast: bool,
 }
 
 #[tokio::main]
@@ -133,7 +138,7 @@ async fn main() {
     let args = Args::parse();
 
     if let Some(test_path) = args.test {
-        if let Err(e) = run_tests(&test_path).await {
+        if let Err(e) = run_tests(&test_path, args.unsafe_fast).await {
             eprintln!("Testing error: {}", e);
             std::process::exit(1);
         }
@@ -161,7 +166,8 @@ async fn main() {
             }
         };
 
-        let mut compiler = Compiler::with_path(&source, &source_file);
+        let mut compiler = Compiler::with_path_and_options(&source, &source_file, args.unsafe_fast);
+        compiler.enable_type_checking = false;
         let bytecode = match compiler.compile() {
             Ok(bc) => bc,
             Err(e) => {
@@ -231,7 +237,7 @@ async fn main() {
         return;
     }
 
-    if let Err(e) = run_file(&source_file, args.debug).await {
+    if let Err(e) = run_file(&source_file, args.debug, args.unsafe_fast).await {
         eprintln!("{}", e);
         std::process::exit(1);
     }

@@ -2034,7 +2034,7 @@ impl VM {
                     (Value::String(a), b) => Value::String(a.clone() + &b.to_string()),
                     (a, Value::String(b)) => Value::String(a.to_string() + b),
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap() + right.to_arithmetic_int().unwrap())
+                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_add(right.to_arithmetic_int().unwrap()))
                     }
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
@@ -2062,7 +2062,7 @@ impl VM {
                 let right = self.get_reg(rs2);
                 let result = match (left, right) {
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap() - right.to_arithmetic_int().unwrap())
+                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_sub(right.to_arithmetic_int().unwrap()))
                     }
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
@@ -2090,7 +2090,7 @@ impl VM {
                 let right = self.get_reg(rs2);
                 let result = match (left, right) {
                     _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap() * right.to_arithmetic_int().unwrap())
+                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_mul(right.to_arithmetic_int().unwrap()))
                     }
                     _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
                         Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
