@@ -539,10 +539,19 @@ impl Compiler {
                     method_bytecode[method_bytecode.len() - 2] == Opcode::Return as u8;
 
                 if !ends_with_return {
-                    method_bytecode.push(Opcode::LoadNull as u8);
-                    method_bytecode.push(0); // R0
-                    method_bytecode.push(Opcode::Return as u8);
-                    method_bytecode.push(0); // R0
+                    // Constructors should return self (R1), not null
+                    if method.name == "constructor" {
+                        method_bytecode.push(Opcode::Move as u8);
+                        method_bytecode.push(0); // R0 (return register)
+                        method_bytecode.push(1); // R1 (self)
+                        method_bytecode.push(Opcode::Return as u8);
+                        method_bytecode.push(0); // R0
+                    } else {
+                        method_bytecode.push(Opcode::LoadNull as u8);
+                        method_bytecode.push(0); // R0
+                        method_bytecode.push(Opcode::Return as u8);
+                        method_bytecode.push(0); // R0
+                    }
                 }
 
                 let register_count = method_compiler.current_ctx.register_count();
@@ -1647,14 +1656,28 @@ impl Compiler {
                     let mut is_method = false;
                     let mut is_native = false;
                     if let Some(ctx) = type_context {
-                        if let Some(resolved_class) = ctx.resolve_class(func_name) {
-                            resolved_name = resolved_class;
-                            is_class = true;
-                        } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
-                            // Use mangled name for overloaded function resolution
-                            resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
-                            is_native = sig.is_native;
+                        // Check for function call first if there are arguments (to handle str() function vs str class)
+                        if !args.is_empty() {
+                            if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
+                                resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
+                                is_native = sig.is_native;
+                            } else if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                                resolved_name = resolved_class;
+                                is_class = true;
+                            }
                         } else {
+                            // No arguments - check class first (for class instantiation without constructor args)
+                            if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                                resolved_name = resolved_class;
+                                is_class = true;
+                            } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
+                                resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
+                                is_native = sig.is_native;
+                            }
+                        }
+                        
+                        // If neither class nor function was found, try fallback resolution
+                        if !is_class && !is_native {
                             // Check if this might be a private class from another module
                             // by searching for classes that end with the function name
                             // Only error if the class is from a DIFFERENT module and is private
@@ -1818,7 +1841,7 @@ impl Compiler {
                         } else {
                             resolved_name.clone()
                         };
-                        strings.push(call_name);
+                        strings.push(call_name.clone());
 
                         // Use CallNative for native functions, Call for bytecode functions
                         if is_native {
