@@ -58,6 +58,13 @@ pub enum Token {
     DoubleAnd,
     DoubleOr,
 
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
+    ShiftLeft,
+    ShiftRight,
+
     Plus,
     PlusPlus,
     PlusEqual,
@@ -307,7 +314,7 @@ impl Lexer {
                     self.advance();
                     Ok(Token::DoubleAnd)
                 } else {
-                    Err(self.error("Expected '&' after '&'"))
+                    Ok(Token::BitAnd)
                 }
             }
             '|' => {
@@ -316,22 +323,23 @@ impl Lexer {
                     self.advance();
                     Ok(Token::DoubleOr)
                 } else {
-                    Err(self.error("Expected '|' after '|'"))
+                    Ok(Token::BitOr)
                 }
             }
-            '"' => self.read_string(),
-            '>' => {
+            '^' => {
                 self.advance();
-                if self.peek() == Some('=') {
-                    self.advance();
-                    Ok(Token::GreaterEqual)
-                } else {
-                    Ok(Token::RAngle)
-                }
+                Ok(Token::BitXor)
+            }
+            '~' => {
+                self.advance();
+                Ok(Token::BitNot)
             }
             '<' => {
                 self.advance();
-                if self.peek() == Some('=') {
+                if self.peek() == Some('<') {
+                    self.advance();
+                    Ok(Token::ShiftLeft)
+                } else if self.peek() == Some('=') {
                     self.advance();
                     Ok(Token::LessEqual)
                 } else if self.peek() == Some('.') {
@@ -341,6 +349,19 @@ impl Lexer {
                     Ok(Token::LAngle)
                 }
             }
+            '>' => {
+                self.advance();
+                if self.peek() == Some('>') {
+                    self.advance();
+                    Ok(Token::ShiftRight)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::GreaterEqual)
+                } else {
+                    Ok(Token::RAngle)
+                }
+            }
+            '"' => self.read_string(),
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
             _ => Err(self.error(&format!("Unexpected character: '{}'", ch))),

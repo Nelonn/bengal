@@ -97,6 +97,8 @@ pub struct ClassDef {
     pub parent_interfaces: Vec<String>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
+    pub nested_classes: Vec<ClassDef>,
+    pub nested_interfaces: Vec<InterfaceDef>,
     pub is_native: bool,
     pub private: bool,
 }
@@ -107,6 +109,8 @@ pub struct InterfaceDef {
     pub type_params: Vec<String>,
     pub parent_interfaces: Vec<String>,
     pub methods: Vec<Method>,
+    pub nested_classes: Vec<ClassDef>,
+    pub nested_interfaces: Vec<InterfaceDef>,
     pub private: bool,
 }
 
@@ -189,11 +193,11 @@ pub enum CastType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
-    String(String),
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Null,
+    String(String, Span),
+    Int(i64, Span),
+    Float(f64, Span),
+    Bool(bool, Span),
+    Null(Span),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,6 +216,11 @@ pub enum BinaryOp {
     GreaterEqual,
     Less,
     LessEqual,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -231,6 +240,7 @@ pub enum UnaryOp {
     PostfixDecrement,
     Decrement, // Keep for backward compatibility if used elsewhere, but we'll use PostfixDecrement for x--
     Negate,    // Unary minus for negative numbers: -5, -3.14
+    BitNot,    // Bitwise NOT: ~x
 }
 
 #[derive(Debug, Clone)]
@@ -612,6 +622,8 @@ impl Parser {
 
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut nested_classes = Vec::new();
+        let mut nested_interfaces = Vec::new();
 
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
@@ -646,6 +658,22 @@ impl Parser {
                     return self.error_generic("Constructor in native classes cannot have implementation.");
                 }
                 methods.push(method);
+            } else if self.check(&Token::Class) {
+                self.advance(); // consume 'class' token
+                let nested_class_stmt = self.parse_class(is_native_class, is_private)?;
+                if let Stmt::Class(class_def) = nested_class_stmt {
+                    nested_classes.push(class_def);
+                } else {
+                    return self.error_generic("Expected class declaration");
+                }
+            } else if self.check(&Token::Interface) {
+                self.advance(); // consume 'interface' token
+                let nested_iface_stmt = self.parse_interface(is_private)?;
+                if let Stmt::Interface(iface_def) = nested_iface_stmt {
+                    nested_interfaces.push(iface_def);
+                } else {
+                    return self.error_generic("Expected interface declaration");
+                }
             } else {
                 if is_native_class {
                     return self.error_generic("Native classes cannot have member-fields.");
@@ -697,7 +725,7 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, is_native: is_native_class, private: is_private }))
+        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, nested_classes, nested_interfaces, is_native: is_native_class, private: is_private }))
     }
 
     fn parse_interface(&mut self, is_private: bool) -> Result<Stmt, String> {
@@ -747,6 +775,8 @@ impl Parser {
         }
 
         let mut methods = Vec::new();
+        let mut nested_classes = Vec::new();
+        let mut nested_interfaces = Vec::new();
 
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
@@ -763,8 +793,24 @@ impl Parser {
             if self.match_token(&Token::Fn) {
                 let method = self.parse_interface_method(is_private, is_async)?;
                 methods.push(method);
+            } else if self.check(&Token::Class) {
+                self.advance(); // consume 'class' token
+                let nested_class_stmt = self.parse_class(false, is_private)?;
+                if let Stmt::Class(class_def) = nested_class_stmt {
+                    nested_classes.push(class_def);
+                } else {
+                    return self.error_generic("Expected class declaration");
+                }
+            } else if self.check(&Token::Interface) {
+                self.advance(); // consume 'interface' token
+                let nested_iface_stmt = self.parse_interface(is_private)?;
+                if let Stmt::Interface(iface_def) = nested_iface_stmt {
+                    nested_interfaces.push(iface_def);
+                } else {
+                    return self.error_generic("Expected interface declaration");
+                }
             } else {
-                return self.error_generic("Interfaces can only contain method declarations");
+                return self.error_generic("Interfaces can only contain method declarations, nested classes, or nested interfaces");
             }
             self.skip_newlines();
         }
@@ -773,7 +819,7 @@ impl Parser {
             return self.error_generic("Expected '}' to close interface");
         }
 
-        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, private: is_private }))
+        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, nested_classes, nested_interfaces, private: is_private }))
     }
 
     fn parse_interface_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
@@ -1490,11 +1536,11 @@ impl Parser {
     }
 
     fn parse_range(&mut self) -> Result<Expr, String> {
-        let start = self.parse_equality()?;
+        let start = self.parse_bitwise_or()?;
         let span = self.compute_span(self.pos);
 
         if self.match_token(&Token::Range) {
-            let end = self.parse_equality()?;
+            let end = self.parse_bitwise_or()?;
             return Ok(Expr::Range {
                 start: Box::new(start),
                 end: Box::new(end),
@@ -1503,6 +1549,69 @@ impl Parser {
         }
 
         Ok(start)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bitwise_xor()?;
+
+        loop {
+            if self.match_token(&Token::BitOr) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::BitOr,
+                    right: Box::new(self.parse_bitwise_xor()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bitwise_and()?;
+
+        loop {
+            if self.match_token(&Token::BitXor) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::BitXor,
+                    right: Box::new(self.parse_bitwise_and()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_equality()?;
+
+        loop {
+            if self.match_token(&Token::BitAnd) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::BitAnd,
+                    right: Box::new(self.parse_equality()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
     }
 
     fn parse_equality(&mut self) -> Result<Expr, String> {
@@ -1584,7 +1693,7 @@ impl Parser {
     }
 
     fn parse_additive(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_multiplicative()?;
+        let mut expr = self.parse_shift()?;
 
         loop {
             if self.match_token(&Token::Plus) {
@@ -1593,7 +1702,7 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Add,
-                    right: Box::new(self.parse_multiplicative()?),
+                    right: Box::new(self.parse_shift()?),
                     span,
                 };
             } else if self.match_token(&Token::Minus) {
@@ -1602,6 +1711,36 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Subtract,
+                    right: Box::new(self.parse_shift()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_multiplicative()?;
+
+        loop {
+            if self.match_token(&Token::ShiftLeft) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::ShiftLeft,
+                    right: Box::new(self.parse_multiplicative()?),
+                    span,
+                };
+            } else if self.match_token(&Token::ShiftRight) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::ShiftRight,
                     right: Box::new(self.parse_multiplicative()?),
                     span,
                 };
@@ -1676,6 +1815,15 @@ impl Parser {
             let span = self.compute_span(self.pos - 1);
             return Ok(Expr::Unary {
                 op: UnaryOp::Not,
+                expr: Box::new(self.parse_unary()?),
+                span,
+            });
+        }
+
+        if self.match_token(&Token::BitNot) {
+            let span = self.compute_span(self.pos - 1);
+            return Ok(Expr::Unary {
+                op: UnaryOp::BitNot,
                 expr: Box::new(self.parse_unary()?),
                 span,
             });
@@ -2140,10 +2288,10 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, String> {
         let token_pos = self.pos;
         match self.advance() {
-            Token::String(s) => self.parse_interpolated_text(s),
-            Token::Int(n) => Ok(Expr::Literal(Literal::Int(n))),
-            Token::Float(n) => Ok(Expr::Literal(Literal::Float(n))),
-            Token::Null => Ok(Expr::Literal(Literal::Null)),
+            Token::String(s) => self.parse_interpolated_text(s, token_pos),
+            Token::Int(n) => Ok(Expr::Literal(Literal::Int(n, self.compute_span(token_pos)))),
+            Token::Float(n) => Ok(Expr::Literal(Literal::Float(n, self.compute_span(token_pos)))),
+            Token::Null => Ok(Expr::Literal(Literal::Null(self.compute_span(token_pos)))),
             Token::LParen => {
                 // Check if this is a lambda: (params): ReturnType { body }
                 // We need to peek ahead to see if this looks like a lambda
@@ -2172,9 +2320,9 @@ impl Parser {
             Token::Identifier(name) => {
                 let span = self.compute_span(token_pos);
                 if name == "true" {
-                    Ok(Expr::Literal(Literal::Bool(true)))
+                    Ok(Expr::Literal(Literal::Bool(true, span)))
                 } else if name == "false" {
-                    Ok(Expr::Literal(Literal::Bool(false)))
+                    Ok(Expr::Literal(Literal::Bool(false, span)))
                 } else {
                     Ok(Expr::Variable { name, span })
                 }
@@ -2282,10 +2430,120 @@ impl Parser {
         })
     }
 
-    fn parse_interpolated_text(&mut self, s: String) -> Result<Expr, String> {
+    /// Recursively adjust the span of all expressions to use the given line and column offset
+    fn adjust_expr_span(expr: Expr, line: usize, column_offset: usize) -> Expr {
+        match expr {
+            Expr::Variable { name, span: _ } => {
+                Expr::Variable { name, span: Span { line, column: column_offset } }
+            }
+            Expr::Literal(literal) => {
+                Expr::Literal(literal)  // Literals already have their spans
+            }
+            Expr::Binary { left, op, right, span: _ } => {
+                Expr::Binary {
+                    left: Box::new(Self::adjust_expr_span(*left, line, column_offset)),
+                    op,
+                    right: Box::new(Self::adjust_expr_span(*right, line, column_offset)),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Unary { op, expr: inner, span: _ } => {
+                Expr::Unary {
+                    op,
+                    expr: Box::new(Self::adjust_expr_span(*inner, line, column_offset)),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Call { callee, args, span: _ } => {
+                Expr::Call {
+                    callee: Box::new(Self::adjust_expr_span(*callee, line, column_offset)),
+                    args: args.into_iter().map(|arg| Self::adjust_expr_span(arg, line, column_offset)).collect(),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Get { object, name, span: _ } => {
+                Expr::Get {
+                    object: Box::new(Self::adjust_expr_span(*object, line, column_offset)),
+                    name,
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Set { object, name, value, span: _ } => {
+                Expr::Set {
+                    object: Box::new(Self::adjust_expr_span(*object, line, column_offset)),
+                    name,
+                    value: Box::new(Self::adjust_expr_span(*value, line, column_offset)),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Interpolated { parts, span: _ } => {
+                let new_parts = parts.into_iter().map(|part| {
+                    match part {
+                        InterpPart::Text(t) => InterpPart::Text(t),
+                        InterpPart::Expr(e) => InterpPart::Expr(Self::adjust_expr_span(e, line, column_offset)),
+                    }
+                }).collect();
+                Expr::Interpolated {
+                    parts: new_parts,
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Range { start, end, span: _ } => {
+                Expr::Range {
+                    start: Box::new(Self::adjust_expr_span(*start, line, column_offset)),
+                    end: Box::new(Self::adjust_expr_span(*end, line, column_offset)),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Await { expr: inner, span: _ } => {
+                Expr::Await {
+                    expr: Box::new(Self::adjust_expr_span(*inner, line, column_offset)),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Cast { expr: inner, target_type, span: _ } => {
+                Expr::Cast {
+                    expr: Box::new(Self::adjust_expr_span(*inner, line, column_offset)),
+                    target_type,
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Array { elements, span: _ } => {
+                Expr::Array {
+                    elements: elements.into_iter().map(|e| Self::adjust_expr_span(e, line, column_offset)).collect(),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::Index { object, index, span: _ } => {
+                Expr::Index {
+                    object: Box::new(Self::adjust_expr_span(*object, line, column_offset)),
+                    index: Box::new(Self::adjust_expr_span(*index, line, column_offset)),
+                    span: Span { line, column: column_offset },
+                }
+            }
+            Expr::ObjectLiteral { fields, span: _, inferred_type } => {
+                Expr::ObjectLiteral {
+                    fields,
+                    span: Span { line, column: column_offset },
+                    inferred_type,
+                }
+            }
+            Expr::Lambda { params, return_type, body, span: _, is_async } => {
+                Expr::Lambda {
+                    params,
+                    return_type,
+                    body,  // Block contains statements, not expressions
+                    span: Span { line, column: column_offset },
+                    is_async,
+                }
+            }
+        }
+    }
+
+    fn parse_interpolated_text(&mut self, s: String, token_pos: usize) -> Result<Expr, String> {
         let mut parts = Vec::new();
         let mut last_pos = 0;
-        let span = Span::unknown();  // Approximate span for interpolated strings
+        let span = self.compute_span(token_pos);
 
         while let Some(interp_start) = s[last_pos..].find("${") {
             let abs_start = last_pos + interp_start;
@@ -2296,20 +2554,32 @@ impl Parser {
             let rest = &s[abs_start + 2..];
             if let Some(interp_end) = rest.find('}') {
                 let expr_str = &rest[..interp_end];
+                let trimmed_expr = expr_str.trim();
 
-                let mut sub_lexer = crate::lexer::Lexer::new(expr_str.trim(), &self.path);
+                // Calculate the column offset for the expression inside ${...}
+                // span.column points to the opening quote, so we need:
+                // +1 for the quote, +abs_start for position within string, +2 for "${", +whitespace
+                let whitespace_trimmed = expr_str.len() - trimmed_expr.len();
+                let expr_column = span.column + 1 + abs_start + 2 + whitespace_trimmed;
+
+                let mut sub_lexer = crate::lexer::Lexer::new(trimmed_expr, &self.path);
                 let (tokens, token_positions) = sub_lexer.tokenize()?;
-                let mut sub_parser = Parser::new(tokens, expr_str.trim(), &self.path, token_positions);
+                let mut sub_parser = Parser::new(tokens, trimmed_expr, &self.path, token_positions);
                 let sub_stmts = sub_parser.parse()?;
 
+                // Create expression with proper span based on the string's position
                 let expr = if let Some(Stmt::Expr(e)) = sub_stmts.first() {
-                    e.clone()
+                    Self::adjust_expr_span(e.clone(), span.line, expr_column)
                 } else if let Some(Stmt::Assign { name, .. }) = sub_stmts.first() {
-                    let span = Span::unknown();
-                    Expr::Variable { name: name.clone(), span }
+                    Expr::Variable {
+                        name: name.clone(),
+                        span: Span { line: span.line, column: expr_column }
+                    }
                 } else {
-                    let span = Span::unknown();
-                    Expr::Variable { name: expr_str.trim().to_string(), span }
+                    Expr::Variable {
+                        name: trimmed_expr.to_string(),
+                        span: Span { line: span.line, column: expr_column }
+                    }
                 };
 
                 parts.push(InterpPart::Expr(expr));
@@ -2326,7 +2596,7 @@ impl Parser {
         if parts.iter().any(|p| matches!(p, InterpPart::Expr(_))) {
             Ok(Expr::Interpolated { parts, span })
         } else {
-            Ok(Expr::Literal(Literal::String(s)))
+            Ok(Expr::Literal(Literal::String(s, span)))
         }
     }
 }

@@ -424,6 +424,8 @@ impl Compiler {
                         parent_interfaces: interface.parent_interfaces.clone(),
                         fields: vec![],
                         methods: interface.methods.clone(),
+                        nested_classes: interface.nested_classes.clone(),
+                        nested_interfaces: interface.nested_interfaces.clone(),
                         is_native: false,
                         private: false,
                     };
@@ -442,21 +444,10 @@ impl Compiler {
         let mut static_methods = Vec::new();  // Collect static methods to add to global functions
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
-            // ... (rest of field collection)
+            // Initialize all fields to Null - actual initialization happens in constructor
+            // This allows field defaults to be arbitrary expressions evaluated at runtime
             for field in &c.fields {
-                let value = if let Some(default_expr) = &field.default {
-                    match default_expr {
-                        Expr::Literal(Literal::String(s)) => Value::String(s.clone()),
-                        Expr::Literal(Literal::Int(n)) => Value::Int64(*n),
-                        Expr::Literal(Literal::Float(f)) => Value::Float64(*f),
-                        Expr::Literal(Literal::Bool(b)) => Value::Bool(*b),
-                        Expr::Literal(Literal::Null) => Value::Null,
-                        _ => Value::Null,
-                    }
-                } else {
-                    Value::Null
-                };
-                fields.insert(field.name.clone(), value);
+                fields.insert(field.name.clone(), Value::Null);
             }
 
             let mut vm_methods = std::collections::HashMap::new();
@@ -528,6 +519,23 @@ impl Compiler {
                         }
                     }
                 } else {
+                    // Custom constructor: initialize fields with defaults first, then run custom body
+                    // This ensures field defaults are applied even when a custom constructor exists
+                    for field in &c.fields {
+                        if let Some(default_expr) = &field.default {
+                            let r_self = method_compiler.current_ctx.get_local_reg("self");
+                            let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+
+                            let field_name_idx = method_strings.len();
+                            method_strings.push(field.name.clone());
+                            method_bytecode.push(Opcode::SetProperty as u8);
+                            method_bytecode.push(r_self as u8);
+                            method_bytecode.push(field_name_idx as u8);
+                            method_bytecode.push(r_val as u8);
+                        }
+                    }
+                    
+                    // Now compile the custom constructor body
                     for stmt in &method.body {
                         method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
                     }
@@ -720,29 +728,70 @@ impl Compiler {
         bytecode[pos + 1] = bytes[1];
     }
 
-    fn emit_overflow_check(&mut self, r_op1: usize, r_op2: usize, r_res: usize, op_type: i64, bytecode: &mut Vec<u8>, strings: &mut Vec<String>) {
+    /// Get type ID for overflow checking: 1: int8, 2: uint8, 3: int16, 4: uint16, 5: int32, 6: uint32, 7: int64, 8: uint64, 0: int
+    fn get_type_id_for_var(&self, var_name: &str, type_context: Option<&TypeContext>) -> i64 {
+        if let Some(ctx) = type_context {
+            if let Some(var_info) = ctx.get_variable(var_name) {
+                return self.type_to_id(&var_info.type_name);
+            }
+        }
+        0 // Default to int (no bounds check)
+    }
+
+    /// Get type ID for a field: 1: int8, 2: uint8, 3: int16, 4: uint16, 5: int32, 6: uint32, 7: int64, 8: uint64, 0: int
+    fn get_type_id_for_field(&self, class_name: &str, field_name: &str, type_context: Option<&TypeContext>) -> i64 {
+        if let Some(ctx) = type_context {
+            if let Some(class_info) = ctx.get_class(class_name) {
+                if let Some(field_info) = class_info.fields.get(field_name) {
+                    return self.type_to_id(&field_info.type_name);
+                }
+            }
+        }
+        0 // Default to int (no bounds check)
+    }
+
+    fn type_to_id(&self, ty: &crate::types::Type) -> i64 {
+        match ty {
+            crate::types::Type::Int8 => 1,
+            crate::types::Type::UInt8 => 2,
+            crate::types::Type::Int16 => 3,
+            crate::types::Type::UInt16 => 4,
+            crate::types::Type::Int32 => 5,
+            crate::types::Type::UInt32 => 6,
+            crate::types::Type::Int64 => 7,
+            crate::types::Type::UInt64 => 8,
+            _ => 0, // int, float, or other
+        }
+    }
+
+    fn emit_overflow_check(&mut self, r_op1: usize, r_op2: usize, r_res: usize, op_type: i64, type_id: i64, bytecode: &mut Vec<u8>, strings: &mut Vec<String>) {
         // We'll use a native function call for overflow checking
-        let arg_start = self.current_ctx.allocate_regs(4);
-        
+        let arg_start = self.current_ctx.allocate_regs(5);
+
         // Arg 1: Left operand
         bytecode.push(Opcode::Move as u8);
         bytecode.push(arg_start as u8);
         bytecode.push(r_op1 as u8);
-        
+
         // Arg 2: Right operand
         bytecode.push(Opcode::Move as u8);
         bytecode.push((arg_start + 1) as u8);
         bytecode.push(r_op2 as u8);
-        
+
         // Arg 3: Result
         bytecode.push(Opcode::Move as u8);
         bytecode.push((arg_start + 2) as u8);
         bytecode.push(r_res as u8);
-        
+
         // Arg 4: Operation type (0: Add, 1: Sub, 2: Mul)
         bytecode.push(Opcode::LoadInt as u8);
         bytecode.push((arg_start + 3) as u8);
         bytecode.extend_from_slice(&op_type.to_le_bytes());
+
+        // Arg 5: Type ID (1: int8, 2: uint8, 3: int16, 4: uint16, 5: int32, 6: uint32, 7: int64, 8: uint64, 0: int)
+        bytecode.push(Opcode::LoadInt as u8);
+        bytecode.push((arg_start + 4) as u8);
+        bytecode.extend_from_slice(&type_id.to_le_bytes());
 
         let name_idx = strings.len();
         strings.push("std.math.check_overflow".to_string());
@@ -751,7 +800,7 @@ impl Compiler {
         bytecode.push(0 as u8);        // dummy destination
         bytecode.push(name_idx as u8); // function name index
         bytecode.push(arg_start as u8);// arg_start
-        bytecode.push(4u8);            // arg_count: 4 arguments (op1, op2, result, type)
+        bytecode.push(5u8);            // arg_count: 5 arguments
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt, bytecode: &mut Vec<u8>, strings: &mut Vec<String>, classes: &[ClassDef], type_context: Option<&TypeContext>) -> Result<(), String> {
@@ -1156,29 +1205,29 @@ impl Compiler {
             Expr::Literal(lit) => {
                 let rd = self.current_ctx.allocate_reg();
                 match lit {
-                    Literal::String(s) => {
+                    Literal::String(s, _) => {
                         let idx = strings.len();
                         strings.push(s.clone());
                         bytecode.push(Opcode::LoadConst as u8);
                         bytecode.push(rd as u8);
                         bytecode.push(idx as u8);
                     }
-                    Literal::Int(n) => {
+                    Literal::Int(n, _) => {
                         bytecode.push(Opcode::LoadInt as u8);
                         bytecode.push(rd as u8);
                         bytecode.extend_from_slice(&n.to_le_bytes());
                     }
-                    Literal::Float(n) => {
+                    Literal::Float(n, _) => {
                         bytecode.push(Opcode::LoadFloat as u8);
                         bytecode.push(rd as u8);
                         bytecode.extend_from_slice(&n.to_le_bytes());
                     }
-                    Literal::Bool(b) => {
+                    Literal::Bool(b, _) => {
                         bytecode.push(Opcode::LoadBool as u8);
                         bytecode.push(rd as u8);
                         bytecode.push(if *b { 1 } else { 0 });
                     }
-                    Literal::Null => {
+                    Literal::Null(_) => {
                         bytecode.push(Opcode::LoadNull as u8);
                         bytecode.push(rd as u8);
                     }
@@ -1287,6 +1336,11 @@ impl Compiler {
                     BinaryOp::GreaterEqual => Opcode::GreaterEqual,
                     BinaryOp::Less => Opcode::Less,
                     BinaryOp::LessEqual => Opcode::LessEqual,
+                    BinaryOp::BitAnd => Opcode::BitAnd,
+                    BinaryOp::BitOr => Opcode::BitOr,
+                    BinaryOp::BitXor => Opcode::BitXor,
+                    BinaryOp::ShiftLeft => Opcode::ShiftLeft,
+                    BinaryOp::ShiftRight => Opcode::ShiftRight,
                     BinaryOp::Pow => unreachable!("Pow operator handled separately"),
                 };
 
@@ -1303,7 +1357,10 @@ impl Compiler {
                         BinaryOp::Multiply => 2i64,
                         _ => unreachable!(),
                     };
-                    self.emit_overflow_check(r1, r2, rd, op_type, bytecode, strings);
+                    // Get the type_id from the left operand for overflow checking
+                    let left_type = self.infer_expr_type(left, type_context.unwrap());
+                    let type_id = self.type_to_id(&left_type);
+                    self.emit_overflow_check(r1, r2, rd, op_type, type_id, bytecode, strings);
                 }
 
                 Ok(rd)
@@ -1315,6 +1372,14 @@ impl Compiler {
                         let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                         let rd = self.current_ctx.allocate_reg();
                         bytecode.push(Opcode::Not as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(r as u8);
+                        Ok(rd)
+                    }
+                    UnaryOp::BitNot => {
+                        let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                        let rd = self.current_ctx.allocate_reg();
+                        bytecode.push(Opcode::BitNot as u8);
                         bytecode.push(rd as u8);
                         bytecode.push(r as u8);
                         Ok(rd)
@@ -1337,7 +1402,7 @@ impl Compiler {
                         bytecode.push(r as u8);
 
                         if !self.unsafe_fast {
-                            self.emit_overflow_check(r_zero, r, rd, 1, bytecode, strings);
+                            self.emit_overflow_check(r_zero, r, rd, 1, 0, bytecode, strings);
                         }
                         Ok(rd)
                     }
@@ -1362,7 +1427,8 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(r_orig, r_one, r_var, 0, bytecode, strings);
+                                let type_id = self.get_type_id_for_var(name, type_context);
+                                self.emit_overflow_check(r_orig, r_one, r_var, 0, type_id, bytecode, strings);
                             }
 
                             let rd = self.current_ctx.allocate_reg();
@@ -1381,6 +1447,18 @@ impl Compiler {
                             bytecode.push(r_obj as u8);
                             bytecode.push(idx as u8);
 
+                            // Get the field type from the object's class
+                            let type_id = if let Some(ctx) = type_context {
+                                let obj_type = self.infer_expr_type(object, ctx);
+                                if let crate::types::Type::Class(class_name) = obj_type {
+                                    self.get_type_id_for_field(&class_name, name, type_context)
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            };
+
                             // Save original value for overflow check
                             let r_orig = self.current_ctx.allocate_reg();
                             bytecode.push(Opcode::Move as u8);
@@ -1398,7 +1476,7 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(r_orig, r_one, r_field, 0, bytecode, strings);
+                                self.emit_overflow_check(r_orig, r_one, r_field, 0, type_id, bytecode, strings);
                             }
 
                             // Store back to property
@@ -1437,7 +1515,8 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(r_orig, r_one, r_var, 1, bytecode, strings);
+                                let type_id = self.get_type_id_for_var(name, type_context);
+                                self.emit_overflow_check(r_orig, r_one, r_var, 1, type_id, bytecode, strings);
                             }
 
                             let rd = self.current_ctx.allocate_reg();
@@ -1473,7 +1552,17 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(r_orig, r_one, r_field, 1, bytecode, strings);
+                                let type_id = if let Some(ctx) = type_context {
+                                    let obj_type = self.infer_expr_type(object, ctx);
+                                    if let crate::types::Type::Class(class_name) = obj_type {
+                                        self.get_type_id_for_field(&class_name, name, type_context)
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                };
+                                self.emit_overflow_check(r_orig, r_one, r_field, 1, type_id, bytecode, strings);
                             }
 
                             // Store back to property
@@ -1510,7 +1599,8 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(rd, r_one, r_var, 0, bytecode, strings);
+                                let type_id = self.get_type_id_for_var(name, type_context);
+                                self.emit_overflow_check(rd, r_one, r_var, 0, type_id, bytecode, strings);
                             }
 
                             Ok(rd)
@@ -1542,7 +1632,17 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(rd, r_one, r_field, 0, bytecode, strings);
+                                let type_id = if let Some(ctx) = type_context {
+                                    let obj_type = self.infer_expr_type(object, ctx);
+                                    if let crate::types::Type::Class(class_name) = obj_type {
+                                        self.get_type_id_for_field(&class_name, name, type_context)
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                };
+                                self.emit_overflow_check(rd, r_one, r_field, 0, type_id, bytecode, strings);
                             }
 
                             // Store back to property
@@ -1575,7 +1675,8 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(rd, r_one, r_var, 1, bytecode, strings);
+                                let type_id = self.get_type_id_for_var(name, type_context);
+                                self.emit_overflow_check(rd, r_one, r_var, 1, type_id, bytecode, strings);
                             }
 
                             Ok(rd)
@@ -1607,7 +1708,17 @@ impl Compiler {
                             bytecode.push(r_one as u8);
 
                             if !self.unsafe_fast {
-                                self.emit_overflow_check(rd, r_one, r_field, 1, bytecode, strings);
+                                let type_id = if let Some(ctx) = type_context {
+                                    let obj_type = self.infer_expr_type(object, ctx);
+                                    if let crate::types::Type::Class(class_name) = obj_type {
+                                        self.get_type_id_for_field(&class_name, name, type_context)
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                };
+                                self.emit_overflow_check(rd, r_one, r_field, 1, type_id, bytecode, strings);
                             }
 
                             // Store back to property
@@ -2277,11 +2388,11 @@ impl Compiler {
         match expr {
             Expr::Literal(lit) => {
                 match lit {
-                    Literal::String(_) => Type::Str,
-                    Literal::Int(_) => Type::Int,
-                    Literal::Float(_) => Type::Float,
-                    Literal::Bool(_) => Type::Bool,
-                    Literal::Null => Type::Null,
+                    Literal::String(_, _) => Type::Str,
+                    Literal::Int(_, _) => Type::Int,
+                    Literal::Float(_, _) => Type::Float,
+                    Literal::Bool(_, _) => Type::Bool,
+                    Literal::Null(_) => Type::Null,
                 }
             }
             Expr::Variable { name, .. } => {
@@ -2310,14 +2421,39 @@ impl Compiler {
                     BinaryOp::Greater | BinaryOp::GreaterEqual |
                     BinaryOp::Less | BinaryOp::LessEqual => Type::Bool,
                     BinaryOp::Pow => Type::Float,  // std.math.pow returns float
+                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor |
+                    BinaryOp::ShiftLeft | BinaryOp::ShiftRight => {
+                        // Bitwise operations return integer types
+                        let left_type = self.infer_expr_type(left, ctx);
+                        // For shift operators, preserve the left operand's integer type
+                        if let Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                           Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 = &left_type {
+                            left_type.clone()
+                        } else {
+                            Type::Int
+                        }
+                    }
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply |
                     BinaryOp::Divide | BinaryOp::Modulo => {
-                        // Try to get type from left operand
+                        // Try to get type from left and right operands
                         let left_type = self.infer_expr_type(left, ctx);
-                        if left_type != Type::Unknown {
-                            return left_type;
+                        let right_type = self.infer_expr_type(right, ctx);
+                        // If both operands have the same specific integer type, preserve it
+                        if left_type == right_type {
+                            match left_type {
+                                Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 => return left_type.clone(),
+                                _ => {}
+                            }
                         }
-                        self.infer_expr_type(right, ctx)
+                        // Return the more precise type (float > int)
+                        if left_type == Type::Float || right_type == Type::Float {
+                            Type::Float
+                        } else if left_type != Type::Unknown {
+                            left_type
+                        } else {
+                            right_type
+                        }
                     }
                 }
             }

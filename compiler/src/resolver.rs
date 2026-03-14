@@ -416,22 +416,10 @@ impl ModuleResolver {
         for stmt in statements {
             match stmt {
                 Stmt::Class(class) => {
-                    let mut class_with_module = class.clone();
-                    class_with_module.name = format!("{}.{}", module_name, class.name);
-                    self.type_context.add_class(&class_with_module);
-                    // Only add unqualified version for public classes (private classes should only be accessible within their module)
-                    if !class.private {
-                        self.type_context.add_class(class);
-                    }
+                    self.register_class_with_module(module_name, class);
                 }
                 Stmt::Interface(interface) => {
-                    let mut interface_with_module = interface.clone();
-                    interface_with_module.name = format!("{}.{}", module_name, interface.name);
-                    self.type_context.add_interface(&interface_with_module);
-                    // Only add unqualified version for public interfaces
-                    if !interface.private {
-                        self.type_context.add_interface(interface);
-                    }
+                    self.register_interface_with_module(module_name, interface);
                 }
                 Stmt::Enum(enum_def) => {
                     self.type_context.add_enum(enum_def);
@@ -459,7 +447,7 @@ impl ModuleResolver {
                     };
 
                     self.type_context.add_function(&full_name, sig.clone());
-                    
+
                     // Also add unqualified version for public functions
                     if !func.private {
                         self.type_context.add_function(&func.name, sig);
@@ -481,6 +469,115 @@ impl ModuleResolver {
                     });
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn register_class_with_module(&mut self, module_name: &str, class: &crate::parser::ClassDef) {
+        let mut class_with_module = class.clone();
+        class_with_module.name = format!("{}.{}", module_name, class.name);
+        self.type_context.add_class(&class_with_module);
+        // Only add unqualified version for public classes
+        if !class.private {
+            self.type_context.add_class(class);
+        }
+
+        // Register nested classes with both qualified and unqualified names
+        for nested_class in &class.nested_classes {
+            // Full path: module.Outer.Inner
+            let mut nested_full = nested_class.clone();
+            nested_full.name = format!("{}.{}.{}", module_name, class.name, nested_class.name);
+            self.type_context.add_class(&nested_full);
+            
+            // Short path: Outer.Inner (for nested lookup)
+            let mut nested_short = nested_class.clone();
+            nested_short.name = format!("{}.{}", class.name, nested_class.name);
+            if !class.private {
+                self.type_context.add_class(&nested_short);
+            }
+            
+            // Recursively register deeper nested classes
+            self.register_deeper_nested_classes(nested_class, module_name, &class.name);
+        }
+
+        // Register nested interfaces
+        for nested_iface in &class.nested_interfaces {
+            // Full path: module.Outer.Inner
+            let mut nested_full = nested_iface.clone();
+            nested_full.name = format!("{}.{}.{}", module_name, class.name, nested_iface.name);
+            self.type_context.add_interface(&nested_full);
+            
+            // Short path: Outer.Inner (for nested lookup)
+            let mut nested_short = nested_iface.clone();
+            nested_short.name = format!("{}.{}", class.name, nested_iface.name);
+            if !class.private {
+                self.type_context.add_interface(&nested_short);
+            }
+        }
+    }
+
+    fn register_deeper_nested_classes(&mut self, parent_class: &crate::parser::ClassDef, module_name: &str, parent_path: &str) {
+        for nested_class in &parent_class.nested_classes {
+            // Full path: module.Outer.Inner.DeepInner
+            let mut nested_full = nested_class.clone();
+            nested_full.name = format!("{}.{}.{}", module_name, parent_path, nested_class.name);
+            self.type_context.add_class(&nested_full);
+            
+            // Short path: Outer.Inner.DeepInner
+            let mut nested_short = nested_class.clone();
+            nested_short.name = format!("{}.{}", parent_path, nested_class.name);
+            self.type_context.add_class(&nested_short);
+            
+            // Continue recursion
+            self.register_deeper_nested_classes(nested_class, module_name, &format!("{}.{}", parent_path, nested_class.name));
+        }
+        for nested_iface in &parent_class.nested_interfaces {
+            let mut nested_full = nested_iface.clone();
+            nested_full.name = format!("{}.{}.{}", module_name, parent_path, nested_iface.name);
+            self.type_context.add_interface(&nested_full);
+            
+            let mut nested_short = nested_iface.clone();
+            nested_short.name = format!("{}.{}", parent_path, nested_iface.name);
+            self.type_context.add_interface(&nested_short);
+        }
+    }
+
+    fn register_interface_with_module(&mut self, module_name: &str, interface: &crate::parser::InterfaceDef) {
+        let mut interface_with_module = interface.clone();
+        interface_with_module.name = format!("{}.{}", module_name, interface.name);
+        self.type_context.add_interface(&interface_with_module);
+        // Only add unqualified version for public interfaces
+        if !interface.private {
+            self.type_context.add_interface(interface);
+        }
+
+        // Register nested classes with both qualified and unqualified names
+        for nested_class in &interface.nested_classes {
+            // Full path: module.Interface.NestedClass
+            let mut nested_full = nested_class.clone();
+            nested_full.name = format!("{}.{}.{}", module_name, interface.name, nested_class.name);
+            self.type_context.add_class(&nested_full);
+            
+            // Short path: Interface.NestedClass (for nested lookup)
+            let mut nested_short = nested_class.clone();
+            nested_short.name = format!("{}.{}", interface.name, nested_class.name);
+            if !interface.private {
+                self.type_context.add_class(&nested_short);
+            }
+        }
+
+        // Register nested interfaces
+        for nested_iface in &interface.nested_interfaces {
+            // Full path: module.Interface.NestedInterface
+            let mut nested_full = nested_iface.clone();
+            nested_full.name = format!("{}.{}.{}", module_name, interface.name, nested_iface.name);
+            self.type_context.add_interface(&nested_full);
+            
+            // Short path: Interface.NestedInterface (for nested lookup)
+            let mut nested_short = nested_iface.clone();
+            nested_short.name = format!("{}.{}", interface.name, nested_iface.name);
+            if !interface.private {
+                self.type_context.add_interface(&nested_short);
             }
         }
     }

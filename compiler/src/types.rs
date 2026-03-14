@@ -5,6 +5,11 @@ fn is_numeric_type(ty: &Type) -> bool {
     ty.is_numeric()
 }
 
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+             Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
@@ -1116,7 +1121,7 @@ impl TypeContext {
 
         for variant in &enum_def.variants {
             let value = if let Some(expr) = &variant.value {
-                if let Expr::Literal(Literal::Int(n)) = expr {
+                if let Expr::Literal(Literal::Int(n, _)) = expr {
                     next_value = *n + 1;
                     Some(*n)
                 } else {
@@ -1464,7 +1469,24 @@ impl TypeContext {
 
     /// Try to resolve a module-qualified class name (e.g., "http.HttpClient" with import "std.http")
     pub fn resolve_qualified_class(&self, module_alias: &str, class_name: &str) -> Option<String> {
-        // First try direct lookup
+        // First, check if this is a nested class (e.g., Outer.Inner)
+        // module_alias would be "Outer" and class_name would be "Inner"
+        let nested_class_name = format!("{}.{}", module_alias, class_name);
+        if let Some(class_info) = self.classes.get(&nested_class_name) {
+            if class_info.private {
+                // Check if we're inside the outer class
+                if let Some(ref current_class) = self.current_class {
+                    if current_class != module_alias {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            return Some(nested_class_name);
+        }
+
+        // First try direct lookup for module-qualified classes
         let direct_name = format!("{}.{}", module_alias, class_name);
         if let Some(class_info) = self.classes.get(&direct_name) {
             if class_info.private {
@@ -2156,10 +2178,10 @@ impl TypeChecker {
         for stmt in statements {
             match stmt {
                 Stmt::Class(class) => {
-                    self.context.add_class(class);
+                    self.add_class_with_nesting(class, None);
                 }
                 Stmt::Interface(interface) => {
-                    self.context.add_interface(interface);
+                    self.add_interface_with_nesting(interface, None);
                 }
                 Stmt::Enum(enum_def) => {
                     self.context.add_enum(enum_def);
@@ -2192,6 +2214,46 @@ impl TypeChecker {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn add_class_with_nesting(&mut self, class: &crate::parser::ClassDef, parent_name: Option<&str>) {
+        // Set the qualified name for the class
+        let mut qualified_class = class.clone();
+        if let Some(parent) = parent_name {
+            qualified_class.name = format!("{}.{}", parent, class.name);
+        }
+        
+        self.context.add_class(&qualified_class);
+        
+        // Process nested classes with the qualified parent name
+        let current_parent = qualified_class.name.clone();
+        for nested_class in &class.nested_classes {
+            self.add_class_with_nesting(nested_class, Some(&current_parent));
+        }
+        // Process nested interfaces
+        for nested_iface in &class.nested_interfaces {
+            self.add_interface_with_nesting(nested_iface, Some(&current_parent));
+        }
+    }
+
+    fn add_interface_with_nesting(&mut self, interface: &crate::parser::InterfaceDef, parent_name: Option<&str>) {
+        // Set the qualified name for the interface
+        let mut qualified_interface = interface.clone();
+        if let Some(parent) = parent_name {
+            qualified_interface.name = format!("{}.{}", parent, interface.name);
+        }
+        
+        self.context.add_interface(&qualified_interface);
+        
+        // Process nested classes with the qualified parent name
+        let current_parent = qualified_interface.name.clone();
+        for nested_class in &interface.nested_classes {
+            self.add_class_with_nesting(nested_class, Some(&current_parent));
+        }
+        // Process nested interfaces
+        for nested_iface in &interface.nested_interfaces {
+            self.add_interface_with_nesting(nested_iface, Some(&current_parent));
         }
     }
 
@@ -2470,6 +2532,26 @@ impl TypeChecker {
         let old_class = self.context.current_class.clone();
         self.context.current_class = Some(class.name.clone());
 
+        // Check field default expressions
+        for field in &class.fields {
+            if let Some(default_expr) = &field.default {
+                let field_type = Type::from_str(&field.type_name);
+                let expr_type = self.infer_expr_with_expected_type(default_expr, &Some(field_type.clone()));
+                
+                if !expr_type.is_assignable_to(&field_type) {
+                    self.context.add_error(
+                        format!(
+                            "Type mismatch: cannot assign {} to field '{}' of type {}",
+                            expr_type.to_str(),
+                            field.name,
+                            field_type.to_str()
+                        ),
+                        0
+                    );
+                }
+            }
+        }
+
         for method in &class.methods {
             self.check_method(method, &class.name);
         }
@@ -2583,11 +2665,11 @@ impl TypeChecker {
         match expr {
             Expr::Literal(lit) => {
                 match lit {
-                    Literal::String(_) => Type::Str,
-                    Literal::Int(_) => Type::Int,
-                    Literal::Float(_) => Type::Float,
-                    Literal::Bool(_) => Type::Bool,
-                    Literal::Null => Type::Null,
+                    Literal::String(_, _) => Type::Str,
+                    Literal::Int(_, _) => Type::Int,
+                    Literal::Float(_, _) => Type::Float,
+                    Literal::Bool(_, _) => Type::Bool,
+                    Literal::Null(_) => Type::Null,
                 }
             }
             Expr::Variable { name, span } => {
@@ -2722,6 +2804,13 @@ impl TypeChecker {
                         // Result type is the more precise type (float > int)
                         if left_type == Type::Float || right_type == Type::Float {
                             Type::Float
+                        } else if left_type == right_type {
+                            // If both operands have the same specific integer type, preserve it
+                            match left_type {
+                                Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 => left_type.clone(),
+                                _ => Type::Int,
+                            }
                         } else {
                             Type::Int
                         }
@@ -2759,6 +2848,48 @@ impl TypeChecker {
                         }
                         Type::Bool
                     }
+                    crate::parser::BinaryOp::BitAnd | crate::parser::BinaryOp::BitOr |
+                    crate::parser::BinaryOp::BitXor | crate::parser::BinaryOp::ShiftLeft |
+                    crate::parser::BinaryOp::ShiftRight => {
+                        // Bitwise operations require integer types
+                        if !is_integer_type(&left_type) && left_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected integer type for bitwise operation, got {}", left_type.to_str()),
+                                0
+                            );
+                        }
+                        if !is_integer_type(&right_type) && right_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected integer type for bitwise operation, got {}", right_type.to_str()),
+                                0
+                            );
+                        }
+                        // For shift operators, the right operand should be an integer (shift amount)
+                        // Result type is the type of the left operand (for shifts) or the more specific integer type
+                        match op {
+                            crate::parser::BinaryOp::ShiftLeft | crate::parser::BinaryOp::ShiftRight => {
+                                // Shift operators preserve the left operand's integer type
+                                if let Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                   Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 = &left_type {
+                                    left_type.clone()
+                                } else {
+                                    Type::Int
+                                }
+                            }
+                            _ => {
+                                // BitAnd, BitOr, BitXor: result is the more specific integer type
+                                if left_type == right_type {
+                                    match left_type {
+                                        Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                        Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 => left_type.clone(),
+                                        _ => Type::Int,
+                                    }
+                                } else {
+                                    Type::Int
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Expr::Unary { op, expr, .. } => {
@@ -2773,6 +2904,22 @@ impl TypeChecker {
                         }
                         Type::Bool
                     }
+                    crate::parser::UnaryOp::BitNot => {
+                        // Bitwise NOT requires integer types
+                        if !is_integer_type(&inner_type) && inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected integer type for bitwise NOT, got {}", inner_type.to_str()),
+                                0
+                            );
+                        }
+                        // Result type is the same as operand type
+                        if let Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                           Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 = &inner_type {
+                            inner_type.clone()
+                        } else {
+                            Type::Int
+                        }
+                    }
                     crate::parser::UnaryOp::Negate => {
                         // Negation works on numeric types and returns the same type
                         if inner_type != Type::Int && inner_type != Type::Float && !inner_type.is_numeric() && inner_type != Type::Unknown {
@@ -2785,7 +2932,7 @@ impl TypeChecker {
                     }
                     crate::parser::UnaryOp::PrefixIncrement | crate::parser::UnaryOp::PostfixIncrement => {
                         // Increment operator works on numeric types and returns the original type
-                        if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
+                        if !inner_type.is_numeric() && inner_type != Type::Unknown {
                             self.context.add_error(
                                 format!("Expected numeric type for ++ operator, got {}", inner_type.to_str()),
                                 0
@@ -2795,7 +2942,7 @@ impl TypeChecker {
                     }
                     crate::parser::UnaryOp::PrefixDecrement | crate::parser::UnaryOp::PostfixDecrement | crate::parser::UnaryOp::Decrement => {
                         // Decrement operator works on numeric types and returns the original type
-                        if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
+                        if !inner_type.is_numeric() && inner_type != Type::Unknown {
                             self.context.add_error(
                                 format!("Expected numeric type for -- operator, got {}", inner_type.to_str()),
                                 0
@@ -2989,8 +3136,31 @@ impl TypeChecker {
                         full_return_type
                     }
                 } else if let Expr::Get { object, name, span: method_span } = callee.as_ref() {
-                    // Could be method call OR module.function() call
+                    // Could be method call OR module.function() call OR nested class instantiation
                     let object_type = self.infer_expr(object);
+
+                    // First, check if this is a nested class instantiation (e.g., Outer.Inner(args))
+                    if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                        if let Some(_outer_class_info) = self.context.get_class(obj_name) {
+                            let nested_class_name = format!("{}.{}", obj_name, name);
+                            if let Some(_nested_class_info) = self.context.get_class(&nested_class_name) {
+                                // This is a nested class instantiation
+                                let arg_types: Vec<Type> = args.iter()
+                                    .map(|arg| self.infer_expr(arg))
+                                    .collect();
+                                let ctor_sig = self.context.resolve_method_call(&nested_class_name, "constructor", &arg_types);
+                                if let Some(sig) = ctor_sig.cloned() {
+                                    self.check_method_call(&sig, args, "constructor", &nested_class_name);
+                                } else if !args.is_empty() {
+                                    self.context.add_error_with_location(
+                                        format!("Class '{}' does not accept constructor arguments", nested_class_name),
+                                        method_span.line, method_span.column, None, None
+                                    );
+                                }
+                                return Type::Class(nested_class_name);
+                            }
+                        }
+                    }
 
                     let effective_class = match object_type {
                         Type::Class(ref name) => Some(name.clone()),
@@ -3095,6 +3265,31 @@ impl TypeChecker {
                 if let Expr::Variable { name: obj_name, span: _ } = object.as_ref() {
                     // Check if obj_name is a class name
                     if let Some(class_info) = self.context.get_class(obj_name) {
+                        // First, check if this is a nested class access (e.g., Outer.Inner)
+                        let nested_class_name = format!("{}.{}", obj_name, name);
+                        if let Some(nested_class_info) = self.context.get_class(&nested_class_name) {
+                            // Check visibility
+                            if nested_class_info.private {
+                                if let Some(current) = &self.context.current_class {
+                                    if current != obj_name {
+                                        self.context.add_error_with_location(
+                                            format!("Nested class '{}' is private and cannot be accessed from class '{}'", name, current),
+                                            span.line, span.column, None, None
+                                        );
+                                        return Type::Unknown;
+                                    }
+                                } else {
+                                    self.context.add_error_with_location(
+                                        format!("Nested class '{}' is private and cannot be accessed from global scope", name),
+                                        span.line, span.column, None, None
+                                    );
+                                    return Type::Unknown;
+                                }
+                            }
+                            // Return the nested class type
+                            return Type::Class(nested_class_name);
+                        }
+                        
                         // This is static member access
                         if let Some(field_info) = class_info.fields.get(name) {
                             if field_info.is_static {
@@ -3135,7 +3330,7 @@ impl TypeChecker {
                             }
                         }
                         // Member not found as static - check if it's an instance member
-                        if class_info.fields.contains_key(name) || 
+                        if class_info.fields.contains_key(name) ||
                            class_info.methods.values().any(|m| m.name == *name) {
                             self.context.add_error_with_location(
                                 format!("Cannot access instance member '{}' on class '{}' without an instance. Use 'self.{}' or make the member static.", name, obj_name, name),
@@ -3150,7 +3345,7 @@ impl TypeChecker {
                         return Type::Unknown;
                     }
                 }
-                
+
                 let object_type = self.infer_expr(object);
 
                 if let Type::Class(class_name) = object_type {
@@ -3490,6 +3685,119 @@ impl TypeChecker {
     /// Infer expression type with an expected type hint (for type deduction)
     fn infer_expr_with_expected_type(&mut self, expr: &Expr, expected_type: &Option<Type>) -> Type {
         match expr {
+            Expr::Literal(lit) => {
+                match lit {
+                    Literal::Int(value, span) => {
+                        // Check if the expected type is a specific integer type and validate range
+                        if let Some(expected) = expected_type {
+                            match expected {
+                                Type::Int8 => {
+                                    if *value < -128 || *value > 127 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for int8 (-128 to 127)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::Int8;
+                                }
+                                Type::UInt8 => {
+                                    if *value < 0 || *value > 255 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint8 (0 to 255)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt8;
+                                }
+                                Type::Int16 => {
+                                    if *value < -32768 || *value > 32767 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for int16 (-32768 to 32767)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::Int16;
+                                }
+                                Type::UInt16 => {
+                                    if *value < 0 || *value > 65535 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint16 (0 to 65535)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt16;
+                                }
+                                Type::Int32 => {
+                                    if *value < -2147483648 || *value > 2147483647 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for int32", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::Int32;
+                                }
+                                Type::UInt32 => {
+                                    if *value < 0 || *value > 4294967295 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint32 (0 to 4294967295)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt32;
+                                }
+                                Type::Int64 => {
+                                    return Type::Int64;
+                                }
+                                Type::UInt64 => {
+                                    if *value < 0 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint64 (must be non-negative)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt64;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Type::Int
+                    }
+                    Literal::Float(_value, _) => {
+                        if let Some(expected) = expected_type {
+                            match expected {
+                                Type::Float32 => return Type::Float32,
+                                Type::Float64 => return Type::Float64,
+                                _ => {}
+                            }
+                        }
+                        Type::Float
+                    }
+                    Literal::String(_, _) => Type::Str,
+                    Literal::Bool(_, _) => Type::Bool,
+                    Literal::Null(_) => Type::Null,
+                }
+            }
             Expr::ObjectLiteral { fields, span, .. } => {
                 // Try to infer the class type from the expected type
                 if let Some(expected) = expected_type {

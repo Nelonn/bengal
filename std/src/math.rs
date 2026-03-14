@@ -212,10 +212,10 @@ pub fn native_math_to_degrees(args: &mut Vec<Value>) -> Result<Value, Value> {
 }
 
 pub fn native_math_check_overflow(args: &mut Vec<Value>) -> Result<Value, Value> {
-    if args.len() < 4 {
+    if args.len() < 5 {
         return Ok(Value::Null);
     }
-    
+
     let a = match args[0] {
         Value::Int64(v) => v,
         _ => return Ok(Value::Null),
@@ -232,8 +232,14 @@ pub fn native_math_check_overflow(args: &mut Vec<Value>) -> Result<Value, Value>
         Value::Int64(v) => v, // 0: Add, 1: Sub, 2: Mul
         _ => return Ok(Value::Null),
     };
+    // Type: 1: int8, 2: uint8, 3: int16, 4: uint16, 5: int32, 6: uint32, 7: int64, 8: uint64, 0: int (no bounds check needed)
+    let type_id = match args[4] {
+        Value::Int64(v) => v,
+        _ => return Ok(Value::Null),
+    };
 
-    let overflow = match op {
+    // First check if the operation itself overflowed i64
+    let base_overflow = match op {
         0 => { // Add
             let (sum, overflow) = a.overflowing_add(b);
             overflow || sum != res
@@ -249,7 +255,24 @@ pub fn native_math_check_overflow(args: &mut Vec<Value>) -> Result<Value, Value>
         _ => false,
     };
 
-    if overflow {
+    if base_overflow {
+        return Err(Value::String("Integer overflow".to_string()));
+    }
+
+    // Now check if the result fits in the target type
+    let in_range = match type_id {
+        1 => res >= -128 && res <= 127, // int8
+        2 => res >= 0 && res <= 255, // uint8
+        3 => res >= -32768 && res <= 32767, // int16
+        4 => res >= 0 && res <= 65535, // uint16
+        5 => res >= -2147483648 && res <= 2147483647, // int32
+        6 => res >= 0 && res <= 4294967295, // uint32
+        7 => true, // int64 - always in range
+        8 => res >= 0, // uint64 - must be non-negative
+        _ => true, // int or unknown - no bounds check
+    };
+
+    if !in_range {
         return Err(Value::String("Integer overflow".to_string()));
     }
 
