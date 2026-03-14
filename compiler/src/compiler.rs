@@ -442,12 +442,19 @@ impl Compiler {
         // Compile classes with methods
         let mut vm_classes = Vec::new();
         let mut static_methods = Vec::new();  // Collect static methods to add to global functions
+        let mut static_field_initializers: Vec<(String, String, Expr)> = Vec::new();  // (class_name, field_name, default_expr)
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
-            // Initialize all fields to Null - actual initialization happens in constructor
-            // This allows field defaults to be arbitrary expressions evaluated at runtime
+            // Initialize all fields to Null - actual initialization happens at module level for static fields
+            // and in constructor for instance fields
             for field in &c.fields {
                 fields.insert(field.name.clone(), Value::Null);
+                // Collect static field initializers
+                if field.is_static {
+                    if let Some(default_expr) = &field.default {
+                        static_field_initializers.push((c.name.clone(), field.name.clone(), default_expr.clone()));
+                    }
+                }
             }
 
             let mut vm_methods = std::collections::HashMap::new();
@@ -491,8 +498,14 @@ impl Compiler {
                     // Generate field assignment code for auto-generated constructor
                     if method.params.is_empty() {
                         // Empty constructor: assign default values from field definitions
+                        // Note: Static fields are initialized at module level, not in constructors
                         for field in &c.fields {
                             if let Some(default_expr) = &field.default {
+                                // Skip static fields - they are initialized at module level
+                                if field.is_static {
+                                    continue;
+                                }
+                                
                                 let r_self = method_compiler.current_ctx.get_local_reg("self");
                                 let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
 
@@ -519,10 +532,15 @@ impl Compiler {
                         }
                     }
                 } else {
-                    // Custom constructor: initialize fields with defaults first, then run custom body
-                    // This ensures field defaults are applied even when a custom constructor exists
+                    // Custom constructor: initialize instance fields with defaults first, then run custom body
+                    // Note: Static fields are initialized at module level, not in constructors
                     for field in &c.fields {
                         if let Some(default_expr) = &field.default {
+                            // Skip static fields - they are initialized at module level
+                            if field.is_static {
+                                continue;
+                            }
+                            
                             let r_self = method_compiler.current_ctx.get_local_reg("self");
                             let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
 
@@ -534,7 +552,7 @@ impl Compiler {
                             method_bytecode.push(r_val as u8);
                         }
                     }
-                    
+
                     // Now compile the custom constructor body
                     for stmt in &method.body {
                         method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
@@ -582,8 +600,10 @@ impl Compiler {
                 };
 
                 // For static methods, also add to global functions list with ClassName::methodName
+                // Note: The bytecode has already been adjusted and strings extended above
                 if method.is_static {
                     let static_method_name = format!("{}::{}", c.name, mangled_name);
+                    // Store the already-adjusted bytecode
                     static_methods.push((static_method_name, method_bytecode.clone(), register_count, method.params.len()));
                 }
 
@@ -684,11 +704,8 @@ impl Compiler {
         }
 
         // Add static methods to global functions
-        for (name, mut bytecode, register_count, param_count) in static_methods {
-            // Adjust string indices in static method bytecode
-            let string_offset = strings.len();
-            adjust_string_indices(&mut bytecode, string_offset);
-            
+        // Note: Static method bytecode has already been adjusted and strings extended during class compilation
+        for (name, bytecode, register_count, param_count) in static_methods {
             vm_functions.push(Function {
                 name,
                 bytecode,
@@ -696,6 +713,17 @@ impl Compiler {
                 register_count,
                 source_file: None,
             });
+        }
+
+        // Initialize static fields at module level before any other code runs
+        self.current_ctx = CompileContext::new();
+        for (class_name, field_name, default_expr) in &static_field_initializers {
+            let r_val = self.compile_expr(default_expr, &mut bytecode, &mut strings, &classes, type_context.as_ref())?;
+            let idx = strings.len();
+            strings.push(format!("static_{}.{}", class_name, field_name));
+            bytecode.push(Opcode::StoreLocal as u8);
+            bytecode.push(idx as u8);
+            bytecode.push(r_val as u8);
         }
 
         // Compile module-level statements
@@ -2032,23 +2060,21 @@ impl Compiler {
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
                     // Check if this is a static method call: ClassName.method()
                     let (is_static_call, obj_name) = if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
-                        if let Some(ctx) = type_context {
-                            if let Some(class_info) = ctx.get_class(obj_name) {
-                                // Check if the method exists and is static
-                                let mangled_method = if args.is_empty() {
-                                    format!("{}()", name)
-                                } else {
-                                    let mut params = Vec::new();
-                                    for _ in 0..args.len() {
-                                        params.push("T".to_string());
+                        // Check classes list directly for static methods
+                        let mut found_static = false;
+                        for c in classes {
+                            if c.name == *obj_name {
+                                // Check if any method with this name is static
+                                for method in &c.methods {
+                                    if method.name == *name && method.is_static {
+                                        found_static = true;
+                                        break;
                                     }
-                                    format!("{}({})", name, params.join(","))
-                                };
-                                (class_info.methods.get(&mangled_method)
-                                    .map(|m| m.is_static)
-                                    .unwrap_or(false), obj_name.clone())
-                            } else { (false, String::new()) }
-                        } else { (false, String::new()) }
+                                }
+                                break;
+                            }
+                        }
+                        (found_static, obj_name.clone())
                     } else { (false, String::new()) };
 
                     if is_static_call {
