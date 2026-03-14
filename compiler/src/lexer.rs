@@ -542,6 +542,33 @@ impl Lexer {
         let mut s = String::new();
         let mut is_float = false;
 
+        // Check for number base prefix (0x, 0o, 0b)
+        if self.peek() == Some('0') {
+            if let Some(prefix_ch) = self.peek_next() {
+                match prefix_ch {
+                    'x' | 'X' => {
+                        // Hexadecimal number
+                        self.advance(); // consume '0'
+                        self.advance(); // consume 'x' or 'X'
+                        return self.read_hex_number();
+                    }
+                    'o' | 'O' => {
+                        // Octal number
+                        self.advance(); // consume '0'
+                        self.advance(); // consume 'o' or 'O'
+                        return self.read_octal_number();
+                    }
+                    'b' | 'B' => {
+                        // Binary number
+                        self.advance(); // consume '0'
+                        self.advance(); // consume 'b' or 'B'
+                        return self.read_binary_number();
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         while let Some(ch) = self.peek() {
             if ch == '\'' {
                 // Digit separator (e.g., 1'000'000)
@@ -578,6 +605,81 @@ impl Lexer {
         }
     }
 
+    fn read_hex_number(&mut self) -> Result<Token, String> {
+        let mut s = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '\'' {
+                // Digit separator (e.g., 0x1A'FF)
+                self.advance();
+            } else if ch.is_ascii_hexdigit() {
+                s.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        if s.is_empty() {
+            let (line, col) = self.get_pos();
+            return Err(format!("[{}:{}] Invalid hex number: expected digits after 0x", line, col));
+        }
+
+        let (line, col) = self.get_pos();
+        i64::from_str_radix(&s, 16)
+            .map(Token::Int)
+            .map_err(|e| format!("[{}:{}] Invalid hex number: {}", line, col, e))
+    }
+
+    fn read_octal_number(&mut self) -> Result<Token, String> {
+        let mut s = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '\'' {
+                // Digit separator (e.g., 0o7'55)
+                self.advance();
+            } else if ch.is_ascii_digit() && ch != '8' && ch != '9' {
+                s.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        if s.is_empty() {
+            let (line, col) = self.get_pos();
+            return Err(format!("[{}:{}] Invalid octal number: expected digits after 0o", line, col));
+        }
+
+        let (line, col) = self.get_pos();
+        i64::from_str_radix(&s, 8)
+            .map(Token::Int)
+            .map_err(|e| format!("[{}:{}] Invalid octal number: {}", line, col, e))
+    }
+
+    fn read_binary_number(&mut self) -> Result<Token, String> {
+        let mut s = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '\'' {
+                // Digit separator (e.g., 0b1010'1100)
+                self.advance();
+            } else if ch == '0' || ch == '1' {
+                s.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        if s.is_empty() {
+            let (line, col) = self.get_pos();
+            return Err(format!("[{}:{}] Invalid binary number: expected digits after 0b", line, col));
+        }
+
+        let (line, col) = self.get_pos();
+        i64::from_str_radix(&s, 2)
+            .map(Token::Int)
+            .map_err(|e| format!("[{}:{}] Invalid binary number: {}", line, col, e))
+    }
+
     pub fn tokenize(&mut self) -> Result<(Vec<Token>, Vec<usize>), String> {
         // Skip shebang line if it exists at the very beginning
         if self.pos == 0 && self.peek() == Some('#') && self.peek_next() == Some('!') {
@@ -611,5 +713,55 @@ impl Lexer {
             token_positions.push(token_pos);
         }
         Ok((tokens, token_positions))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokenize(source: &str) -> Result<Vec<Token>, String> {
+        let mut lexer = Lexer::new(source, "test");
+        let (tokens, _) = lexer.tokenize()?;
+        Ok(tokens)
+    }
+
+    #[test]
+    fn test_hex_numbers() {
+        assert_eq!(tokenize("0xFF").unwrap(), vec![Token::Int(255), Token::Eof]);
+        assert_eq!(tokenize("0x1A").unwrap(), vec![Token::Int(26), Token::Eof]);
+        assert_eq!(tokenize("0x100").unwrap(), vec![Token::Int(256), Token::Eof]);
+        assert_eq!(tokenize("0x0").unwrap(), vec![Token::Int(0), Token::Eof]);
+        assert_eq!(tokenize("0XFF").unwrap(), vec![Token::Int(255), Token::Eof]);
+    }
+
+    #[test]
+    fn test_octal_numbers() {
+        assert_eq!(tokenize("0o77").unwrap(), vec![Token::Int(63), Token::Eof]);
+        assert_eq!(tokenize("0o10").unwrap(), vec![Token::Int(8), Token::Eof]);
+        assert_eq!(tokenize("0o0").unwrap(), vec![Token::Int(0), Token::Eof]);
+        assert_eq!(tokenize("0O77").unwrap(), vec![Token::Int(63), Token::Eof]);
+    }
+
+    #[test]
+    fn test_binary_numbers() {
+        assert_eq!(tokenize("0b1010").unwrap(), vec![Token::Int(10), Token::Eof]);
+        assert_eq!(tokenize("0b1111").unwrap(), vec![Token::Int(15), Token::Eof]);
+        assert_eq!(tokenize("0b0").unwrap(), vec![Token::Int(0), Token::Eof]);
+        assert_eq!(tokenize("0B1010").unwrap(), vec![Token::Int(10), Token::Eof]);
+    }
+
+    #[test]
+    fn test_number_with_separators() {
+        assert_eq!(tokenize("0x1A'FF").unwrap(), vec![Token::Int(6911), Token::Eof]);
+        assert_eq!(tokenize("0b1010'1100").unwrap(), vec![Token::Int(172), Token::Eof]);
+        assert_eq!(tokenize("0o7'55").unwrap(), vec![Token::Int(493), Token::Eof]);
+    }
+
+    #[test]
+    fn test_decimal_still_works() {
+        assert_eq!(tokenize("123").unwrap(), vec![Token::Int(123), Token::Eof]);
+        assert_eq!(tokenize("0").unwrap(), vec![Token::Int(0), Token::Eof]);
+        assert_eq!(tokenize("1'000'000").unwrap(), vec![Token::Int(1000000), Token::Eof]);
     }
 }

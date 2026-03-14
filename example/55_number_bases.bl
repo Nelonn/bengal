@@ -1,0 +1,35 @@
+fn main() {
+  println("Testing number base literals")
+
+  // Hexadecimal numbers
+  let hex1 = 0xFF
+  let hex2 = 0x1A
+  let hex3 = 0x100
+  println("0xFF = " + hex1)
+  println("0x1A = " + hex2)
+  println("0x100 = " + hex3)
+
+  // Octal numbers
+  let oct1 = 0o77
+  let oct2 = 0o10
+  let oct3 = 0o755
+  println("0o77 = " + oct1)
+  println("0o10 = " + oct2)
+  println("0o755 = " + oct3)
+
+  // Binary numbers
+  let bin1 = 0b1010
+  let bin2 = 0b1111
+  let bin3 = 0b10000000
+  println("0b1010 = " + bin1)
+  println("0b1111 = " + bin2)
+  println("0b10000000 = " + bin3)
+
+  // With digit separators
+  let hex_sep = 0x1A'FF
+  let bin_sep = 0b1010'1100
+  println("0x1A'FF = " + hex_sep)
+  println("0b1010'1100 = " + bin_sep)
+
+  println("All number base tests passed!")
+}
