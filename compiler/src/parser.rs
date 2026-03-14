@@ -229,6 +229,7 @@ pub enum AugOp {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
     BitAnd,
     BitOr,
     BitXor,
@@ -497,6 +498,17 @@ impl Parser {
                     Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Divide, expr: value, span }
                 } else {
                     return self.error_generic("Left side of /= must be a variable or field access");
+                }
+            } else if self.match_token(&Token::PercentEqual) {
+                self.skip_newlines();
+                if let Expr::Variable { name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Variable(name), op: AugOp::Modulo, expr: value, span }
+                } else if let Expr::Get { object, name, span } = expr {
+                    let value = self.parse_expression()?;
+                    Stmt::AugAssign { target: AugAssignTarget::Field { object: *object, name }, op: AugOp::Modulo, expr: value, span }
+                } else {
+                    return self.error_generic("Left side of %= must be a variable or field access");
                 }
             } else if self.match_token(&Token::BitAndEqual) {
                 self.skip_newlines();

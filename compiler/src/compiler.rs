@@ -1057,6 +1057,12 @@ impl Compiler {
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_expr as u8);
                             }
+                            crate::parser::AugOp::Modulo => {
+                                bytecode.push(Opcode::Modulo as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
                             crate::parser::AugOp::BitAnd => {
                                 bytecode.push(Opcode::BitAnd as u8);
                                 bytecode.push(r_temp as u8);
@@ -1133,6 +1139,12 @@ impl Compiler {
                             }
                             crate::parser::AugOp::Divide => {
                                 bytecode.push(Opcode::Divide as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::Modulo => {
+                                bytecode.push(Opcode::Modulo as u8);
                                 bytecode.push(r_result as u8);
                                 bytecode.push(r_field as u8);
                                 bytecode.push(r_expr as u8);

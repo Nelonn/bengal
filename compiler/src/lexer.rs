@@ -82,6 +82,7 @@ pub enum Token {
     Slash,
     SlashEqual,
     Percent,
+    PercentEqual,
 
     Greater,
     GreaterEqual,
@@ -235,15 +236,6 @@ impl Lexer {
             }
             ',' => { self.advance(); Ok(Token::Comma) }
             ';' => { self.advance(); Ok(Token::Semicolon) }
-            '.' => {
-                self.advance();
-                if self.peek() == Some('.') {
-                    self.advance();
-                    Ok(Token::Range)
-                } else {
-                    Ok(Token::Dot)
-                }
-            }
             '$' => { self.advance(); Ok(Token::Dollar) }
             '=' => {
                 self.advance();
@@ -312,7 +304,15 @@ impl Lexer {
                     Ok(Token::Slash)
                 }
             }
-            '%' => { self.advance(); Ok(Token::Percent) }
+            '%' => {
+                self.advance();
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::PercentEqual)
+                } else {
+                    Ok(Token::Percent)
+                }
+            }
             '&' => {
                 self.advance();
                 if self.peek() == Some('&') {
@@ -390,6 +390,20 @@ impl Lexer {
             '"' => self.read_string(),
             c if c.is_alphabetic() || c == '_' => self.read_identifier(),
             c if c.is_ascii_digit() => self.read_number(),
+            '.' => {
+                // Check if this is a float starting with a dot (e.g., .05)
+                if self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
+                    self.read_number_starting_with_dot()
+                } else {
+                    self.advance();
+                    if self.peek() == Some('.') {
+                        self.advance();
+                        Ok(Token::Range)
+                    } else {
+                        Ok(Token::Dot)
+                    }
+                }
+            }
             _ => Err(self.error(&format!("Unexpected character: '{}'", ch))),
         }
     }
@@ -643,6 +657,28 @@ impl Lexer {
         }
     }
 
+    fn read_number_starting_with_dot(&mut self) -> Result<Token, String> {
+        let mut s = String::from(".");
+        self.advance(); // consume '.'
+
+        while let Some(ch) = self.peek() {
+            if ch == '\'' {
+                // Digit separator (e.g., .1'000'000)
+                self.advance();
+            } else if ch.is_ascii_digit() {
+                s.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let (line, col) = self.get_pos();
+        s.parse::<f64>()
+            .map(Token::Float)
+            .map_err(|e| format!("[{}:{}] Invalid float: {}", line, col, e))
+    }
+
     fn read_hex_number(&mut self) -> Result<Token, String> {
         let mut s = String::new();
         while let Some(ch) = self.peek() {
@@ -860,5 +896,14 @@ mod tests {
         assert_eq!(tokenize("\"Hello\\sWorld\"").unwrap(), vec![Token::String("Hello World".to_string()), Token::Eof]);
         assert_eq!(tokenize("\"Line1\\nLine2\"").unwrap(), vec![Token::String("Line1\nLine2".to_string()), Token::Eof]);
         assert_eq!(tokenize("\"Tab\\tSeparated\"").unwrap(), vec![Token::String("Tab\tSeparated".to_string()), Token::Eof]);
+    }
+
+    #[test]
+    fn test_float_leading_dot() {
+        assert_eq!(tokenize(".05").unwrap(), vec![Token::Float(0.05), Token::Eof]);
+        assert_eq!(tokenize(".5").unwrap(), vec![Token::Float(0.5), Token::Eof]);
+        assert_eq!(tokenize(".0").unwrap(), vec![Token::Float(0.0), Token::Eof]);
+        assert_eq!(tokenize(".123").unwrap(), vec![Token::Float(0.123), Token::Eof]);
+        assert_eq!(tokenize(".1'000").unwrap(), vec![Token::Float(0.1), Token::Eof]);
     }
 }
