@@ -2726,7 +2726,65 @@ impl Compiler {
         }
     }
 
-    fn get_statement_line(&self, _stmt: &Stmt) -> usize {
-        1
+    fn get_statement_line(&self, stmt: &Stmt) -> usize {
+        match stmt {
+            Stmt::Module { .. } => 0,
+            Stmt::Import { .. } => 0,
+            Stmt::Class(class_def) => {
+                // Try to get line from first method's first statement
+                if let Some(method) = class_def.methods.first() {
+                    return method.body.first().map(|s| self.get_stmt_line(s)).unwrap_or(0);
+                }
+                0
+            },
+            Stmt::Interface(_) => 0,
+            Stmt::Enum(_) => 0,
+            Stmt::Function(func) => func.body.first().map(|s| self.get_stmt_line(s)).unwrap_or(0),
+            Stmt::TypeAlias(_) => 0,
+            Stmt::Let { expr, .. } => Self::get_expr_line(expr),
+            Stmt::Assign { span, .. } => span.line,
+            Stmt::AugAssign { span, .. } => span.line,
+            Stmt::Return(expr) => expr.as_ref().map(|e| Self::get_expr_line(e)).unwrap_or(0),
+            Stmt::Expr(expr) => Self::get_expr_line(expr),
+            Stmt::If { condition, .. } => Self::get_expr_line(condition),
+            Stmt::For { range, .. } => Self::get_expr_line(range),
+            Stmt::While { condition, .. } => Self::get_expr_line(condition),
+            Stmt::Break => 0,
+            Stmt::Continue => 0,
+            Stmt::TryCatch { try_block, .. } => try_block.first().map(|s| self.get_stmt_line(s)).unwrap_or(0),
+            Stmt::Throw(expr) => Self::get_expr_line(expr),
+        }
+    }
+
+    fn get_expr_line(expr: &Expr) -> usize {
+        match expr {
+            Expr::Literal(literal) => {
+                match literal {
+                    Literal::String(_, span) => span.line,
+                    Literal::Int(_, span) => span.line,
+                    Literal::Float(_, span) => span.line,
+                    Literal::Bool(_, span) => span.line,
+                    Literal::Null(span) => span.line,
+                }
+            },
+            Expr::Variable { span, .. } => span.line,
+            Expr::Binary { span, .. } => span.line,
+            Expr::Unary { span, .. } => span.line,
+            Expr::Call { span, .. } => span.line,
+            Expr::Get { span, .. } => span.line,
+            Expr::Set { span, .. } => span.line,
+            Expr::Interpolated { span, .. } => span.line,
+            Expr::Range { span, .. } => span.line,
+            Expr::Await { span, .. } => span.line,
+            Expr::Cast { span, .. } => span.line,
+            Expr::Array { span, .. } => span.line,
+            Expr::Index { span, .. } => span.line,
+            Expr::ObjectLiteral { span, .. } => span.line,
+            Expr::Lambda { span, .. } => span.line,
+        }
+    }
+
+    fn get_stmt_line(&self, stmt: &Stmt) -> usize {
+        self.get_statement_line(stmt)
     }
 }
