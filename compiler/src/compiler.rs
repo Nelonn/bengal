@@ -1170,7 +1170,7 @@ impl Compiler {
                 }
             }
 
-            Stmt::Return(expr) => {
+            Stmt::Return { expr, .. } => {
                 let r = if let Some(e) = expr {
                     self.compile_expr(e, bytecode, strings, classes, type_context)?
                 } else {
@@ -1187,7 +1187,7 @@ impl Compiler {
                 self.compile_expr(expr, bytecode, strings, classes, type_context)?;
             }
 
-            Stmt::If { condition, then_branch, else_branch } => {
+            Stmt::If { condition, then_branch, else_branch, .. } => {
                 let r_cond = self.compile_expr(condition, bytecode, strings, classes, type_context)?;
 
                 bytecode.push(Opcode::JumpIfFalse as u8);
@@ -1217,7 +1217,7 @@ impl Compiler {
                 }
             }
 
-            Stmt::For { var_name, range, body } => {
+            Stmt::For { var_name, range, body, .. } => {
                 if let Expr::Range { start, end, .. } = range.as_ref() {
                     let r_iter = self.current_ctx.get_local_reg(var_name);
                     let r_start_expr = self.compile_expr(start, bytecode, strings, classes, type_context)?;
@@ -1331,7 +1331,7 @@ impl Compiler {
                 }
             }
 
-            Stmt::While { condition, body } => {
+            Stmt::While { condition, body, .. } => {
                 let loop_start = bytecode.len();
 
                 self.continue_targets.push(loop_start);
@@ -1362,21 +1362,21 @@ impl Compiler {
                 self.continue_targets.pop();
             }
 
-            Stmt::Break => {
+            Stmt::Break(_) => {
                 let jump_pos = self.emit_jump(Opcode::Jump, bytecode);
                 if let Some(jumps) = self.break_jumps.last_mut() {
                     jumps.push(jump_pos);
                 }
             }
 
-            Stmt::Continue => {
+            Stmt::Continue(_) => {
                 if let Some(&target) = self.continue_targets.last() {
                     let jump_pos = self.emit_jump(Opcode::Jump, bytecode);
                     self.patch_jump(jump_pos, target, bytecode);
                 }
             }
 
-            Stmt::TryCatch { try_block, catch_var, catch_block } => {
+            Stmt::TryCatch { try_block, catch_var, catch_block, .. } => {
                 bytecode.push(Opcode::TryStart as u8);
                 let catch_jump_pos = bytecode.len();
                 bytecode.push(0); bytecode.push(0);
@@ -1402,7 +1402,7 @@ impl Compiler {
                 self.patch_jump(end_jump_pos, end_pos, bytecode);
             }
 
-            Stmt::Throw(expr) => {
+            Stmt::Throw { expr, .. } => {
                 let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                 bytecode.push(Opcode::Throw as u8);
                 bytecode.push(r as u8);
@@ -2728,8 +2728,8 @@ impl Compiler {
 
     fn get_statement_line(&self, stmt: &Stmt) -> usize {
         match stmt {
-            Stmt::Module { .. } => 0,
-            Stmt::Import { .. } => 0,
+            Stmt::Module { span, .. } => span.line,
+            Stmt::Import { span, .. } => span.line,
             Stmt::Class(class_def) => {
                 // Try to get line from first method's first statement
                 if let Some(method) = class_def.methods.first() {
@@ -2741,18 +2741,18 @@ impl Compiler {
             Stmt::Enum(_) => 0,
             Stmt::Function(func) => func.body.first().map(|s| self.get_stmt_line(s)).unwrap_or(0),
             Stmt::TypeAlias(_) => 0,
-            Stmt::Let { expr, .. } => Self::get_expr_line(expr),
+            Stmt::Let { span, .. } => span.line,
             Stmt::Assign { span, .. } => span.line,
             Stmt::AugAssign { span, .. } => span.line,
-            Stmt::Return(expr) => expr.as_ref().map(|e| Self::get_expr_line(e)).unwrap_or(0),
+            Stmt::Return { span, .. } => span.line,
             Stmt::Expr(expr) => Self::get_expr_line(expr),
-            Stmt::If { condition, .. } => Self::get_expr_line(condition),
-            Stmt::For { range, .. } => Self::get_expr_line(range),
-            Stmt::While { condition, .. } => Self::get_expr_line(condition),
-            Stmt::Break => 0,
-            Stmt::Continue => 0,
-            Stmt::TryCatch { try_block, .. } => try_block.first().map(|s| self.get_stmt_line(s)).unwrap_or(0),
-            Stmt::Throw(expr) => Self::get_expr_line(expr),
+            Stmt::If { span, .. } => span.line,
+            Stmt::For { span, .. } => span.line,
+            Stmt::While { span, .. } => span.line,
+            Stmt::Break(span) => span.line,
+            Stmt::Continue(span) => span.line,
+            Stmt::TryCatch { span, .. } => span.line,
+            Stmt::Throw { span, .. } => span.line,
         }
     }
 

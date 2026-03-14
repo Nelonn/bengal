@@ -28,25 +28,25 @@ pub enum ImportKind {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Module { path: Vec<String> },
-    Import { path: Vec<String>, kind: ImportKind },
+    Module { path: Vec<String>, span: Span },
+    Import { path: Vec<String>, kind: ImportKind, span: Span },
     Class(ClassDef),
     Interface(InterfaceDef),
     Enum(EnumDef),
     Function(FunctionDef),
     TypeAlias(TypeAliasDef),
-    Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool },
+    Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool, span: Span },
     Assign { name: String, expr: Expr, span: Span },
     AugAssign { target: AugAssignTarget, op: AugOp, expr: Expr, span: Span },
-    Return(Option<Expr>),
+    Return { expr: Option<Expr>, span: Span },
     Expr(Expr),
-    If { condition: Expr, then_branch: Block, else_branch: Option<Block> },
-    For { var_name: String, range: Box<Expr>, body: Block },
-    While { condition: Expr, body: Block },
-    Break,
-    Continue,
-    TryCatch { try_block: Block, catch_var: String, catch_block: Block },
-    Throw(Expr),
+    If { condition: Expr, then_branch: Block, else_branch: Option<Block>, span: Span },
+    For { var_name: String, range: Box<Expr>, body: Block, span: Span },
+    While { condition: Expr, body: Block, span: Span },
+    Break(Span),
+    Continue(Span),
+    TryCatch { try_block: Block, catch_var: String, catch_block: Block, span: Span },
+    Throw { expr: Expr, span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +283,10 @@ impl Parser {
         let column = pos - last_newline + 1;
 
         Span { line, column }
+    }
+
+    fn current_span(&self) -> Span {
+        self.compute_span(self.pos)
     }
 
     fn peek(&self) -> &Token {
@@ -561,6 +565,7 @@ impl Parser {
     }
 
     fn parse_import(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         let mut path = Vec::new();
 
         // Parse the import path (e.g., std.io.println)
@@ -572,7 +577,7 @@ impl Parser {
                     return self.error("Cannot use wildcard without a module path");
                 }
                 self.skip_newlines();
-                return Ok(Stmt::Import { path, kind: ImportKind::Wildcard });
+                return Ok(Stmt::Import { path, kind: ImportKind::Wildcard, span });
             }
 
             if let Token::Identifier(part) = self.advance() {
@@ -591,7 +596,7 @@ impl Parser {
         // Check for aliased import (e.g., import std.io as io)
         if self.match_token(&Token::As) {
             if let Token::Identifier(alias) = self.advance() {
-                return Ok(Stmt::Import { path, kind: ImportKind::Aliased(alias) });
+                return Ok(Stmt::Import { path, kind: ImportKind::Aliased(alias), span });
             } else {
                 return self.error("Expected identifier after 'as'");
             }
@@ -610,10 +615,11 @@ impl Parser {
         };
 
         self.skip_newlines();
-        Ok(Stmt::Import { path, kind })
+        Ok(Stmt::Import { path, kind, span })
     }
 
     fn parse_module(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         let mut path = Vec::new();
 
         loop {
@@ -631,7 +637,7 @@ impl Parser {
         }
 
         self.skip_newlines();
-        Ok(Stmt::Module { path })
+        Ok(Stmt::Module { path, span })
     }
 
     fn parse_class(&mut self, is_native_class: bool, is_private: bool) -> Result<Stmt, String> {
@@ -1300,6 +1306,7 @@ impl Parser {
     }
 
     fn parse_let(&mut self, is_private: bool) -> Result<Stmt, String> {
+        let span = self.current_span();
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected variable name after 'let'"),
@@ -1325,20 +1332,22 @@ impl Parser {
 
         let expr = self.parse_expression()?;
 
-        Ok(Stmt::Let { name, type_annotation, expr, private: is_private })
+        Ok(Stmt::Let { name, type_annotation, expr, private: is_private, span })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         let expr = if self.check(&Token::Semicolon) || self.check(&Token::Newline) || self.check(&Token::RBrace) || self.check(&Token::Eof) {
             None
         } else {
             Some(self.parse_expression()?)
         };
 
-        Ok(Stmt::Return(expr))
+        Ok(Stmt::Return { expr, span })
     }
 
     fn parse_if(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         if !self.match_token(&Token::LParen) {
             return self.error("Expected '(' after 'if'");
         }
@@ -1360,10 +1369,11 @@ impl Parser {
             return self.error("Expected '}' to close if body");
         }
 
-        Ok(Stmt::If { condition, then_branch, else_branch: None })
+        Ok(Stmt::If { condition, then_branch, else_branch: None, span })
     }
 
     fn parse_for(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         if !self.match_token(&Token::LParen) {
             return self.error("Expected '(' after 'for'");
         }
@@ -1393,10 +1403,11 @@ impl Parser {
             return self.error("Expected '}' to close loop body");
         }
 
-        Ok(Stmt::For { var_name, range: Box::new(range), body })
+        Ok(Stmt::For { var_name, range: Box::new(range), body, span })
     }
 
     fn parse_while(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         if !self.match_token(&Token::LParen) {
             return self.error("Expected '(' after 'while'");
         }
@@ -1417,18 +1428,21 @@ impl Parser {
             return self.error("Expected '}' to close while body");
         }
 
-        Ok(Stmt::While { condition, body })
+        Ok(Stmt::While { condition, body, span })
     }
 
     fn parse_break(&mut self) -> Result<Stmt, String> {
-        Ok(Stmt::Break)
+        let span = self.current_span();
+        Ok(Stmt::Break(span))
     }
 
     fn parse_continue(&mut self) -> Result<Stmt, String> {
-        Ok(Stmt::Continue)
+        let span = self.current_span();
+        Ok(Stmt::Continue(span))
     }
 
     fn parse_try_catch(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         if !self.match_token(&Token::LBrace) {
             return self.error("Expected '{' for try body");
         }
@@ -1468,13 +1482,14 @@ impl Parser {
             return self.error("Expected '}' to close catch body");
         }
 
-        Ok(Stmt::TryCatch { try_block, catch_var, catch_block })
+        Ok(Stmt::TryCatch { try_block, catch_var, catch_block, span })
     }
 
     fn parse_throw(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
         let expr = self.parse_expression()?;
 
-        Ok(Stmt::Throw(expr))
+        Ok(Stmt::Throw { expr, span })
     }
 
     fn parse_block(&mut self) -> Result<Block, String> {
@@ -1503,12 +1518,12 @@ impl Parser {
 
     fn maybe_parse_else_if(&mut self, stmt: Stmt) -> Result<Stmt, String> {
         // If the statement is an If, check for else/else if
-        if let Stmt::If { condition, then_branch, else_branch } = stmt {
+        if let Stmt::If { condition, then_branch, else_branch, span } = stmt {
             self.skip_newlines();
-            
+
             if self.match_token(&Token::Else) {
                 self.skip_newlines();
-                
+
                 // Check for 'else if'
                 if self.match_token(&Token::If) {
                     // Parse the nested if statement
@@ -1520,6 +1535,7 @@ impl Parser {
                         condition,
                         then_branch,
                         else_branch: Some(vec![nested_if]),
+                        span,
                     });
                 } else {
                     // Regular else block
@@ -1534,18 +1550,20 @@ impl Parser {
                         condition,
                         then_branch,
                         else_branch: Some(else_block),
+                        span,
                     });
                 }
             }
-            
+
             // No else, return the if as-is
             return Ok(Stmt::If {
                 condition,
                 then_branch,
                 else_branch,
+                span,
             });
         }
-        
+
         Ok(stmt)
     }
 

@@ -166,7 +166,7 @@ impl ModuleResolver {
 
     pub fn process_imports(&mut self, statements: &[Stmt]) -> Result<(), String> {
         for stmt in statements {
-            if let Stmt::Import { path, kind } = stmt {
+            if let Stmt::Import { path, kind, .. } = stmt {
                 let module_name = path.join(".");
 
                 // For wildcard imports, we need to load the module to discover its members
@@ -453,7 +453,7 @@ impl ModuleResolver {
                         self.type_context.add_function(&func.name, sig);
                     }
                 }
-                Stmt::Let { name, type_annotation, expr: _, private } => {
+                Stmt::Let { name, type_annotation, expr: _, private, .. } => {
                     // Register module-level variables (e.g., math.PI)
                     let var_type = if let Some(ref ty) = type_annotation {
                         Type::from_str(ty)
