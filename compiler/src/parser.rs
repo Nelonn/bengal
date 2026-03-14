@@ -193,11 +193,11 @@ pub enum CastType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
-    String(String),
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Null,
+    String(String, Span),
+    Int(i64, Span),
+    Float(f64, Span),
+    Bool(bool, Span),
+    Null(Span),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2181,9 +2181,9 @@ impl Parser {
         let token_pos = self.pos;
         match self.advance() {
             Token::String(s) => self.parse_interpolated_text(s),
-            Token::Int(n) => Ok(Expr::Literal(Literal::Int(n))),
-            Token::Float(n) => Ok(Expr::Literal(Literal::Float(n))),
-            Token::Null => Ok(Expr::Literal(Literal::Null)),
+            Token::Int(n) => Ok(Expr::Literal(Literal::Int(n, self.compute_span(token_pos)))),
+            Token::Float(n) => Ok(Expr::Literal(Literal::Float(n, self.compute_span(token_pos)))),
+            Token::Null => Ok(Expr::Literal(Literal::Null(self.compute_span(token_pos)))),
             Token::LParen => {
                 // Check if this is a lambda: (params): ReturnType { body }
                 // We need to peek ahead to see if this looks like a lambda
@@ -2212,9 +2212,9 @@ impl Parser {
             Token::Identifier(name) => {
                 let span = self.compute_span(token_pos);
                 if name == "true" {
-                    Ok(Expr::Literal(Literal::Bool(true)))
+                    Ok(Expr::Literal(Literal::Bool(true, span)))
                 } else if name == "false" {
-                    Ok(Expr::Literal(Literal::Bool(false)))
+                    Ok(Expr::Literal(Literal::Bool(false, span)))
                 } else {
                     Ok(Expr::Variable { name, span })
                 }
@@ -2366,7 +2366,7 @@ impl Parser {
         if parts.iter().any(|p| matches!(p, InterpPart::Expr(_))) {
             Ok(Expr::Interpolated { parts, span })
         } else {
-            Ok(Expr::Literal(Literal::String(s)))
+            Ok(Expr::Literal(Literal::String(s, span)))
         }
     }
 }

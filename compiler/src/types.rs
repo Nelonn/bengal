@@ -1116,7 +1116,7 @@ impl TypeContext {
 
         for variant in &enum_def.variants {
             let value = if let Some(expr) = &variant.value {
-                if let Expr::Literal(Literal::Int(n)) = expr {
+                if let Expr::Literal(Literal::Int(n, _)) = expr {
                     next_value = *n + 1;
                     Some(*n)
                 } else {
@@ -2660,11 +2660,11 @@ impl TypeChecker {
         match expr {
             Expr::Literal(lit) => {
                 match lit {
-                    Literal::String(_) => Type::Str,
-                    Literal::Int(_) => Type::Int,
-                    Literal::Float(_) => Type::Float,
-                    Literal::Bool(_) => Type::Bool,
-                    Literal::Null => Type::Null,
+                    Literal::String(_, _) => Type::Str,
+                    Literal::Int(_, _) => Type::Int,
+                    Literal::Float(_, _) => Type::Float,
+                    Literal::Bool(_, _) => Type::Bool,
+                    Literal::Null(_) => Type::Null,
                 }
             }
             Expr::Variable { name, span } => {
@@ -2799,6 +2799,13 @@ impl TypeChecker {
                         // Result type is the more precise type (float > int)
                         if left_type == Type::Float || right_type == Type::Float {
                             Type::Float
+                        } else if left_type == right_type {
+                            // If both operands have the same specific integer type, preserve it
+                            match left_type {
+                                Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 => left_type.clone(),
+                                _ => Type::Int,
+                            }
                         } else {
                             Type::Int
                         }
@@ -2862,7 +2869,7 @@ impl TypeChecker {
                     }
                     crate::parser::UnaryOp::PrefixIncrement | crate::parser::UnaryOp::PostfixIncrement => {
                         // Increment operator works on numeric types and returns the original type
-                        if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
+                        if !inner_type.is_numeric() && inner_type != Type::Unknown {
                             self.context.add_error(
                                 format!("Expected numeric type for ++ operator, got {}", inner_type.to_str()),
                                 0
@@ -2872,7 +2879,7 @@ impl TypeChecker {
                     }
                     crate::parser::UnaryOp::PrefixDecrement | crate::parser::UnaryOp::PostfixDecrement | crate::parser::UnaryOp::Decrement => {
                         // Decrement operator works on numeric types and returns the original type
-                        if inner_type != Type::Int && inner_type != Type::Float && inner_type != Type::Unknown {
+                        if !inner_type.is_numeric() && inner_type != Type::Unknown {
                             self.context.add_error(
                                 format!("Expected numeric type for -- operator, got {}", inner_type.to_str()),
                                 0
@@ -3615,6 +3622,119 @@ impl TypeChecker {
     /// Infer expression type with an expected type hint (for type deduction)
     fn infer_expr_with_expected_type(&mut self, expr: &Expr, expected_type: &Option<Type>) -> Type {
         match expr {
+            Expr::Literal(lit) => {
+                match lit {
+                    Literal::Int(value, span) => {
+                        // Check if the expected type is a specific integer type and validate range
+                        if let Some(expected) = expected_type {
+                            match expected {
+                                Type::Int8 => {
+                                    if *value < -128 || *value > 127 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for int8 (-128 to 127)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::Int8;
+                                }
+                                Type::UInt8 => {
+                                    if *value < 0 || *value > 255 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint8 (0 to 255)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt8;
+                                }
+                                Type::Int16 => {
+                                    if *value < -32768 || *value > 32767 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for int16 (-32768 to 32767)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::Int16;
+                                }
+                                Type::UInt16 => {
+                                    if *value < 0 || *value > 65535 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint16 (0 to 65535)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt16;
+                                }
+                                Type::Int32 => {
+                                    if *value < -2147483648 || *value > 2147483647 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for int32", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::Int32;
+                                }
+                                Type::UInt32 => {
+                                    if *value < 0 || *value > 4294967295 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint32 (0 to 4294967295)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt32;
+                                }
+                                Type::Int64 => {
+                                    return Type::Int64;
+                                }
+                                Type::UInt64 => {
+                                    if *value < 0 {
+                                        self.context.add_error_with_location(
+                                            format!("Value {} is out of range for uint64 (must be non-negative)", value),
+                                            span.line,
+                                            span.column,
+                                            None,
+                                            None,
+                                        );
+                                    }
+                                    return Type::UInt64;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Type::Int
+                    }
+                    Literal::Float(_value, _) => {
+                        if let Some(expected) = expected_type {
+                            match expected {
+                                Type::Float32 => return Type::Float32,
+                                Type::Float64 => return Type::Float64,
+                                _ => {}
+                            }
+                        }
+                        Type::Float
+                    }
+                    Literal::String(_, _) => Type::Str,
+                    Literal::Bool(_, _) => Type::Bool,
+                    Literal::Null(_) => Type::Null,
+                }
+            }
             Expr::ObjectLiteral { fields, span, .. } => {
                 // Try to infer the class type from the expected type
                 if let Some(expected) = expected_type {
