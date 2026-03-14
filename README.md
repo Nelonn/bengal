@@ -17,6 +17,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/Nelonn/bengal/refs/heads/main/
 sudo apt install libssl-dev
 ```
 
+### Fedora
+```bash
+sudo dnf install openssl-devel
+```
+
 ## License
 
 MIT

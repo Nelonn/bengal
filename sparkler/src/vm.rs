@@ -10,6 +10,15 @@ use std::any::Any;
 use crate::linker::NativeFunctionRegistry;
 use crate::opcodes::Opcode;
 
+/// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
+fn extract_base_class_name(name: &str) -> &str {
+    if let Some(angle_pos) = name.find('<') {
+        &name[..angle_pos]
+    } else {
+        name
+    }
+}
+
 pub type Bytecode = Vec<u8>;
 
 /// Represents a single frame in the call stack
@@ -1161,8 +1170,11 @@ impl VM {
                     .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_idx)))?
                     .clone();
 
+                // For generic class instantiations like Array<T>, extract base class name
+                let base_class_name = extract_base_class_name(&func_name);
+
                 // Check if it's a class constructor
-                if let Some(class) = self.classes.get(&func_name).cloned() {
+                if let Some(class) = self.classes.get(base_class_name).cloned() {
                     let instance = Value::Instance(Arc::new(Mutex::new(Instance {
                         class: func_name.clone(),
                         fields: class.fields.clone(),

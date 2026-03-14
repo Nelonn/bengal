@@ -17,6 +17,15 @@ fn add_string(strings: &mut Vec<String>, s: String) -> usize {
         })
 }
 
+/// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
+fn extract_base_class_name(name: &str) -> &str {
+    if let Some(angle_pos) = name.find('<') {
+        &name[..angle_pos]
+    } else {
+        name
+    }
+}
+
 /// Adjust string indices in bytecode by adding an offset
 /// This is needed when merging local string tables into a global one
 fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
@@ -1971,18 +1980,21 @@ impl Compiler {
                     let mut is_method = false;
                     let mut is_native = false;
                     if let Some(ctx) = type_context {
+                        // For generic class instantiations like Array<T>(args), extract base class name
+                        let base_class_name = extract_base_class_name(func_name);
+                        
                         // Check for function call first if there are arguments (to handle str() function vs str class)
                         if !args.is_empty() {
                             if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
                                 resolved_name = sig.mangled_name.clone().unwrap_or(sig.name.clone());
                                 is_native = sig.is_native;
-                            } else if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                            } else if let Some(resolved_class) = ctx.resolve_class(base_class_name) {
                                 resolved_name = resolved_class;
                                 is_class = true;
                             }
                         } else {
                             // No arguments - check class first (for class instantiation without constructor args)
-                            if let Some(resolved_class) = ctx.resolve_class(func_name) {
+                            if let Some(resolved_class) = ctx.resolve_class(base_class_name) {
                                 resolved_name = resolved_class;
                                 is_class = true;
                             } else if let Some(sig) = ctx.resolve_function_call(func_name, &arg_types) {
@@ -1990,7 +2002,7 @@ impl Compiler {
                                 is_native = sig.is_native;
                             }
                         }
-                        
+
                         // If neither class nor function was found, try fallback resolution
                         if !is_class && !is_native {
                             // Check if this might be a private class from another module
@@ -2017,7 +2029,7 @@ impl Compiler {
                                     }
                                 }
                             }
-                            
+
                             if let Some(current_class) = &ctx.current_class {
                                 // Check if it's a method on current class
                                 if let Some(class_info) = ctx.get_class(current_class) {
@@ -2302,6 +2314,26 @@ impl Compiler {
                     }
                 }
 
+                // Check for static field access through an instance: instance.staticField
+                if let Some(ctx) = type_context {
+                    let object_type = self.infer_expr_type(object, ctx);
+                    if let Type::Class(class_name) = object_type {
+                        if let Some(class_info) = ctx.get_class(&class_name) {
+                            if let Some(field_info) = class_info.fields.get(name) {
+                                if field_info.is_static {
+                                    // Load static field value - treat as global variable
+                                    let rd = self.current_ctx.allocate_reg();
+                                    let idx = add_string(strings, format!("static_{}.{}", class_name, name));
+                                    bytecode.push(Opcode::LoadLocal as u8);
+                                    bytecode.push(rd as u8);
+                                    bytecode.push(idx as u8);
+                                    return Ok(rd);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.allocate_reg();
                 let idx = add_string(strings, name.clone());
@@ -2322,6 +2354,26 @@ impl Compiler {
                                     // Static field assignment - treat as global variable
                                     let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
                                     let idx = add_string(strings, format!("static_{}.{}", obj_name, name));
+                                    bytecode.push(Opcode::StoreLocal as u8);
+                                    bytecode.push(idx as u8);
+                                    bytecode.push(r_val as u8);
+                                    return Ok(r_val);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check for static field assignment through an instance: instance.staticField = value
+                if let Some(ctx) = type_context {
+                    let object_type = self.infer_expr_type(object, ctx);
+                    if let Type::Class(class_name) = object_type {
+                        if let Some(class_info) = ctx.get_class(&class_name) {
+                            if let Some(field_info) = class_info.fields.get(name) {
+                                if field_info.is_static {
+                                    // Static field assignment - treat as global variable
+                                    let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
+                                    let idx = add_string(strings, format!("static_{}.{}", class_name, name));
                                     bytecode.push(Opcode::StoreLocal as u8);
                                     bytecode.push(idx as u8);
                                     bytecode.push(r_val as u8);

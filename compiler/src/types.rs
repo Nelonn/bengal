@@ -3370,6 +3370,9 @@ impl TypeChecker {
 
                             let type_name = field_info.type_name.clone();
 
+                            // Static fields can be accessed through an instance or through the class name
+                            // No error needed for static field access through instance
+
                             if let Some(err) = visibility_error {
                                 self.context.add_error_with_location(err, span.line, span.column, None, None);
                             }
