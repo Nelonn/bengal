@@ -417,6 +417,12 @@ impl Lexer {
                     Some('t') => s.push('\t'),
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
+                    Some('s') => s.push(' '),      // \s = space
+                    Some('b') => s.push('\x08'),  // \b = backspace
+                    Some('0') => s.push('\0'),    // \0 = null byte
+                    Some('a') => s.push('\x07'),  // \a = bell/alert
+                    Some('f') => s.push('\x0C'),  // \f = form feed
+                    Some('v') => s.push('\x0B'),  // \v = vertical tab
                     Some(c) => s.push(c),
                     None => return Err(self.error("Unterminated string escape")),
                 }
@@ -448,6 +454,12 @@ impl Lexer {
                     Some('t') => s.push('\t'),
                     Some('\\') => s.push('\\'),
                     Some('"') => s.push('"'),
+                    Some('s') => s.push(' '),      // \s = space
+                    Some('b') => s.push('\x08'),  // \b = backspace
+                    Some('0') => s.push('\0'),    // \0 = null byte
+                    Some('a') => s.push('\x07'),  // \a = bell/alert
+                    Some('f') => s.push('\x0C'),  // \f = form feed
+                    Some('v') => s.push('\x0B'),  // \v = vertical tab
                     Some(c) => s.push(c),
                     None => return Err(self.error("Unterminated multiline string escape")),
                 }
@@ -823,5 +835,30 @@ mod tests {
             Token::Int(63),
             Token::Eof
         ]);
+    }
+
+    #[test]
+    fn test_string_escapes() {
+        // Basic escapes
+        assert_eq!(tokenize("\"\\n\"").unwrap(), vec![Token::String("\n".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\r\"").unwrap(), vec![Token::String("\r".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\t\"").unwrap(), vec![Token::String("\t".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\\\\"").unwrap(), vec![Token::String("\\".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\\"\"").unwrap(), vec![Token::String("\"".to_string()), Token::Eof]);
+        
+        // New escapes
+        assert_eq!(tokenize("\"\\s\"").unwrap(), vec![Token::String(" ".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\b\"").unwrap(), vec![Token::String("\x08".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\0\"").unwrap(), vec![Token::String("\0".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\a\"").unwrap(), vec![Token::String("\x07".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\f\"").unwrap(), vec![Token::String("\x0C".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\v\"").unwrap(), vec![Token::String("\x0B".to_string()), Token::Eof]);
+    }
+
+    #[test]
+    fn test_string_combined_escapes() {
+        assert_eq!(tokenize("\"Hello\\sWorld\"").unwrap(), vec![Token::String("Hello World".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"Line1\\nLine2\"").unwrap(), vec![Token::String("Line1\nLine2".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"Tab\\tSeparated\"").unwrap(), vec![Token::String("Tab\tSeparated".to_string()), Token::Eof]);
     }
 }
