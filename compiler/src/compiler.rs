@@ -7,6 +7,16 @@ use sparkler::opcodes::Opcode;
 
 pub type Bytecode = sparkler::executor::Bytecode;
 
+/// Add a string to the string table, reusing existing index if duplicate
+fn add_string(strings: &mut Vec<String>, s: String) -> usize {
+    strings.iter().position(|existing| *existing == s)
+        .unwrap_or_else(|| {
+            let idx = strings.len();
+            strings.push(s);
+            idx
+        })
+}
+
 /// Adjust string indices in bytecode by adding an offset
 /// This is needed when merging local string tables into a global one
 fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
@@ -505,12 +515,11 @@ impl Compiler {
                                 if field.is_static {
                                     continue;
                                 }
-                                
+
                                 let r_self = method_compiler.current_ctx.get_local_reg("self");
                                 let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
 
-                                let field_name_idx = method_strings.len();
-                                method_strings.push(field.name.clone());
+                                let field_name_idx = add_string(&mut method_strings, field.name.clone());
                                 method_bytecode.push(Opcode::SetProperty as u8);
                                 method_bytecode.push(r_self as u8);
                                 method_bytecode.push(field_name_idx as u8);
@@ -523,8 +532,7 @@ impl Compiler {
                             let r_self = method_compiler.current_ctx.get_local_reg("self");
                             let r_param = method_compiler.current_ctx.get_local_reg(&param.name);
 
-                            let field_name_idx = method_strings.len();
-                            method_strings.push(param.name.clone());
+                            let field_name_idx = add_string(&mut method_strings, param.name.clone());
                             method_bytecode.push(Opcode::SetProperty as u8);
                             method_bytecode.push(r_self as u8);
                             method_bytecode.push(field_name_idx as u8);
@@ -540,12 +548,11 @@ impl Compiler {
                             if field.is_static {
                                 continue;
                             }
-                            
+
                             let r_self = method_compiler.current_ctx.get_local_reg("self");
                             let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
 
-                            let field_name_idx = method_strings.len();
-                            method_strings.push(field.name.clone());
+                            let field_name_idx = add_string(&mut method_strings, field.name.clone());
                             method_bytecode.push(Opcode::SetProperty as u8);
                             method_bytecode.push(r_self as u8);
                             method_bytecode.push(field_name_idx as u8);
@@ -583,9 +590,131 @@ impl Compiler {
                 let register_count = method_compiler.current_ctx.register_count();
 
                 // Adjust string indices in method bytecode to match global string table
-                let string_offset = strings.len();
-                strings.extend(method_strings);
-                adjust_string_indices(&mut method_bytecode, string_offset);
+                // Deduplicate strings when merging
+                let mut method_string_to_global: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+                for (method_idx, method_str) in method_strings.iter().enumerate() {
+                    let global_idx = add_string(&mut strings, method_str.clone());
+                    method_string_to_global.insert(method_idx, global_idx);
+                }
+                
+                // Adjust bytecode to use global string indices
+                let mut i = 0;
+                while i < method_bytecode.len() {
+                    let opcode = method_bytecode[i];
+                    match opcode {
+                        // LoadConst: Rd, string_idx (3 bytes)
+                        0x10 => {
+                            if i + 2 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 1;
+                            } else { i += 1; }
+                        }
+                        // LoadLocal: Rd, name_idx (3 bytes)
+                        0x21 => {
+                            if i + 2 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 1;
+                            } else { i += 1; }
+                        }
+                        // StoreLocal: name_idx, Rs (3 bytes)
+                        0x22 => {
+                            if i + 2 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 2;
+                            } else { i += 1; }
+                        }
+                        // GetProperty: Rd, Robj, name_idx (4 bytes)
+                        0x30 => {
+                            if i + 3 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                i += 1; // skip Robj
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 1;
+                            } else { i += 1; }
+                        }
+                        // SetProperty: Robj, name_idx, Rs (4 bytes)
+                        0x31 => {
+                            if i + 3 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Robj
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 2;
+                            } else { i += 1; }
+                        }
+                        // Call: Rd, func_idx, arg_start, arg_count (5 bytes)
+                        0x40 => {
+                            if i + 4 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 3;
+                            } else { i += 1; }
+                        }
+                        // CallNative: Rd, name_idx, arg_start, arg_count (5 bytes)
+                        0x41 | 0x45 => {
+                            if i + 4 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 3;
+                            } else { i += 1; }
+                        }
+                        // Invoke: Rd, method_idx, arg_start, arg_count (5 bytes)
+                        0x42 | 0x46 => {
+                            if i + 4 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 3;
+                            } else { i += 1; }
+                        }
+                        // InvokeInterface: Rd, method_idx, arg_start, arg_count (5 bytes)
+                        0x49 | 0x4A => {
+                            if i + 4 < method_bytecode.len() {
+                                i += 1; // skip opcode
+                                i += 1; // skip Rd
+                                let method_idx = method_bytecode[i] as usize;
+                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
+                                    method_bytecode[i] = global_idx as u8;
+                                }
+                                i += 3;
+                            } else { i += 1; }
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
 
                 // Generate mangled name for method overloading support based on argument count
                 let mangled_name = if method.params.is_empty() {
@@ -719,8 +848,7 @@ impl Compiler {
         self.current_ctx = CompileContext::new();
         for (class_name, field_name, default_expr) in &static_field_initializers {
             let r_val = self.compile_expr(default_expr, &mut bytecode, &mut strings, &classes, type_context.as_ref())?;
-            let idx = strings.len();
-            strings.push(format!("static_{}.{}", class_name, field_name));
+            let idx = add_string(&mut strings, format!("static_{}.{}", class_name, field_name));
             bytecode.push(Opcode::StoreLocal as u8);
             bytecode.push(idx as u8);
             bytecode.push(r_val as u8);
@@ -821,8 +949,7 @@ impl Compiler {
         bytecode.push((arg_start + 4) as u8);
         bytecode.extend_from_slice(&type_id.to_le_bytes());
 
-        let name_idx = strings.len();
-        strings.push("std.math.check_overflow".to_string());
+        let name_idx = add_string(strings, "std.math.check_overflow".to_string());
 
         bytecode.push(Opcode::CallNative as u8);
         bytecode.push(0 as u8);        // dummy destination
@@ -863,8 +990,7 @@ impl Compiler {
                                 let r_self = self.current_ctx.get_local_reg("self");
                                 let r_val = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
 
-                                let field_name_idx = strings.len();
-                                strings.push(name.clone());
+                                let field_name_idx = add_string(strings, name.clone());
                                 bytecode.push(Opcode::SetProperty as u8);
                                 bytecode.push(r_self as u8);
                                 bytecode.push(field_name_idx as u8);
@@ -966,8 +1092,7 @@ impl Compiler {
 
                         // Get the current field value into a register
                         let r_field = self.current_ctx.allocate_reg();
-                        let field_name_idx = strings.len();
-                        strings.push(name.clone());
+                        let field_name_idx = add_string(strings, name.clone());
                         bytecode.push(Opcode::GetProperty as u8);
                         bytecode.push(r_field as u8);
                         bytecode.push(r_obj as u8);
@@ -1036,8 +1161,7 @@ impl Compiler {
                         }
 
                         // Store result back to field
-                        let field_name_idx = strings.len();
-                        strings.push(name.clone());
+                        let field_name_idx = add_string(strings, name.clone());
                         bytecode.push(Opcode::SetProperty as u8);
                         bytecode.push(r_obj as u8);
                         bytecode.push(field_name_idx as u8);
@@ -1294,8 +1418,7 @@ impl Compiler {
                 let rd = self.current_ctx.allocate_reg();
                 match lit {
                     Literal::String(s, _) => {
-                        let idx = strings.len();
-                        strings.push(s.clone());
+                        let idx = add_string(strings, s.clone());
                         bytecode.push(Opcode::LoadConst as u8);
                         bytecode.push(rd as u8);
                         bytecode.push(idx as u8);
@@ -1339,8 +1462,7 @@ impl Compiler {
                             if class_info.fields.contains_key(name) {
                                 let r_self = self.current_ctx.get_local_reg("self");
                                 let rd = self.current_ctx.allocate_reg();
-                                let field_name_idx = strings.len();
-                                strings.push(name.clone());
+                                let field_name_idx = add_string(strings, name.clone());
                                 bytecode.push(Opcode::GetProperty as u8);
                                 bytecode.push(rd as u8);
                                 bytecode.push(r_self as u8);
@@ -1381,8 +1503,7 @@ impl Compiler {
                     }
 
                     // Call native function: std.math.pow(base, exponent)
-                    let name_idx = strings.len();
-                    strings.push("std.math.pow".to_string());
+                    let name_idx = add_string(strings, "std.math.pow".to_string());
 
                     bytecode.push(Opcode::CallNative as u8);
                     bytecode.push(rd as u8);       // destination register
@@ -1398,9 +1519,8 @@ impl Compiler {
 
                 // Add safety checks for division and modulo (division by zero)
                 if !self.unsafe_fast && (*op == BinaryOp::Divide || *op == BinaryOp::Modulo) {
-                    let name_idx = strings.len();
-                    strings.push("std.math.check_div_zero".to_string());
-                    
+                    let name_idx = add_string(strings, "std.math.check_div_zero".to_string());
+
                     bytecode.push(Opcode::CallNative as u8);
                     bytecode.push(0u8);            // dummy destination: R0
                     bytecode.push(name_idx as u8); // function name index
@@ -1528,8 +1648,7 @@ impl Compiler {
                             // For obj.field: load field, increment, store back, return new value
                             let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                             let r_field = self.current_ctx.allocate_reg();
-                            let idx = strings.len();
-                            strings.push(name.clone());
+                            let idx = add_string(strings, name.clone());
                             bytecode.push(Opcode::GetProperty as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_obj as u8);
@@ -1616,8 +1735,7 @@ impl Compiler {
                             // For obj.field: load field, decrement, store back, return new value
                             let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                             let r_field = self.current_ctx.allocate_reg();
-                            let idx = strings.len();
-                            strings.push(name.clone());
+                            let idx = add_string(strings, name.clone());
                             bytecode.push(Opcode::GetProperty as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_obj as u8);
@@ -1696,8 +1814,7 @@ impl Compiler {
                             // For obj.field: save original value, increment field, return original
                             let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                             let r_field = self.current_ctx.allocate_reg();
-                            let idx = strings.len();
-                            strings.push(name.clone());
+                            let idx = add_string(strings, name.clone());
                             bytecode.push(Opcode::GetProperty as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_obj as u8);
@@ -1772,8 +1889,7 @@ impl Compiler {
                             // For obj.field: save original value, decrement field, return original
                             let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                             let r_field = self.current_ctx.allocate_reg();
-                            let idx = strings.len();
-                            strings.push(name.clone());
+                            let idx = add_string(strings, name.clone());
                             bytecode.push(Opcode::GetProperty as u8);
                             bytecode.push(r_field as u8);
                             bytecode.push(r_obj as u8);
@@ -1921,8 +2037,7 @@ impl Compiler {
                     if is_class {
                         // ... (keep class creation logic)
                         // 1. Create instance
-                        let idx = strings.len();
-                        strings.push(resolved_name.clone());
+                        let idx = add_string(strings, resolved_name.clone());
                         bytecode.push(Opcode::Call as u8);
                         bytecode.push(rd as u8);
                         bytecode.push(idx as u8);
@@ -1964,9 +2079,8 @@ impl Compiler {
                                 }
                                 format!("constructor({})", params.join(","))
                             };
-                            
-                            let constructor_idx = strings.len();
-                            strings.push(mangled_ctor);
+
+                            let constructor_idx = add_string(strings, mangled_ctor);
                             bytecode.push(Opcode::Invoke as u8);
                             let r_unused = self.current_ctx.allocate_reg();
                             bytecode.push(r_unused as u8);
@@ -2001,9 +2115,8 @@ impl Compiler {
                             }
                             format!("{}({})", func_name, params.join(","))
                         };
-                        
-                        let idx = strings.len();
-                        strings.push(mangled_method);
+
+                        let idx = add_string(strings, mangled_method);
 
                         // Check if this is an interface method
                         let is_interface_method = if let Some(ctx) = type_context {
@@ -2033,14 +2146,13 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        let idx = strings.len();
                         // For native functions, use the base name (not mangled name) for lookup
                         let call_name = if is_native {
                             func_name.clone()
                         } else {
                             resolved_name.clone()
                         };
-                        strings.push(call_name.clone());
+                        let idx = add_string(strings, call_name.clone());
 
                         // Use CallNative for native functions, Call for bytecode functions
                         if is_native {
@@ -2100,8 +2212,7 @@ impl Compiler {
 
                         // Static methods are looked up by ClassName::mangled_name
                         let full_method_name = format!("{}::{}", obj_name, mangled_method);
-                        let idx = strings.len();
-                        strings.push(full_method_name);
+                        let idx = add_string(strings, full_method_name);
 
                         // Use Call for static methods
                         bytecode.push(Opcode::Call as u8);
@@ -2137,8 +2248,7 @@ impl Compiler {
                             format!("{}({})", name, params.join(","))
                         };
 
-                        let idx = strings.len();
-                        strings.push(mangled_method);
+                        let idx = add_string(strings, mangled_method);
 
                         // Check if this is an interface method call
                         let is_interface_method = if let Some(ctx) = type_context {
@@ -2178,8 +2288,7 @@ impl Compiler {
                                     if field_info.is_static {
                                         // Load static field value - treat as global variable
                                         let rd = self.current_ctx.allocate_reg();
-                                        let idx = strings.len();
-                                        strings.push(format!("static_{}.{}", obj_name, name));
+                                        let idx = add_string(strings, format!("static_{}.{}", obj_name, name));
                                         bytecode.push(Opcode::LoadLocal as u8);
                                         bytecode.push(rd as u8);
                                         bytecode.push(idx as u8);
@@ -2192,11 +2301,10 @@ impl Compiler {
                         }
                     }
                 }
-                
+
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let rd = self.current_ctx.allocate_reg();
-                let idx = strings.len();
-                strings.push(name.clone());
+                let idx = add_string(strings, name.clone());
                 bytecode.push(Opcode::GetProperty as u8);
                 bytecode.push(rd as u8);
                 bytecode.push(r_obj as u8);
@@ -2213,8 +2321,7 @@ impl Compiler {
                                 if field_info.is_static {
                                     // Static field assignment - treat as global variable
                                     let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
-                                    let idx = strings.len();
-                                    strings.push(format!("static_{}.{}", obj_name, name));
+                                    let idx = add_string(strings, format!("static_{}.{}", obj_name, name));
                                     bytecode.push(Opcode::StoreLocal as u8);
                                     bytecode.push(idx as u8);
                                     bytecode.push(r_val as u8);
@@ -2224,11 +2331,10 @@ impl Compiler {
                         }
                     }
                 }
-                
+
                 let r_obj = self.compile_expr(object, bytecode, strings, classes, type_context)?;
                 let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
-                let idx = strings.len();
-                strings.push(name.clone());
+                let idx = add_string(strings, name.clone());
                 bytecode.push(Opcode::SetProperty as u8);
                 bytecode.push(r_obj as u8);
                 bytecode.push(idx as u8);
@@ -2247,8 +2353,7 @@ impl Compiler {
                     let rd_part = start_reg + i;
                     match part {
                         InterpPart::Text(s) => {
-                            let idx = strings.len();
-                            strings.push(s.clone());
+                            let idx = add_string(strings, s.clone());
                             bytecode.push(Opcode::LoadConst as u8);
                             bytecode.push(rd_part as u8);
                             bytecode.push(idx as u8);
@@ -2309,8 +2414,7 @@ impl Compiler {
 
                     if !el_type.is_pod() {
                         let r_el = el_regs[i];
-                        let constructor_idx = strings.len();
-                        strings.push("constructor()".to_string());
+                        let constructor_idx = add_string(strings, "constructor()".to_string());
 
                         let contiguous_call_start = self.current_ctx.allocate_regs(1);
                         bytecode.push(Opcode::Move as u8);
@@ -2390,12 +2494,11 @@ impl Compiler {
                         ));
                     }
                 };
-                
+
                 // Compile as class instantiation: create instance and set fields
                 // 1. Create instance using Call opcode
                 let rd = self.current_ctx.allocate_reg();
-                let idx = strings.len();
-                strings.push(class_name.clone());
+                let idx = add_string(strings, class_name.clone());
                 bytecode.push(Opcode::Call as u8);
                 bytecode.push(rd as u8);
                 bytecode.push(idx as u8);
@@ -2420,8 +2523,7 @@ impl Compiler {
                     bytecode.push(rd as u8);
 
                     // Use mangled constructor name for empty constructor
-                    let constructor_idx = strings.len();
-                    strings.push("constructor()".to_string());
+                    let constructor_idx = add_string(strings, "constructor()".to_string());
                     bytecode.push(Opcode::Invoke as u8);
                     let r_unused = self.current_ctx.allocate_reg();
                     bytecode.push(r_unused as u8);
@@ -2429,15 +2531,14 @@ impl Compiler {
                     bytecode.push(contiguous_start as u8);
                     bytecode.push(1); // arg_count (only self)
                 }
-                
+
                 // 3. Set each field
                 for field in fields {
                     let r_value = self.compile_expr(&field.value, bytecode, strings, classes, type_context)?;
                     let r_obj = rd; // The object we just created
-                    
-                    let field_name_idx = strings.len();
-                    strings.push(field.name.clone());
-                    
+
+                    let field_name_idx = add_string(strings, field.name.clone());
+
                     // SetProperty format: SetProperty robj idx rs
                     bytecode.push(Opcode::SetProperty as u8);
                     bytecode.push(r_obj as u8);  // robj - object register
