@@ -894,6 +894,36 @@ impl Compiler {
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_expr as u8);
                             }
+                            crate::parser::AugOp::BitAnd => {
+                                bytecode.push(Opcode::BitAnd as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::BitOr => {
+                                bytecode.push(Opcode::BitOr as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::BitXor => {
+                                bytecode.push(Opcode::BitXor as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::ShiftLeft => {
+                                bytecode.push(Opcode::ShiftLeft as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::ShiftRight => {
+                                bytecode.push(Opcode::ShiftRight as u8);
+                                bytecode.push(r_temp as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_expr as u8);
+                            }
                         }
 
                         // Store result back to variable
@@ -941,6 +971,36 @@ impl Compiler {
                             }
                             crate::parser::AugOp::Divide => {
                                 bytecode.push(Opcode::Divide as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::BitAnd => {
+                                bytecode.push(Opcode::BitAnd as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::BitOr => {
+                                bytecode.push(Opcode::BitOr as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::BitXor => {
+                                bytecode.push(Opcode::BitXor as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::ShiftLeft => {
+                                bytecode.push(Opcode::ShiftLeft as u8);
+                                bytecode.push(r_result as u8);
+                                bytecode.push(r_field as u8);
+                                bytecode.push(r_expr as u8);
+                            }
+                            crate::parser::AugOp::ShiftRight => {
+                                bytecode.push(Opcode::ShiftRight as u8);
                                 bytecode.push(r_result as u8);
                                 bytecode.push(r_field as u8);
                                 bytecode.push(r_expr as u8);

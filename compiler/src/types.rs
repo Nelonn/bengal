@@ -2398,12 +2398,17 @@ impl TypeChecker {
 
                 let expr_type = self.infer_expr(expr);
 
-                // For +=, -=, *=, /=, both operands must be numeric types
+                // For +=, -=, *=, /=, &=, |=, ^=, <<=, >>=, both operands must be numeric types
                 let op_name = match op {
                     crate::parser::AugOp::Add => "+=",
                     crate::parser::AugOp::Subtract => "-=",
                     crate::parser::AugOp::Multiply => "*=",
                     crate::parser::AugOp::Divide => "/=",
+                    crate::parser::AugOp::BitAnd => "&=",
+                    crate::parser::AugOp::BitOr => "|=",
+                    crate::parser::AugOp::BitXor => "^=",
+                    crate::parser::AugOp::ShiftLeft => "<<=",
+                    crate::parser::AugOp::ShiftRight => ">>=",
                 };
 
                 if !var_type.is_numeric() {

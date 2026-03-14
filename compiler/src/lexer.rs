@@ -64,6 +64,11 @@ pub enum Token {
     BitNot,
     ShiftLeft,
     ShiftRight,
+    ShiftLeftEqual,
+    ShiftRightEqual,
+    BitAndEqual,
+    BitOrEqual,
+    BitXorEqual,
 
     Plus,
     PlusPlus,
@@ -313,6 +318,9 @@ impl Lexer {
                 if self.peek() == Some('&') {
                     self.advance();
                     Ok(Token::DoubleAnd)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::BitAndEqual)
                 } else {
                     Ok(Token::BitAnd)
                 }
@@ -322,13 +330,21 @@ impl Lexer {
                 if self.peek() == Some('|') {
                     self.advance();
                     Ok(Token::DoubleOr)
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::BitOrEqual)
                 } else {
                     Ok(Token::BitOr)
                 }
             }
             '^' => {
                 self.advance();
-                Ok(Token::BitXor)
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(Token::BitXorEqual)
+                } else {
+                    Ok(Token::BitXor)
+                }
             }
             '~' => {
                 self.advance();
@@ -338,7 +354,12 @@ impl Lexer {
                 self.advance();
                 if self.peek() == Some('<') {
                     self.advance();
-                    Ok(Token::ShiftLeft)
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        Ok(Token::ShiftLeftEqual)
+                    } else {
+                        Ok(Token::ShiftLeft)
+                    }
                 } else if self.peek() == Some('=') {
                     self.advance();
                     Ok(Token::LessEqual)
@@ -353,7 +374,12 @@ impl Lexer {
                 self.advance();
                 if self.peek() == Some('>') {
                     self.advance();
-                    Ok(Token::ShiftRight)
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        Ok(Token::ShiftRightEqual)
+                    } else {
+                        Ok(Token::ShiftRight)
+                    }
                 } else if self.peek() == Some('=') {
                     self.advance();
                     Ok(Token::GreaterEqual)
@@ -763,5 +789,39 @@ mod tests {
         assert_eq!(tokenize("123").unwrap(), vec![Token::Int(123), Token::Eof]);
         assert_eq!(tokenize("0").unwrap(), vec![Token::Int(0), Token::Eof]);
         assert_eq!(tokenize("1'000'000").unwrap(), vec![Token::Int(1000000), Token::Eof]);
+    }
+
+    #[test]
+    fn test_bitwise_compound_assignment() {
+        assert_eq!(tokenize("x <<= 1").unwrap(), vec![
+            Token::Identifier("x".to_string()),
+            Token::ShiftLeftEqual,
+            Token::Int(1),
+            Token::Eof
+        ]);
+        assert_eq!(tokenize("x >>= 2").unwrap(), vec![
+            Token::Identifier("x".to_string()),
+            Token::ShiftRightEqual,
+            Token::Int(2),
+            Token::Eof
+        ]);
+        assert_eq!(tokenize("x &= 0xFF").unwrap(), vec![
+            Token::Identifier("x".to_string()),
+            Token::BitAndEqual,
+            Token::Int(255),
+            Token::Eof
+        ]);
+        assert_eq!(tokenize("x |= 0b1010").unwrap(), vec![
+            Token::Identifier("x".to_string()),
+            Token::BitOrEqual,
+            Token::Int(10),
+            Token::Eof
+        ]);
+        assert_eq!(tokenize("x ^= 0o77").unwrap(), vec![
+            Token::Identifier("x".to_string()),
+            Token::BitXorEqual,
+            Token::Int(63),
+            Token::Eof
+        ]);
     }
 }

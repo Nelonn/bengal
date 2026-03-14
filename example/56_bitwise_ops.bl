@@ -1,0 +1,36 @@
+fn main() {
+  println("Testing bitwise compound assignment operators")
+
+  // Test <<= (shift left assign)
+  let x = 1
+  x <<= 1
+  println("1 <<= 1 = " + x)  // Should be 2
+  
+  x <<= 2
+  println("2 <<= 2 = " + x)  // Should be 8
+
+  // Test >>= (shift right assign)
+  let y = 16
+  y >>= 1
+  println("16 >>= 1 = " + y)  // Should be 8
+  
+  y >>= 2
+  println("8 >>= 2 = " + y)  // Should be 2
+
+  // Test &= (bitwise and assign)
+  let a = 0xFF
+  a &= 0x0F
+  println("0xFF &= 0x0F = " + a)  // Should be 15
+
+  // Test |= (bitwise or assign)
+  let b = 0b1010
+  b |= 0b0101
+  println("0b1010 |= 0b0101 = " + b)  // Should be 15
+
+  // Test ^= (bitwise xor assign)
+  let c = 0o77
+  c ^= 0o77
+  println("0o77 ^= 0o77 = " + c)  // Should be 0
+
+  println("All bitwise compound assignment tests passed!")
+}
