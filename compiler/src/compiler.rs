@@ -254,6 +254,8 @@ pub struct Compiler {
     break_jumps: Vec<Vec<usize>>,
     continue_targets: Vec<usize>,
     current_ctx: CompileContext,
+    /// Track global (module-level) variable names
+    global_vars: std::collections::HashSet<String>,
     pub unsafe_fast: bool,
     pub enable_type_checking: bool,
     pub search_paths: Vec<String>,
@@ -284,6 +286,7 @@ impl Default for Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            global_vars: std::collections::HashSet::new(),
             unsafe_fast: false,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
@@ -300,6 +303,7 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            global_vars: std::collections::HashSet::new(),
             unsafe_fast: false,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
@@ -314,6 +318,7 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            global_vars: std::collections::HashSet::new(),
             unsafe_fast: false,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
@@ -328,6 +333,7 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            global_vars: std::collections::HashSet::new(),
             unsafe_fast,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
@@ -342,6 +348,7 @@ impl Compiler {
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
             current_ctx: CompileContext::new(),
+            global_vars: std::collections::HashSet::new(),
             unsafe_fast,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
@@ -406,6 +413,18 @@ impl Compiler {
         let mut function_sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut class_source_files: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut class_sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        // Clear global variables set for this compilation unit
+        self.global_vars.clear();
+
+        // First pass: collect all global variable names (from module-level let statements)
+        // This is needed so that static field initializers and other early-compiled code
+        // can correctly reference global variables
+        for stmt in statements {
+            if let Stmt::Let { name, .. } = stmt {
+                self.global_vars.insert(name.clone());
+            }
+        }
 
         // Collect functions and classes from imported modules first
         if let Some(res) = &resolver {
@@ -508,6 +527,8 @@ impl Compiler {
                 } else {
                     Compiler::with_options(class_source, self.unsafe_fast)
                 };
+                // Copy global variables to method compiler so it can reference them
+                method_compiler.global_vars = self.global_vars.clone();
                 method_compiler.current_ctx = CompileContext::with_params(method_params);
 
                 // Check if this is an auto-generated constructor (empty body, name is "constructor")
@@ -788,6 +809,8 @@ impl Compiler {
 
             let func_source = function_sources.get(&f.name).unwrap_or(&self.source);
             let mut func_compiler = Compiler::with_options(func_source, self.unsafe_fast);
+            // Copy global variables to function compiler so it can reference them
+            func_compiler.global_vars = self.global_vars.clone();
             func_compiler.current_ctx = CompileContext::with_params(f.params.iter().map(|p| p.name.clone()).collect());
 
             for stmt in &f.body {
@@ -977,10 +1000,26 @@ impl Compiler {
 
             Stmt::Let { name, expr, .. } => {
                 let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
-                let rd = self.current_ctx.get_local_reg(name);
-                bytecode.push(Opcode::Move as u8);
-                bytecode.push(rd as u8);
-                bytecode.push(r as u8);
+                // Check if this is a global (module-level) variable
+                // Global variables are those not declared within a function/method context
+                // We detect this by checking if we're in a function context (current_method_params would be set)
+                let is_global = self.current_ctx.params.is_empty() && 
+                    !self.current_ctx.locals_map.contains_key("self");
+                
+                if is_global {
+                    // Use StoreLocal for global variables (stores in VM's locals HashMap)
+                    self.global_vars.insert(name.clone());
+                    let idx = add_string(strings, name.clone());
+                    bytecode.push(Opcode::StoreLocal as u8);
+                    bytecode.push(idx as u8);
+                    bytecode.push(r as u8);
+                } else {
+                    // Use Move for local variables (stores in registers)
+                    let rd = self.current_ctx.get_local_reg(name);
+                    bytecode.push(Opcode::Move as u8);
+                    bytecode.push(rd as u8);
+                    bytecode.push(r as u8);
+                }
             }
 
             Stmt::Assign { name, expr, .. } => {
@@ -1475,6 +1514,17 @@ impl Compiler {
                 // Check if it's a local variable or parameter first
                 if self.current_ctx.locals_map.contains_key(name) {
                     return Ok(self.current_ctx.get_local_reg(name));
+                }
+
+                // Check if it's a global (module-level) variable
+                if self.global_vars.contains(name) {
+                    // Use LoadLocal for global variables (loads from VM's locals HashMap)
+                    let rd = self.current_ctx.allocate_reg();
+                    let idx = add_string(strings, name.clone());
+                    bytecode.push(Opcode::LoadLocal as u8);
+                    bytecode.push(rd as u8);
+                    bytecode.push(idx as u8);
+                    return Ok(rd);
                 }
 
                 if let Some(ctx) = type_context {
