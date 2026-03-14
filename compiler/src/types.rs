@@ -2470,6 +2470,26 @@ impl TypeChecker {
         let old_class = self.context.current_class.clone();
         self.context.current_class = Some(class.name.clone());
 
+        // Check field default expressions
+        for field in &class.fields {
+            if let Some(default_expr) = &field.default {
+                let field_type = Type::from_str(&field.type_name);
+                let expr_type = self.infer_expr_with_expected_type(default_expr, &Some(field_type.clone()));
+                
+                if !expr_type.is_assignable_to(&field_type) {
+                    self.context.add_error(
+                        format!(
+                            "Type mismatch: cannot assign {} to field '{}' of type {}",
+                            expr_type.to_str(),
+                            field.name,
+                            field_type.to_str()
+                        ),
+                        0
+                    );
+                }
+            }
+        }
+
         for method in &class.methods {
             self.check_method(method, &class.name);
         }

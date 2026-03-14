@@ -442,21 +442,10 @@ impl Compiler {
         let mut static_methods = Vec::new();  // Collect static methods to add to global functions
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
-            // ... (rest of field collection)
+            // Initialize all fields to Null - actual initialization happens in constructor
+            // This allows field defaults to be arbitrary expressions evaluated at runtime
             for field in &c.fields {
-                let value = if let Some(default_expr) = &field.default {
-                    match default_expr {
-                        Expr::Literal(Literal::String(s)) => Value::String(s.clone()),
-                        Expr::Literal(Literal::Int(n)) => Value::Int64(*n),
-                        Expr::Literal(Literal::Float(f)) => Value::Float64(*f),
-                        Expr::Literal(Literal::Bool(b)) => Value::Bool(*b),
-                        Expr::Literal(Literal::Null) => Value::Null,
-                        _ => Value::Null,
-                    }
-                } else {
-                    Value::Null
-                };
-                fields.insert(field.name.clone(), value);
+                fields.insert(field.name.clone(), Value::Null);
             }
 
             let mut vm_methods = std::collections::HashMap::new();
@@ -528,6 +517,23 @@ impl Compiler {
                         }
                     }
                 } else {
+                    // Custom constructor: initialize fields with defaults first, then run custom body
+                    // This ensures field defaults are applied even when a custom constructor exists
+                    for field in &c.fields {
+                        if let Some(default_expr) = &field.default {
+                            let r_self = method_compiler.current_ctx.get_local_reg("self");
+                            let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+
+                            let field_name_idx = method_strings.len();
+                            method_strings.push(field.name.clone());
+                            method_bytecode.push(Opcode::SetProperty as u8);
+                            method_bytecode.push(r_self as u8);
+                            method_bytecode.push(field_name_idx as u8);
+                            method_bytecode.push(r_val as u8);
+                        }
+                    }
+                    
+                    // Now compile the custom constructor body
                     for stmt in &method.body {
                         method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
                     }
