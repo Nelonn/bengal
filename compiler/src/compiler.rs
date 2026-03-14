@@ -424,6 +424,8 @@ impl Compiler {
                         parent_interfaces: interface.parent_interfaces.clone(),
                         fields: vec![],
                         methods: interface.methods.clone(),
+                        nested_classes: interface.nested_classes.clone(),
+                        nested_interfaces: interface.nested_interfaces.clone(),
                         is_native: false,
                         private: false,
                     };

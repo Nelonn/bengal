@@ -1464,7 +1464,24 @@ impl TypeContext {
 
     /// Try to resolve a module-qualified class name (e.g., "http.HttpClient" with import "std.http")
     pub fn resolve_qualified_class(&self, module_alias: &str, class_name: &str) -> Option<String> {
-        // First try direct lookup
+        // First, check if this is a nested class (e.g., Outer.Inner)
+        // module_alias would be "Outer" and class_name would be "Inner"
+        let nested_class_name = format!("{}.{}", module_alias, class_name);
+        if let Some(class_info) = self.classes.get(&nested_class_name) {
+            if class_info.private {
+                // Check if we're inside the outer class
+                if let Some(ref current_class) = self.current_class {
+                    if current_class != module_alias {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            return Some(nested_class_name);
+        }
+
+        // First try direct lookup for module-qualified classes
         let direct_name = format!("{}.{}", module_alias, class_name);
         if let Some(class_info) = self.classes.get(&direct_name) {
             if class_info.private {
@@ -2156,10 +2173,10 @@ impl TypeChecker {
         for stmt in statements {
             match stmt {
                 Stmt::Class(class) => {
-                    self.context.add_class(class);
+                    self.add_class_with_nesting(class, None);
                 }
                 Stmt::Interface(interface) => {
-                    self.context.add_interface(interface);
+                    self.add_interface_with_nesting(interface, None);
                 }
                 Stmt::Enum(enum_def) => {
                     self.context.add_enum(enum_def);
@@ -2192,6 +2209,46 @@ impl TypeChecker {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn add_class_with_nesting(&mut self, class: &crate::parser::ClassDef, parent_name: Option<&str>) {
+        // Set the qualified name for the class
+        let mut qualified_class = class.clone();
+        if let Some(parent) = parent_name {
+            qualified_class.name = format!("{}.{}", parent, class.name);
+        }
+        
+        self.context.add_class(&qualified_class);
+        
+        // Process nested classes with the qualified parent name
+        let current_parent = qualified_class.name.clone();
+        for nested_class in &class.nested_classes {
+            self.add_class_with_nesting(nested_class, Some(&current_parent));
+        }
+        // Process nested interfaces
+        for nested_iface in &class.nested_interfaces {
+            self.add_interface_with_nesting(nested_iface, Some(&current_parent));
+        }
+    }
+
+    fn add_interface_with_nesting(&mut self, interface: &crate::parser::InterfaceDef, parent_name: Option<&str>) {
+        // Set the qualified name for the interface
+        let mut qualified_interface = interface.clone();
+        if let Some(parent) = parent_name {
+            qualified_interface.name = format!("{}.{}", parent, interface.name);
+        }
+        
+        self.context.add_interface(&qualified_interface);
+        
+        // Process nested classes with the qualified parent name
+        let current_parent = qualified_interface.name.clone();
+        for nested_class in &interface.nested_classes {
+            self.add_class_with_nesting(nested_class, Some(&current_parent));
+        }
+        // Process nested interfaces
+        for nested_iface in &interface.nested_interfaces {
+            self.add_interface_with_nesting(nested_iface, Some(&current_parent));
         }
     }
 
@@ -3009,8 +3066,31 @@ impl TypeChecker {
                         full_return_type
                     }
                 } else if let Expr::Get { object, name, span: method_span } = callee.as_ref() {
-                    // Could be method call OR module.function() call
+                    // Could be method call OR module.function() call OR nested class instantiation
                     let object_type = self.infer_expr(object);
+
+                    // First, check if this is a nested class instantiation (e.g., Outer.Inner(args))
+                    if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                        if let Some(_outer_class_info) = self.context.get_class(obj_name) {
+                            let nested_class_name = format!("{}.{}", obj_name, name);
+                            if let Some(_nested_class_info) = self.context.get_class(&nested_class_name) {
+                                // This is a nested class instantiation
+                                let arg_types: Vec<Type> = args.iter()
+                                    .map(|arg| self.infer_expr(arg))
+                                    .collect();
+                                let ctor_sig = self.context.resolve_method_call(&nested_class_name, "constructor", &arg_types);
+                                if let Some(sig) = ctor_sig.cloned() {
+                                    self.check_method_call(&sig, args, "constructor", &nested_class_name);
+                                } else if !args.is_empty() {
+                                    self.context.add_error_with_location(
+                                        format!("Class '{}' does not accept constructor arguments", nested_class_name),
+                                        method_span.line, method_span.column, None, None
+                                    );
+                                }
+                                return Type::Class(nested_class_name);
+                            }
+                        }
+                    }
 
                     let effective_class = match object_type {
                         Type::Class(ref name) => Some(name.clone()),
@@ -3115,6 +3195,31 @@ impl TypeChecker {
                 if let Expr::Variable { name: obj_name, span: _ } = object.as_ref() {
                     // Check if obj_name is a class name
                     if let Some(class_info) = self.context.get_class(obj_name) {
+                        // First, check if this is a nested class access (e.g., Outer.Inner)
+                        let nested_class_name = format!("{}.{}", obj_name, name);
+                        if let Some(nested_class_info) = self.context.get_class(&nested_class_name) {
+                            // Check visibility
+                            if nested_class_info.private {
+                                if let Some(current) = &self.context.current_class {
+                                    if current != obj_name {
+                                        self.context.add_error_with_location(
+                                            format!("Nested class '{}' is private and cannot be accessed from class '{}'", name, current),
+                                            span.line, span.column, None, None
+                                        );
+                                        return Type::Unknown;
+                                    }
+                                } else {
+                                    self.context.add_error_with_location(
+                                        format!("Nested class '{}' is private and cannot be accessed from global scope", name),
+                                        span.line, span.column, None, None
+                                    );
+                                    return Type::Unknown;
+                                }
+                            }
+                            // Return the nested class type
+                            return Type::Class(nested_class_name);
+                        }
+                        
                         // This is static member access
                         if let Some(field_info) = class_info.fields.get(name) {
                             if field_info.is_static {
@@ -3155,7 +3260,7 @@ impl TypeChecker {
                             }
                         }
                         // Member not found as static - check if it's an instance member
-                        if class_info.fields.contains_key(name) || 
+                        if class_info.fields.contains_key(name) ||
                            class_info.methods.values().any(|m| m.name == *name) {
                             self.context.add_error_with_location(
                                 format!("Cannot access instance member '{}' on class '{}' without an instance. Use 'self.{}' or make the member static.", name, obj_name, name),
@@ -3170,7 +3275,7 @@ impl TypeChecker {
                         return Type::Unknown;
                     }
                 }
-                
+
                 let object_type = self.infer_expr(object);
 
                 if let Type::Class(class_name) = object_type {

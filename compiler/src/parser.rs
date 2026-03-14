@@ -97,6 +97,8 @@ pub struct ClassDef {
     pub parent_interfaces: Vec<String>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
+    pub nested_classes: Vec<ClassDef>,
+    pub nested_interfaces: Vec<InterfaceDef>,
     pub is_native: bool,
     pub private: bool,
 }
@@ -107,6 +109,8 @@ pub struct InterfaceDef {
     pub type_params: Vec<String>,
     pub parent_interfaces: Vec<String>,
     pub methods: Vec<Method>,
+    pub nested_classes: Vec<ClassDef>,
+    pub nested_interfaces: Vec<InterfaceDef>,
     pub private: bool,
 }
 
@@ -612,6 +616,8 @@ impl Parser {
 
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut nested_classes = Vec::new();
+        let mut nested_interfaces = Vec::new();
 
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
@@ -646,6 +652,22 @@ impl Parser {
                     return self.error_generic("Constructor in native classes cannot have implementation.");
                 }
                 methods.push(method);
+            } else if self.check(&Token::Class) {
+                self.advance(); // consume 'class' token
+                let nested_class_stmt = self.parse_class(is_native_class, is_private)?;
+                if let Stmt::Class(class_def) = nested_class_stmt {
+                    nested_classes.push(class_def);
+                } else {
+                    return self.error_generic("Expected class declaration");
+                }
+            } else if self.check(&Token::Interface) {
+                self.advance(); // consume 'interface' token
+                let nested_iface_stmt = self.parse_interface(is_private)?;
+                if let Stmt::Interface(iface_def) = nested_iface_stmt {
+                    nested_interfaces.push(iface_def);
+                } else {
+                    return self.error_generic("Expected interface declaration");
+                }
             } else {
                 if is_native_class {
                     return self.error_generic("Native classes cannot have member-fields.");
@@ -697,7 +719,7 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, is_native: is_native_class, private: is_private }))
+        Ok(Stmt::Class(ClassDef { name, type_params, parent_interfaces, fields, methods: final_methods, nested_classes, nested_interfaces, is_native: is_native_class, private: is_private }))
     }
 
     fn parse_interface(&mut self, is_private: bool) -> Result<Stmt, String> {
@@ -747,6 +769,8 @@ impl Parser {
         }
 
         let mut methods = Vec::new();
+        let mut nested_classes = Vec::new();
+        let mut nested_interfaces = Vec::new();
 
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
@@ -763,8 +787,24 @@ impl Parser {
             if self.match_token(&Token::Fn) {
                 let method = self.parse_interface_method(is_private, is_async)?;
                 methods.push(method);
+            } else if self.check(&Token::Class) {
+                self.advance(); // consume 'class' token
+                let nested_class_stmt = self.parse_class(false, is_private)?;
+                if let Stmt::Class(class_def) = nested_class_stmt {
+                    nested_classes.push(class_def);
+                } else {
+                    return self.error_generic("Expected class declaration");
+                }
+            } else if self.check(&Token::Interface) {
+                self.advance(); // consume 'interface' token
+                let nested_iface_stmt = self.parse_interface(is_private)?;
+                if let Stmt::Interface(iface_def) = nested_iface_stmt {
+                    nested_interfaces.push(iface_def);
+                } else {
+                    return self.error_generic("Expected interface declaration");
+                }
             } else {
-                return self.error_generic("Interfaces can only contain method declarations");
+                return self.error_generic("Interfaces can only contain method declarations, nested classes, or nested interfaces");
             }
             self.skip_newlines();
         }
@@ -773,7 +813,7 @@ impl Parser {
             return self.error_generic("Expected '}' to close interface");
         }
 
-        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, private: is_private }))
+        Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, nested_classes, nested_interfaces, private: is_private }))
     }
 
     fn parse_interface_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
