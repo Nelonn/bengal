@@ -216,6 +216,11 @@ pub enum BinaryOp {
     GreaterEqual,
     Less,
     LessEqual,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,6 +240,7 @@ pub enum UnaryOp {
     PostfixDecrement,
     Decrement, // Keep for backward compatibility if used elsewhere, but we'll use PostfixDecrement for x--
     Negate,    // Unary minus for negative numbers: -5, -3.14
+    BitNot,    // Bitwise NOT: ~x
 }
 
 #[derive(Debug, Clone)]
@@ -1530,11 +1536,11 @@ impl Parser {
     }
 
     fn parse_range(&mut self) -> Result<Expr, String> {
-        let start = self.parse_equality()?;
+        let start = self.parse_bitwise_or()?;
         let span = self.compute_span(self.pos);
 
         if self.match_token(&Token::Range) {
-            let end = self.parse_equality()?;
+            let end = self.parse_bitwise_or()?;
             return Ok(Expr::Range {
                 start: Box::new(start),
                 end: Box::new(end),
@@ -1543,6 +1549,69 @@ impl Parser {
         }
 
         Ok(start)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bitwise_xor()?;
+
+        loop {
+            if self.match_token(&Token::BitOr) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::BitOr,
+                    right: Box::new(self.parse_bitwise_xor()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bitwise_and()?;
+
+        loop {
+            if self.match_token(&Token::BitXor) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::BitXor,
+                    right: Box::new(self.parse_bitwise_and()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_equality()?;
+
+        loop {
+            if self.match_token(&Token::BitAnd) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::BitAnd,
+                    right: Box::new(self.parse_equality()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
     }
 
     fn parse_equality(&mut self) -> Result<Expr, String> {
@@ -1624,7 +1693,7 @@ impl Parser {
     }
 
     fn parse_additive(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_multiplicative()?;
+        let mut expr = self.parse_shift()?;
 
         loop {
             if self.match_token(&Token::Plus) {
@@ -1633,7 +1702,7 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Add,
-                    right: Box::new(self.parse_multiplicative()?),
+                    right: Box::new(self.parse_shift()?),
                     span,
                 };
             } else if self.match_token(&Token::Minus) {
@@ -1642,6 +1711,36 @@ impl Parser {
                 expr = Expr::Binary {
                     left: Box::new(expr),
                     op: BinaryOp::Subtract,
+                    right: Box::new(self.parse_shift()?),
+                    span,
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_multiplicative()?;
+
+        loop {
+            if self.match_token(&Token::ShiftLeft) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::ShiftLeft,
+                    right: Box::new(self.parse_multiplicative()?),
+                    span,
+                };
+            } else if self.match_token(&Token::ShiftRight) {
+                self.skip_newlines();
+                let span = self.compute_span(self.pos - 1);
+                expr = Expr::Binary {
+                    left: Box::new(expr),
+                    op: BinaryOp::ShiftRight,
                     right: Box::new(self.parse_multiplicative()?),
                     span,
                 };
@@ -1716,6 +1815,15 @@ impl Parser {
             let span = self.compute_span(self.pos - 1);
             return Ok(Expr::Unary {
                 op: UnaryOp::Not,
+                expr: Box::new(self.parse_unary()?),
+                span,
+            });
+        }
+
+        if self.match_token(&Token::BitNot) {
+            let span = self.compute_span(self.pos - 1);
+            return Ok(Expr::Unary {
+                op: UnaryOp::BitNot,
                 expr: Box::new(self.parse_unary()?),
                 span,
             });

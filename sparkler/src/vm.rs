@@ -2208,6 +2208,125 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
 
+            // Bitwise AND
+            // Format: [BitAnd, Rd, Rs1, Rs2]
+            x if x == Opcode::BitAnd as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+                    Value::Int64(left.to_arithmetic_int().unwrap() & right.to_arithmetic_int().unwrap())
+                } else {
+                    Value::Null
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Bitwise OR
+            // Format: [BitOr, Rd, Rs1, Rs2]
+            x if x == Opcode::BitOr as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+                    Value::Int64(left.to_arithmetic_int().unwrap() | right.to_arithmetic_int().unwrap())
+                } else {
+                    Value::Null
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Bitwise XOR
+            // Format: [BitXor, Rd, Rs1, Rs2]
+            x if x == Opcode::BitXor as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+                    Value::Int64(left.to_arithmetic_int().unwrap() ^ right.to_arithmetic_int().unwrap())
+                } else {
+                    Value::Null
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Bitwise NOT
+            // Format: [BitNot, Rd, Rs]
+            x if x == Opcode::BitNot as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs = self.bytecode[self.pc()] as u8;
+                let value = self.get_reg(rs);
+                let result = if value.is_arithmetic_int() {
+                    Value::Int64(!value.to_arithmetic_int().unwrap())
+                } else {
+                    Value::Null
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Shift left
+            // Format: [ShiftLeft, Rd, Rs1, Rs2]
+            x if x == Opcode::ShiftLeft as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+                    let shift = right.to_arithmetic_int().unwrap() as u32;
+                    Value::Int64(left.to_arithmetic_int().unwrap().wrapping_shl(shift))
+                } else {
+                    Value::Null
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
+            // Shift right
+            // Format: [ShiftRight, Rd, Rs1, Rs2]
+            x if x == Opcode::ShiftRight as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                let left = self.get_reg(rs1);
+                let right = self.get_reg(rs2);
+                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+                    let shift = right.to_arithmetic_int().unwrap() as u32;
+                    Value::Int64(left.to_arithmetic_int().unwrap().wrapping_shr(shift))
+                } else {
+                    Value::Null
+                };
+                self.set_reg(rd, result);
+                self.set_pc(self.pc() + 1);
+            }
+
             // String concatenation
             // Format: [Concat, Rd, rs_start, count]
             x if x == Opcode::Concat as u8 => {

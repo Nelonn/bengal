@@ -68,6 +68,14 @@ pub enum Opcode {
     Divide = 0x71,   // Rd, Rs1, Rs2
     Modulo = 0x75,   // Rd, Rs1, Rs2
 
+    // Bitwise operations (3-register format)
+    BitAnd = 0x78,   // Rd, Rs1, Rs2
+    BitOr = 0x79,    // Rd, Rs1, Rs2
+    BitXor = 0x7A,   // Rd, Rs1, Rs2
+    BitNot = 0x7B,   // Rd, Rs
+    ShiftLeft = 0x7C,  // Rd, Rs1, Rs2
+    ShiftRight = 0x7D, // Rd, Rs1, Rs2
+
     // String operations
     Concat = 0x65,   // Rd, rs_start, count
 
@@ -136,6 +144,12 @@ impl Opcode {
             Opcode::Multiply => 4,
             Opcode::Divide => 4,
             Opcode::Modulo => 4,
+            Opcode::BitAnd => 4,
+            Opcode::BitOr => 4,
+            Opcode::BitXor => 4,
+            Opcode::BitNot => 3,
+            Opcode::ShiftLeft => 4,
+            Opcode::ShiftRight => 4,
             Opcode::Concat => 4,
             Opcode::Convert => 4,
             Opcode::Array => 4,

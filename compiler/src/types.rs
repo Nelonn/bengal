@@ -5,6 +5,11 @@ fn is_numeric_type(ty: &Type) -> bool {
     ty.is_numeric()
 }
 
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+             Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
@@ -2843,6 +2848,48 @@ impl TypeChecker {
                         }
                         Type::Bool
                     }
+                    crate::parser::BinaryOp::BitAnd | crate::parser::BinaryOp::BitOr |
+                    crate::parser::BinaryOp::BitXor | crate::parser::BinaryOp::ShiftLeft |
+                    crate::parser::BinaryOp::ShiftRight => {
+                        // Bitwise operations require integer types
+                        if !is_integer_type(&left_type) && left_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected integer type for bitwise operation, got {}", left_type.to_str()),
+                                0
+                            );
+                        }
+                        if !is_integer_type(&right_type) && right_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected integer type for bitwise operation, got {}", right_type.to_str()),
+                                0
+                            );
+                        }
+                        // For shift operators, the right operand should be an integer (shift amount)
+                        // Result type is the type of the left operand (for shifts) or the more specific integer type
+                        match op {
+                            crate::parser::BinaryOp::ShiftLeft | crate::parser::BinaryOp::ShiftRight => {
+                                // Shift operators preserve the left operand's integer type
+                                if let Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                   Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 = &left_type {
+                                    left_type.clone()
+                                } else {
+                                    Type::Int
+                                }
+                            }
+                            _ => {
+                                // BitAnd, BitOr, BitXor: result is the more specific integer type
+                                if left_type == right_type {
+                                    match left_type {
+                                        Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                                        Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 => left_type.clone(),
+                                        _ => Type::Int,
+                                    }
+                                } else {
+                                    Type::Int
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Expr::Unary { op, expr, .. } => {
@@ -2856,6 +2903,22 @@ impl TypeChecker {
                             );
                         }
                         Type::Bool
+                    }
+                    crate::parser::UnaryOp::BitNot => {
+                        // Bitwise NOT requires integer types
+                        if !is_integer_type(&inner_type) && inner_type != Type::Unknown {
+                            self.context.add_error(
+                                format!("Expected integer type for bitwise NOT, got {}", inner_type.to_str()),
+                                0
+                            );
+                        }
+                        // Result type is the same as operand type
+                        if let Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                           Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 = &inner_type {
+                            inner_type.clone()
+                        } else {
+                            Type::Int
+                        }
                     }
                     crate::parser::UnaryOp::Negate => {
                         // Negation works on numeric types and returns the same type

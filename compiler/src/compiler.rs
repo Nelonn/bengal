@@ -1336,6 +1336,11 @@ impl Compiler {
                     BinaryOp::GreaterEqual => Opcode::GreaterEqual,
                     BinaryOp::Less => Opcode::Less,
                     BinaryOp::LessEqual => Opcode::LessEqual,
+                    BinaryOp::BitAnd => Opcode::BitAnd,
+                    BinaryOp::BitOr => Opcode::BitOr,
+                    BinaryOp::BitXor => Opcode::BitXor,
+                    BinaryOp::ShiftLeft => Opcode::ShiftLeft,
+                    BinaryOp::ShiftRight => Opcode::ShiftRight,
                     BinaryOp::Pow => unreachable!("Pow operator handled separately"),
                 };
 
@@ -1367,6 +1372,14 @@ impl Compiler {
                         let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
                         let rd = self.current_ctx.allocate_reg();
                         bytecode.push(Opcode::Not as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(r as u8);
+                        Ok(rd)
+                    }
+                    UnaryOp::BitNot => {
+                        let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
+                        let rd = self.current_ctx.allocate_reg();
+                        bytecode.push(Opcode::BitNot as u8);
                         bytecode.push(rd as u8);
                         bytecode.push(r as u8);
                         Ok(rd)
@@ -2408,6 +2421,18 @@ impl Compiler {
                     BinaryOp::Greater | BinaryOp::GreaterEqual |
                     BinaryOp::Less | BinaryOp::LessEqual => Type::Bool,
                     BinaryOp::Pow => Type::Float,  // std.math.pow returns float
+                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor |
+                    BinaryOp::ShiftLeft | BinaryOp::ShiftRight => {
+                        // Bitwise operations return integer types
+                        let left_type = self.infer_expr_type(left, ctx);
+                        // For shift operators, preserve the left operand's integer type
+                        if let Type::Int8 | Type::UInt8 | Type::Int16 | Type::UInt16 |
+                           Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64 = &left_type {
+                            left_type.clone()
+                        } else {
+                            Type::Int
+                        }
+                    }
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply |
                     BinaryOp::Divide | BinaryOp::Modulo => {
                         // Try to get type from left and right operands
