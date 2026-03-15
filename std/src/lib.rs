@@ -164,7 +164,6 @@ pub fn register_all(vm: &mut VM) {
         .function("get", args::native_args_get)
         .register(vm);
 
-    // Register math constants and functions
     NativeModule::new("std.math")
         .function("sin", math::native_math_sin)
         .function("cos", math::native_math_cos)
@@ -214,7 +213,6 @@ pub fn register_all(vm: &mut VM) {
         .function("assertSame", test::native_assert_same)
         .register(vm);
 
-    // Fallback function that throws an error
     vm.register_fallback(|_args| {
         Err(Value::String(
             "Native method not available or disabled by runtime".to_string(),

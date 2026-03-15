@@ -2637,6 +2637,18 @@ impl Parser {
 
         while let Some(interp_start) = s[last_pos..].find("${") {
             let abs_start = last_pos + interp_start;
+            
+            // Check if this ${ is preceded by our escape marker (\x00)
+            if abs_start > 0 && s.as_bytes()[abs_start - 1] == 0 {
+                // This is an escaped ${, skip it
+                // Add text before and including the escaped sequence
+                if abs_start + 2 > last_pos {
+                    parts.push(InterpPart::Text(s[last_pos..abs_start + 2].to_string()));
+                }
+                last_pos = abs_start + 2;
+                continue;
+            }
+            
             if abs_start > last_pos {
                 parts.push(InterpPart::Text(s[last_pos..abs_start].to_string()));
             }
@@ -2683,10 +2695,17 @@ impl Parser {
             parts.push(InterpPart::Text(s[last_pos..].to_string()));
         }
 
+        // Clean up escape markers from text parts
+        for part in &mut parts {
+            if let InterpPart::Text(text) = part {
+                *text = text.replace("\x00$", "$");
+            }
+        }
+
         if parts.iter().any(|p| matches!(p, InterpPart::Expr(_))) {
             Ok(Expr::Interpolated { parts, span })
         } else {
-            Ok(Expr::Literal(Literal::String(s, span)))
+            Ok(Expr::Literal(Literal::String(s.replace("\x00$", "$"), span)))
         }
     }
 }

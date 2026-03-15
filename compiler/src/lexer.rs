@@ -437,6 +437,10 @@ impl Lexer {
                     Some('a') => s.push('\x07'),  // \a = bell/alert
                     Some('f') => s.push('\x0C'),  // \f = form feed
                     Some('v') => s.push('\x0B'),  // \v = vertical tab
+                    Some('$') => {
+                        s.push('\x00');  // Use null byte as marker for escaped dollar
+                        s.push('$');
+                    }  // \$ = literal dollar sign (not interpolation)
                     Some(c) => s.push(c),
                     None => return Err(self.error("Unterminated string escape")),
                 }
@@ -474,6 +478,10 @@ impl Lexer {
                     Some('a') => s.push('\x07'),  // \a = bell/alert
                     Some('f') => s.push('\x0C'),  // \f = form feed
                     Some('v') => s.push('\x0B'),  // \v = vertical tab
+                    Some('$') => {
+                        s.push('\x00');  // Use null byte as marker for escaped dollar
+                        s.push('$');
+                    }  // \$ = literal dollar sign (not interpolation)
                     Some(c) => s.push(c),
                     None => return Err(self.error("Unterminated multiline string escape")),
                 }
@@ -896,6 +904,16 @@ mod tests {
         assert_eq!(tokenize("\"Hello\\sWorld\"").unwrap(), vec![Token::String("Hello World".to_string()), Token::Eof]);
         assert_eq!(tokenize("\"Line1\\nLine2\"").unwrap(), vec![Token::String("Line1\nLine2".to_string()), Token::Eof]);
         assert_eq!(tokenize("\"Tab\\tSeparated\"").unwrap(), vec![Token::String("Tab\tSeparated".to_string()), Token::Eof]);
+    }
+
+    #[test]
+    fn test_string_dollar_escape() {
+        // Escaped dollar sign - internally uses \x00$ marker to prevent interpolation
+        assert_eq!(tokenize("\"\\$\"").unwrap(), vec![Token::String("\x00$".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\$100\"").unwrap(), vec![Token::String("\x00$100".to_string()), Token::Eof]);
+        // Escaped interpolation syntax
+        assert_eq!(tokenize("\"\\${}\"").unwrap(), vec![Token::String("\x00${}".to_string()), Token::Eof]);
+        assert_eq!(tokenize("\"\\${x}\"").unwrap(), vec![Token::String("\x00${x}".to_string()), Token::Eof]);
     }
 
     #[test]
