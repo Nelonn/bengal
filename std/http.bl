@@ -29,6 +29,8 @@ class Response {
 }
 
 native class HttpClient {
+  constructor()
+
   fn setBaseUrl(url: str)
 
   fn setTimeout(ms: int)

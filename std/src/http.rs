@@ -324,6 +324,11 @@ impl From<HttpClientState> for HttpClientConfig {
     }
 }
 
+pub fn native_http_client_constructor(_args: &mut Vec<Value>) -> Result<Value, Value> {
+    // Constructor is called after native_create, state is already initialized
+    Ok(Value::Null)
+}
+
 /// Helper function to get or create HttpClientState from instance's native_data
 fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientState>>, Value> {
     if args.is_empty() {
