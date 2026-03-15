@@ -575,7 +575,7 @@ impl Compiler {
                             method_bytecode.push(r_param as u8);
                         }
                     }
-                } else {
+                } else if method.name == "constructor" {
                     // Custom constructor: initialize instance fields with defaults first, then run custom body
                     // Note: Static fields are initialized at module level, not in constructors
                     for field in &c.fields {
@@ -597,6 +597,11 @@ impl Compiler {
                     }
 
                     // Now compile the custom constructor body
+                    for stmt in &method.body {
+                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                    }
+                } else {
+                    // Regular method (not a constructor) - just compile the body
                     for stmt in &method.body {
                         method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
                     }
