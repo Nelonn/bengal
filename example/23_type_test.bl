@@ -1,6 +1,8 @@
 // Test file for integer and float type support
 // Bengal uses i64 and f64 internally, but VM supports all C types for FFI
 
+import std.io
+
 // Test basic integer operations (uses i64)
 let x = 42
 let y = 10

@@ -5,7 +5,19 @@ edition = "2021"
 description = "Virtual machine for Bengal language"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
 async-recursion = "1.1"
 serde = { version = "1.0", features = ["derive"] }
-simd-json = "0.13"
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = ["Window"], optional = true }
+
+[features]
+default = []
+wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }

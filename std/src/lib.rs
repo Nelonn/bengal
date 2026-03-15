@@ -6,6 +6,7 @@ pub mod http;
 pub mod io;
 pub mod json;
 pub mod math;
+pub mod random;
 pub mod reflect;
 pub mod str;
 pub mod sys;
@@ -204,6 +205,14 @@ pub fn register_all(vm: &mut VM) {
         .function("toDegrees", math::native_math_to_degrees)
         .function("check_overflow", math::native_math_check_overflow)
         .function("check_div_zero", math::native_math_check_div_zero)
+        .register(vm);
+
+    NativeModule::new("std.random")
+        .function("nextBool", random::native_random_next_bool)
+        .function("nextInt", random::native_random_next_int)
+        .function("nextIntRange", random::native_random_next_int_range)
+        .function("nextFloat", random::native_random_next_float)
+        .function("nextFloatRange", random::native_random_next_float_range)
         .register(vm);
 
     NativeModule::new("std.test")

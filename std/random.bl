@@ -1,0 +1,7 @@
+module std.random
+
+native fn nextBool(): bool
+native fn nextInt(): int
+native fn nextIntRange(min: int, max: int): int
+native fn nextFloat(): float
+native fn nextFloatRange(min: float, max: float): float

@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
+use crate::async_runtime::{self, Mutex as AsyncMutex};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use serde::ser::SerializeMap;
 use serde::de::{MapAccess, Visitor};
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use async_recursion::async_recursion;
 use std::any::Any;
 use crate::linker::NativeFunctionRegistry;
@@ -111,7 +112,7 @@ pub enum Value {
     Null,
     Instance(Arc<Mutex<Instance>>),
     Array(Arc<Mutex<Vec<Value>>>),
-    Promise(Arc<TokioMutex<PromiseState>>),
+    Promise(Arc<AsyncMutex<PromiseState>>),
     Exception(Exception),
 }
 
@@ -914,54 +915,131 @@ impl VM {
         self.source_file.clone()
     }
 
-    #[async_recursion]
+    #[cfg_attr(not(target_arch = "wasm32"), async_recursion)]
+    #[cfg_attr(target_arch = "wasm32", allow(unused))]
     pub async fn run(&mut self) -> Result<RunResult, Value> {
-        while self.pc() < self.bytecode.len() {
-            let opcode = self.bytecode[self.pc()];
-            let result = match self.execute(opcode).await {
-                Ok(res) => res,
-                Err(e) => {
-                    let exception = match &e {
-                        Value::Exception(existing) => existing.clone(),
-                        _ => self.build_exception(&e),
-                    };
+        #[cfg(target_arch = "wasm32")]
+        {
+            use std::pin::Pin;
+            use std::future::Future;
+            
+            // On WASM, use Box::pin for recursive calls
+            let mut result: Option<Result<RunResult, Value>> = None;
+            
+            loop {
+                if self.pc() >= self.bytecode.len() {
+                    if let Some(frame) = self.call_stack.last() {
+                        if frame.is_native {
+                            self.call_stack.pop();
+                            if self.call_stack.is_empty() {
+                                break;
+                            }
+                            continue;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                
+                let opcode = self.bytecode[self.pc()];
+                let exec_result = match self.execute(opcode).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        let exception = match &e {
+                            Value::Exception(existing) => existing.clone(),
+                            _ => self.build_exception(&e),
+                        };
 
-                    // Only catch if we have a handler in the current call frame
-                    let mut has_local_handler = false;
-                    if let Some(handler) = self.exception_handlers.last() {
-                        if handler.call_stack_depth == self.call_stack.len() {
-                            has_local_handler = true;
+                        let mut has_local_handler = false;
+                        if let Some(handler) = self.exception_handlers.last() {
+                            if handler.call_stack_depth == self.call_stack.len() {
+                                has_local_handler = true;
+                            }
+                        }
+
+                        if has_local_handler {
+                            let handler = self.exception_handlers.pop().unwrap();
+                            self.set_pc(handler.catch_pc);
+                            self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                            continue;
+                        } else {
+                            return Err(Value::Exception(exception));
                         }
                     }
+                };
 
-                    if has_local_handler {
-                        let handler = self.exception_handlers.pop().unwrap();
-                        self.set_pc(handler.catch_pc);
-                        self.set_reg(handler.catch_register as u8, Value::Exception(exception));
-                        continue;
+                if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
+                    if !self.call_stack.is_empty() {
+                        self.call_stack.pop();
+                        if self.call_stack.is_empty() {
+                            break;
+                        }
                     } else {
-                        return Err(Value::Exception(exception));
+                        break;
                     }
                 }
-            };
 
-            if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
-                break;
-            }
-
-            match result {
-                ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
-                ExecutionResult::Breakpoint => {
-                    return Ok(RunResult::Breakpoint);
+                match exec_result {
+                    ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
+                    ExecutionResult::Breakpoint => {
+                        return Ok(RunResult::Breakpoint);
+                    }
+                    ExecutionResult::Continue => {}
                 }
-                ExecutionResult::Continue => {}
             }
 
-            // execute() is responsible for setting PC to next instruction
-            // No increment needed here
+            Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
         }
+        
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            loop {
+                if self.pc() >= self.bytecode.len() {
+                    break;
+                }
+                
+                let opcode = self.bytecode[self.pc()];
+                let result = match self.execute(opcode).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        let exception = match &e {
+                            Value::Exception(existing) => existing.clone(),
+                            _ => self.build_exception(&e),
+                        };
 
-        Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
+                        let mut has_local_handler = false;
+                        if let Some(handler) = self.exception_handlers.last() {
+                            if handler.call_stack_depth == self.call_stack.len() {
+                                has_local_handler = true;
+                            }
+                        }
+
+                        if has_local_handler {
+                            let handler = self.exception_handlers.pop().unwrap();
+                            self.set_pc(handler.catch_pc);
+                            self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                            continue;
+                        } else {
+                            return Err(Value::Exception(exception));
+                        }
+                    }
+                };
+
+                if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
+                    break;
+                }
+
+                match result {
+                    ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
+                    ExecutionResult::Breakpoint => {
+                        return Ok(RunResult::Breakpoint);
+                    }
+                    ExecutionResult::Continue => {}
+                }
+            }
+
+            Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
+        }
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -982,7 +1060,7 @@ impl VM {
         Exception::new(message, stack_trace)
     }
 
-    #[async_recursion]
+    #[cfg_attr(not(target_arch = "wasm32"), async_recursion)]
     async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
         match opcode {
             x if x == Opcode::Nop as u8 => {
@@ -1271,6 +1349,9 @@ impl VM {
                     let old_classes = std::mem::replace(&mut self.classes, new_classes);
 
                     // Execute function
+                    #[cfg(target_arch = "wasm32")]
+                    let result = Box::pin(self.run()).await;
+                    #[cfg(not(target_arch = "wasm32"))]
                     let result = self.run().await;
 
                     // Restore state
@@ -1487,6 +1568,9 @@ impl VM {
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
                             let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
+                            #[cfg(target_arch = "wasm32")]
+                            let result = Box::pin(self.run()).await;
+                            #[cfg(not(target_arch = "wasm32"))]
                             let result = self.run().await;
 
                             self.bytecode = old_bytecode;
@@ -1595,6 +1679,9 @@ impl VM {
                         let old_classes = std::mem::replace(&mut self.classes, new_classes);
                         let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
+                        #[cfg(target_arch = "wasm32")]
+                        let result = Box::pin(self.run()).await;
+                        #[cfg(not(target_arch = "wasm32"))]
                         let result = self.run().await;
 
                         self.bytecode = old_bytecode;
@@ -1679,6 +1766,9 @@ impl VM {
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
                             let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
+                            #[cfg(target_arch = "wasm32")]
+                            let result = Box::pin(self.run()).await;
+                            #[cfg(not(target_arch = "wasm32"))]
                             let result = self.run().await;
 
                             self.bytecode = old_bytecode;
@@ -1723,7 +1813,7 @@ impl VM {
                             match &mut *state {
                                 PromiseState::Pending => {
                                     drop(state);
-                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                    async_runtime::sleep(std::time::Duration::from_millis(10)).await;
                                 }
                                 PromiseState::Resolved(v) => {
                                     self.set_reg(rd, v.clone());
@@ -2455,14 +2545,14 @@ impl VM {
 pub enum RunResult {
     Finished(Option<Value>),
     Breakpoint,
-    Awaiting(Arc<TokioMutex<PromiseState>>),
+    Awaiting(Arc<AsyncMutex<PromiseState>>),
 }
 
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     Continue,
     Breakpoint,
-    Awaiting(Arc<TokioMutex<PromiseState>>),
+    Awaiting(Arc<AsyncMutex<PromiseState>>),
 }
 
 impl Serialize for Value {

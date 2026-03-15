@@ -1,6 +1,7 @@
 use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult};
 use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
+use crate::async_runtime;
 use std::sync::{Arc, RwLock};
 
 pub struct Bytecode {
@@ -252,7 +253,7 @@ impl Executor {
                     match &mut *state {
                         PromiseState::Pending => {
                             drop(state);
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                            async_runtime::sleep(std::time::Duration::from_millis(10)).await;
                             continue;
                         }
                         PromiseState::Resolved(_) | PromiseState::Rejected(_) => {
