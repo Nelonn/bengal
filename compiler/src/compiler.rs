@@ -483,15 +483,21 @@ impl Compiler {
         let mut static_field_initializers: Vec<(String, String, Expr)> = Vec::new();  // (class_name, field_name, default_expr)
         for c in &classes {
             let mut fields = std::collections::HashMap::new();
+            let mut private_fields = std::collections::HashSet::new();
             // Initialize all fields to Null - actual initialization happens at module level for static fields
             // and in constructor for instance fields
             for field in &c.fields {
-                fields.insert(field.name.clone(), Value::Null);
-                // Collect static field initializers
+                // Skip static fields - they are stored as module-level variables, not in instances
                 if field.is_static {
                     if let Some(default_expr) = &field.default {
                         static_field_initializers.push((c.name.clone(), field.name.clone(), default_expr.clone()));
                     }
+                    continue;
+                }
+                fields.insert(field.name.clone(), Value::Null);
+                // Track private fields for reflection/stringification
+                if field.private {
+                    private_fields.insert(field.name.clone());
                 }
             }
 
@@ -776,6 +782,7 @@ impl Compiler {
             vm_classes.push(Class {
                 name: c.name.clone(),
                 fields,
+                private_fields,
                 methods: vm_methods,
                 native_methods: std::collections::HashMap::new(),
                 native_create: None,

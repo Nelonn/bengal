@@ -7,6 +7,8 @@ class SomeObject {
 
   private some_private: bool = false
 
+  static some_static_field: bool = false
+
   constructor(name: str) {
     self.some_string = name
   }
@@ -24,3 +26,5 @@ let some_object = SomeObject("John")
 
 println("Call 1: ${some_object.someMethod()}")
 println("Call 2: ${some_object.someMethod()}")
+
+println(str(some_object))

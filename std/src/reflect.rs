@@ -52,11 +52,15 @@ pub fn native_reflect_fields(args: &mut Vec<Value>) -> Result<Value, Value> {
     }
 
     match &args[0] {
-        Value::Instance(inst) => Ok(Value::Instance(Arc::new(Mutex::new(Instance {
-            class: "Object".to_string(),
-            fields: inst.lock().unwrap().fields.clone(),
-            native_data: Arc::new(Mutex::new(None)),
-        })))),
+        Value::Instance(inst) => {
+            let inst_lock = inst.lock().unwrap();
+            Ok(Value::Instance(Arc::new(Mutex::new(Instance {
+                class: "Object".to_string(),
+                fields: inst_lock.fields.clone(),
+                private_fields: inst_lock.private_fields.clone(),
+                native_data: Arc::new(Mutex::new(None)),
+            }))))
+        }
         _ => Ok(Value::Null),
     }
 }

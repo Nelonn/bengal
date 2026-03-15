@@ -431,6 +431,7 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
     Ok(Value::Instance(Arc::new(Mutex::new(Instance {
         class: "Object".to_string(),
         fields: env_map,
+        private_fields: std::collections::HashSet::new(),
         native_data: Arc::new(Mutex::new(None)),
     }))))
 }

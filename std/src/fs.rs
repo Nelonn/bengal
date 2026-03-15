@@ -33,6 +33,7 @@ pub fn native_fs_read(args: &mut Vec<Value>) -> Result<Value, Value> {
             Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                 class: "Array".to_string(),
                 fields,
+                private_fields: std::collections::HashSet::new(),
                 native_data: Arc::new(Mutex::new(None)),
             }))))
         }
@@ -449,6 +450,7 @@ pub fn native_fs_read_dir(args: &mut Vec<Value>) -> Result<Value, Value> {
             Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                 class: "Array".to_string(),
                 fields,
+                private_fields: std::collections::HashSet::new(),
                 native_data: Arc::new(Mutex::new(None)),
             }))))
         }
@@ -577,6 +579,7 @@ pub fn native_fs_metadata(args: &mut Vec<Value>) -> Result<Value, Value> {
             Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                 class: "FsMetadata".to_string(),
                 fields,
+                private_fields: std::collections::HashSet::new(),
                 native_data: Arc::new(Mutex::new(None)),
             }))))
         }

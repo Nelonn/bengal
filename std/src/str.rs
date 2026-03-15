@@ -25,6 +25,10 @@ pub fn native_str(args: &mut Vec<Value>) -> Result<Value, Value> {
             let inst = inst.lock().unwrap();
             let mut fields_str = Vec::new();
             for (key, value) in &inst.fields {
+                // Skip private fields - they should not be visible in string representation
+                if inst.private_fields.contains(key) {
+                    continue;
+                }
                 let value_str = match value {
                     Value::String(s) => format!("\"{}\"", s),
                     Value::Int8(n) => n.to_string(),

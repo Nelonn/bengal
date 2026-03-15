@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
@@ -362,6 +362,7 @@ pub enum PromiseState {
 pub struct Instance {
     pub class: String,
     pub fields: HashMap<String, Value>,
+    pub private_fields: HashSet<String>,
     pub native_data: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
 }
 
@@ -369,6 +370,7 @@ pub struct Instance {
 pub struct Class {
     pub name: String,
     pub fields: HashMap<String, Value>,
+    pub private_fields: HashSet<String>,
     pub methods: HashMap<String, Method>,
     pub native_methods: HashMap<String, NativeFn>,
     pub native_create: Option<NativeFn>,
@@ -1178,6 +1180,7 @@ impl VM {
                     let instance = Value::Instance(Arc::new(Mutex::new(Instance {
                         class: func_name.clone(),
                         fields: class.fields.clone(),
+                        private_fields: class.private_fields.clone(),
                         native_data: Arc::new(Mutex::new(None)),
                     })));
                     self.set_reg(rd, instance.clone());
@@ -2557,6 +2560,7 @@ impl<'de> Deserialize<'de> for Value {
                 Ok(Value::Instance(Arc::new(Mutex::new(Instance {
                     class: "Object".to_string(),
                     fields,
+                    private_fields: HashSet::new(),
                     native_data: Arc::new(Mutex::new(None)),
                 }))))
             }
