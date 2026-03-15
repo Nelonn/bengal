@@ -2,7 +2,7 @@
 # Creates artifacts for:
 # - Linux (.deb, .rpm, .tar.gz) - amd64, arm64
 # - macOS (.tar.gz, .pkg) - amd64, arm64
-# - Windows (.exe, .zip) - amd64, arm64
+# - Windows (.zip) - amd64, arm64
 
 name: Build Releases
 
@@ -22,6 +22,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          # Convert to deb-compatible version: replace dashes with tildes
+          # e.g., "1.0.0-beta" -> "1.0.0~beta", "1.0.0-dirty" -> "1.0.0~dirty"
+          DEB_VERSION=$(echo "$VERSION" | sed 's/-/~/g')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "deb_version=$DEB_VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -45,7 +58,6 @@ jobs:
 
       - name: Create DEB package structure
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p debian-package/DEBIAN
           mkdir -p debian-package/usr/bin
           mkdir -p debian-package/usr/share/doc/bengal
@@ -55,7 +67,7 @@ jobs:
 
           cat > debian-package/DEBIAN/control << EOF
           Package: bengal
-          Version: ${VERSION#v}
+          Version: ${{ steps.version.outputs.deb_version }}
           Section: utils
           Priority: optional
           Architecture: amd64
@@ -69,8 +81,7 @@ jobs:
 
       - name: Build DEB package
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          fakeroot dpkg-deb --build debian-package bengal_${VERSION#v}_amd64.deb
+          fakeroot dpkg-deb --build debian-package bengal_${{ steps.version.outputs.deb_version }}_amd64.deb
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -83,6 +94,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          DEB_VERSION=$(echo "$VERSION" | sed 's/-/~/g')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "deb_version=$DEB_VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -93,7 +115,6 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
 
-          # Rewrite sources to pin amd64 to azure mirror, arm64 to ports.ubuntu.com
           sudo tee /etc/apt/sources.list << 'EOF'
           deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
           deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
@@ -104,7 +125,6 @@ jobs:
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
           EOF
 
-          # Disable the Azure mirrorlist which overrides sources.list and has no arm64
           sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
           sudo rm -f /etc/apt/apt-mirrors.txt
 
@@ -140,7 +160,6 @@ jobs:
 
       - name: Create DEB package structure
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p debian-package/DEBIAN
           mkdir -p debian-package/usr/bin
           mkdir -p debian-package/usr/share/doc/bengal
@@ -150,7 +169,7 @@ jobs:
 
           cat > debian-package/DEBIAN/control << EOF
           Package: bengal
-          Version: ${VERSION#v}
+          Version: ${{ steps.version.outputs.deb_version }}
           Section: utils
           Priority: optional
           Architecture: arm64
@@ -164,8 +183,7 @@ jobs:
 
       - name: Build DEB package
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          fakeroot dpkg-deb --build debian-package bengal_${VERSION#v}_arm64.deb
+          fakeroot dpkg-deb --build debian-package bengal_${{ steps.version.outputs.deb_version }}_arm64.deb
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -180,6 +198,15 @@ jobs:
     container: fedora:latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -202,18 +229,17 @@ jobs:
 
       - name: Create RPM package structure
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p rpm-package/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          mkdir -p rpm-package/SOURCES/bengal-${VERSION#v}
+          mkdir -p rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}
 
-          cp target/release/bengal rpm-package/SOURCES/bengal-${VERSION#v}/
-          chmod 755 rpm-package/SOURCES/bengal-${VERSION#v}/bengal
+          cp target/release/bengal rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}/
+          chmod 755 rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}/bengal
 
-          tar -czf rpm-package/SOURCES/bengal-${VERSION#v}.tar.gz -C rpm-package/SOURCES/ bengal-${VERSION#v}
+          tar -czf rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}.tar.gz -C rpm-package/SOURCES/ bengal-${{ steps.version.outputs.version }}
 
           cat > rpm-package/SPECS/bengal.spec << EOF
           Name:           bengal
-          Version:        ${VERSION#v}
+          Version:        ${{ steps.version.outputs.version }}
           Release:        1%{?dist}
           Summary:        Bengal language CLI
           License:        MIT
@@ -225,7 +251,7 @@ jobs:
 
           %install
           mkdir -p %{buildroot}/usr/bin
-          cp %{_sourcedir}/bengal-${VERSION#v}/bengal %{buildroot}/usr/bin/
+          cp %{_sourcedir}/bengal-${{ steps.version.outputs.version }}/bengal %{buildroot}/usr/bin/
           chmod 755 %{buildroot}/usr/bin/bengal
 
           %files
@@ -239,12 +265,11 @@ jobs:
 
       - name: Build RPM package
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           rpmbuild -bb rpm-package/SPECS/bengal.spec \
             --define "_topdir $(pwd)/rpm-package" \
             --define "_rpmdir $(pwd)/rpm-package/RPMS"
 
-          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${VERSION#v}_amd64.rpm \;
+          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${{ steps.version.outputs.version }}_amd64.rpm \;
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
@@ -258,6 +283,15 @@ jobs:
     container: fedora:latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -282,9 +316,7 @@ jobs:
       - name: Install aarch64 sysroot headers
         continue-on-error: true
         run: |
-          # Install cross-compilation sysroot so ring/cc-rs can find stdint.h
           dnf install -y glibc-devel.aarch64 libgcc.aarch64 || true
-          # Symlink sysroot for the cross compiler
           SYSROOT=/usr/aarch64-linux-gnu/sys-root
           mkdir -p $SYSROOT/usr/include
           cp -r /usr/include/bits $SYSROOT/usr/include/ 2>/dev/null || true
@@ -311,18 +343,17 @@ jobs:
 
       - name: Create RPM package structure
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p rpm-package/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          mkdir -p rpm-package/SOURCES/bengal-${VERSION#v}
+          mkdir -p rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}
 
-          cp target/aarch64-unknown-linux-gnu/release/bengal rpm-package/SOURCES/bengal-${VERSION#v}/
-          chmod 755 rpm-package/SOURCES/bengal-${VERSION#v}/bengal
+          cp target/aarch64-unknown-linux-gnu/release/bengal rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}/
+          chmod 755 rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}/bengal
 
-          tar -czf rpm-package/SOURCES/bengal-${VERSION#v}.tar.gz -C rpm-package/SOURCES/ bengal-${VERSION#v}
+          tar -czf rpm-package/SOURCES/bengal-${{ steps.version.outputs.version }}.tar.gz -C rpm-package/SOURCES/ bengal-${{ steps.version.outputs.version }}
 
           cat > rpm-package/SPECS/bengal.spec << EOF
           Name:           bengal
-          Version:        ${VERSION#v}
+          Version:        ${{ steps.version.outputs.version }}
           Release:        1%{?dist}
           Summary:        Bengal language CLI
           License:        MIT
@@ -334,7 +365,7 @@ jobs:
 
           %install
           mkdir -p %{buildroot}/usr/bin
-          cp %{_sourcedir}/bengal-${VERSION#v}/bengal %{buildroot}/usr/bin/
+          cp %{_sourcedir}/bengal-${{ steps.version.outputs.version }}/bengal %{buildroot}/usr/bin/
           chmod 755 %{buildroot}/usr/bin/bengal
 
           %files
@@ -348,13 +379,12 @@ jobs:
 
       - name: Build RPM package
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           rpmbuild -bb rpm-package/SPECS/bengal.spec \
             --define "_topdir $(pwd)/rpm-package" \
             --define "_rpmdir $(pwd)/rpm-package/RPMS" \
             --target aarch64
 
-          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${VERSION#v}_arm64.rpm \;
+          find rpm-package/RPMS -name "*.rpm" -exec cp {} rpm-package/bengal_${{ steps.version.outputs.version }}_arm64.rpm \;
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
@@ -368,6 +398,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -384,9 +423,8 @@ jobs:
       - name: Build release binary
         run: cargo build --release --bin bengal
 
-      - name: Create Arch package structure
+      - name: Create Arch .tar.gz package
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p arch-package/usr/bin
           mkdir -p arch-package/usr/share/doc/bengal
 
@@ -394,17 +432,16 @@ jobs:
           chmod 755 arch-package/usr/bin/bengal
           cp README.md arch-package/usr/share/doc/bengal/
 
-          tar -czf bengal_${VERSION#v}_amd64.tar.gz -C arch-package usr
+          tar -czf bengal_${{ steps.version.outputs.version }}_arch_amd64.tar.gz -C arch-package usr
 
       - name: Create PKGBUILD
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           cat > PKGBUILD << EOF
           pkgname=bengal
-          pkgver=${VERSION#v}
+          pkgver=${{ steps.version.outputs.version }}
           pkgrel=1
           pkgdesc="Bengal language CLI"
-          arch=('amd64')
+          arch=('x86_64')
           url="https://github.com/${{ github.repository }}"
           license=('MIT')
           provides=('bengal')
@@ -418,14 +455,13 @@ jobs:
 
       - name: Create .SRCINFO
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           cat > .SRCINFO << EOF
           pkgbase = bengal
-          pkgver = ${VERSION#v}
+          pkgver = ${{ steps.version.outputs.version }}
           pkgrel = 1
           pkgdesc = Bengal language CLI
           url = https://github.com/${{ github.repository }}
-          arch = amd64
+          arch = x86_64
           license = MIT
           provides = bengal
           EOF
@@ -439,126 +475,21 @@ jobs:
             PKGBUILD
             .SRCINFO
 
-  build-arch-arm64:
-    name: Build Arch Linux Package (arm64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          target: aarch64-unknown-linux-gnu
-
-      - name: Install cross-compilation tools
-        run: |
-          sudo dpkg --add-architecture arm64
-
-          # Rewrite sources to pin amd64 to azure mirror, arm64 to ports.ubuntu.com
-          sudo tee /etc/apt/sources.list << 'EOF'
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
-          EOF
-
-          # Disable the Azure mirrorlist which overrides sources.list and has no arm64
-          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
-          sudo rm -f /etc/apt/apt-mirrors.txt
-
-          sudo apt update
-          sudo apt install -y \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            libssl-dev:arm64
-
-      - name: Set pkg-config for cross-compilation
-        run: |
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-arch-arm64-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build release binary (arm64)
-        run: |
-          cargo build --release --bin bengal --target aarch64-unknown-linux-gnu
-          mkdir -p target/release-arm64
-          cp target/aarch64-unknown-linux-gnu/release/bengal target/release-arm64/bengal
-
-      - name: Create Arch package structure
-        run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          mkdir -p arch-package/usr/bin
-          mkdir -p arch-package/usr/share/doc/bengal
-
-          cp target/release-arm64/bengal arch-package/usr/bin/
-          chmod 755 arch-package/usr/bin/bengal
-          cp README.md arch-package/usr/share/doc/bengal/
-
-          tar -czf bengal_${VERSION#v}_arm64.tar.gz -C arch-package usr
-
-      - name: Create PKGBUILD
-        run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          cat > PKGBUILD << EOF
-          pkgname=bengal
-          pkgver=${VERSION#v}
-          pkgrel=1
-          pkgdesc="Bengal language CLI"
-          arch=('arm64' 'aarch64')
-          url="https://github.com/${{ github.repository }}"
-          license=('MIT')
-          provides=('bengal')
-
-          package() {
-            cd "\${srcdir}"
-            install -Dm755 bengal "\${pkgdir}/usr/bin/bengal"
-            install -Dm644 README.md "\${pkgdir}/usr/share/doc/bengal/README.md"
-          }
-          EOF
-
-      - name: Create .SRCINFO
-        run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          cat > .SRCINFO << EOF
-          pkgbase = bengal
-          pkgver = ${VERSION#v}
-          pkgrel = 1
-          pkgdesc = Bengal language CLI
-          url = https://github.com/${{ github.repository }}
-          arch = arm64
-          arch = aarch64
-          license = MIT
-          provides = bengal
-          EOF
-
-      - name: Upload Arch artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bengal-arch-arm64
-          path: |
-            bengal_*.tar.gz
-            PKGBUILD
-            .SRCINFO
-
   # ========== MACOS ==========
   build-macos-amd64:
     name: Build macOS Package (amd64)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -579,7 +510,6 @@ jobs:
 
       - name: Create macOS package structure
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p macos-package/bin
           mkdir -p macos-package/share/doc/bengal
 
@@ -587,20 +517,19 @@ jobs:
           chmod 755 macos-package/bin/bengal
           cp README.md macos-package/share/doc/bengal/
 
-          tar -czf bengal_${VERSION#v}_macos_amd64.tar.gz -C macos-package bin share
+          tar -czf bengal_${{ steps.version.outputs.version }}_macos_amd64.tar.gz -C macos-package bin share
 
       - name: Create installer package (.pkg)
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p pkg-root/usr/bin
           cp target/x86_64-apple-darwin/release/bengal pkg-root/usr/bin/
           chmod 755 pkg-root/usr/bin/bengal
 
           pkgbuild --root pkg-root \
                    --identifier io.github.cubekii.bengal \
-                   --version ${VERSION#v} \
+                   --version ${{ steps.version.outputs.version }} \
                    --install-location / \
-                   bengal_${VERSION#v}_macos_amd64.pkg
+                   bengal_${{ steps.version.outputs.version }}_macos_amd64.pkg
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -615,6 +544,15 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -635,7 +573,6 @@ jobs:
 
       - name: Create macOS package structure
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p macos-package/bin
           mkdir -p macos-package/share/doc/bengal
 
@@ -643,20 +580,19 @@ jobs:
           chmod 755 macos-package/bin/bengal
           cp README.md macos-package/share/doc/bengal/
 
-          tar -czf bengal_${VERSION#v}_macos_arm64.tar.gz -C macos-package bin share
+          tar -czf bengal_${{ steps.version.outputs.version }}_macos_arm64.tar.gz -C macos-package bin share
 
       - name: Create installer package (.pkg)
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p pkg-root/usr/bin
           cp target/aarch64-apple-darwin/release/bengal pkg-root/usr/bin/
           chmod 755 pkg-root/usr/bin/bengal
 
           pkgbuild --root pkg-root \
                    --identifier io.github.cubekii.bengal \
-                   --version ${VERSION#v} \
+                   --version ${{ steps.version.outputs.version }} \
                    --install-location / \
-                   bengal_${VERSION#v}_macos_arm64.pkg
+                   bengal_${{ steps.version.outputs.version }}_macos_arm64.pkg
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -672,6 +608,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -691,12 +637,12 @@ jobs:
         run: cargo build --release --bin bengal --target x86_64-pc-windows-msvc
 
       - name: Create Windows package
+        shell: bash
         run: |
-          $VERSION = git describe --tags --always --dirty 2>$null; if (!$VERSION) { $VERSION = "dev" }
-          New-Item -ItemType Directory -Path windows-package\bin -Force
-          Copy-Item target\x86_64-pc-windows-msvc\release\bengal.exe windows-package\bin\
-          Copy-Item README.md windows-package\
-          Compress-Archive -Path windows-package\* -DestinationPath bengal_${VERSION}_windows_amd64.zip -Force
+          mkdir -p windows-package/bin
+          cp target/x86_64-pc-windows-msvc/release/bengal.exe windows-package/bin/
+          cp README.md windows-package/
+          cd windows-package && zip -r ../bengal_${{ steps.version.outputs.version }}_windows_amd64.zip .
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -704,13 +650,22 @@ jobs:
           name: bengal-windows-amd64
           path: |
             bengal_*_windows_amd64.zip
-            bengal_*_windows_amd64.exe
 
   build-windows-arm64:
     name: Build Windows Package (arm64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          VERSION=${RAW_VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -733,12 +688,12 @@ jobs:
         run: cargo build --release --bin bengal --target aarch64-pc-windows-msvc
 
       - name: Create Windows package
+        shell: bash
         run: |
-          $VERSION = git describe --tags --always --dirty 2>$null; if (!$VERSION) { $VERSION = "dev" }
-          New-Item -ItemType Directory -Path windows-package\bin -Force
-          Copy-Item target\aarch64-pc-windows-msvc\release\bengal.exe windows-package\bin\
-          Copy-Item README.md windows-package\
-          Compress-Archive -Path windows-package\* -DestinationPath bengal_${VERSION}_windows_arm64.zip -Force
+          mkdir -p windows-package/bin
+          cp target/aarch64-pc-windows-msvc/release/bengal.exe windows-package/bin/
+          cp README.md windows-package/
+          cd windows-package && zip -r ../bengal_${{ steps.version.outputs.version }}_windows_arm64.zip .
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -746,4 +701,3 @@ jobs:
           name: bengal-windows-arm64
           path: |
             bengal_*_windows_arm64.zip
-            bengal_*_windows_arm64.exe
