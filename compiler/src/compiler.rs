@@ -2383,13 +2383,8 @@ impl Compiler {
                         if let Some(class_info) = ctx.get_class(&class_name) {
                             if let Some(field_info) = class_info.fields.get(name) {
                                 if field_info.is_static {
-                                    // Load static field value - treat as global variable
-                                    let rd = self.current_ctx.allocate_reg();
-                                    let idx = add_string(strings, format!("static_{}.{}", class_name, name));
-                                    bytecode.push(Opcode::LoadLocal as u8);
-                                    bytecode.push(rd as u8);
-                                    bytecode.push(idx as u8);
-                                    return Ok(rd);
+                                    // Static fields must be accessed through the class name, not an instance
+                                    return Err(format!("Static field '{}' on class '{}' must be accessed through the class name, not an instance. Use '{}.{}' instead.", name, class_name, class_name, name));
                                 }
                             }
                         }
@@ -2433,13 +2428,8 @@ impl Compiler {
                         if let Some(class_info) = ctx.get_class(&class_name) {
                             if let Some(field_info) = class_info.fields.get(name) {
                                 if field_info.is_static {
-                                    // Static field assignment - treat as global variable
-                                    let r_val = self.compile_expr(value, bytecode, strings, classes, type_context)?;
-                                    let idx = add_string(strings, format!("static_{}.{}", class_name, name));
-                                    bytecode.push(Opcode::StoreLocal as u8);
-                                    bytecode.push(idx as u8);
-                                    bytecode.push(r_val as u8);
-                                    return Ok(r_val);
+                                    // Static fields must be accessed through the class name, not an instance
+                                    return Err(format!("Static field '{}' on class '{}' must be accessed through the class name, not an instance. Use '{}.{}' instead.", name, class_name, class_name, name));
                                 }
                             }
                         }

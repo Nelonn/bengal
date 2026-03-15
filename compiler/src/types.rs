@@ -3371,8 +3371,13 @@ impl TypeChecker {
 
                             let type_name = field_info.type_name.clone();
 
-                            // Static fields can be accessed through an instance or through the class name
-                            // No error needed for static field access through instance
+                            // Static fields must be accessed through the class name, not an instance
+                            if field_info.is_static {
+                                self.context.add_error_with_location(
+                                    format!("Static field '{}' on class '{}' must be accessed through the class name, not an instance. Use '{}.{}' instead.", name, class_name, class_name, name),
+                                    span.line, span.column, None, None
+                                );
+                            }
 
                             if let Some(err) = visibility_error {
                                 self.context.add_error_with_location(err, span.line, span.column, None, None);
