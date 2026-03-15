@@ -178,6 +178,256 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
     }
 }
 
+/// Information about a variable's liveness and register allocation
+#[derive(Debug, Clone)]
+struct VariableLiveness {
+    /// Register assigned to this variable
+    #[allow(dead_code)] // Used for debugging/inspection
+    register: usize,
+    /// Whether this is a declared variable (should be preserved for debugger in normal mode)
+    is_declared: bool,
+    /// Whether the register can be reused (only in unsafe_fast mode)
+    can_reuse: bool,
+}
+
+/// Liveness analysis result: maps variable names to their last use bytecode position
+type LivenessMap = std::collections::HashMap<String, usize>;
+
+/// Perform liveness analysis on statements to find last use of each variable
+fn analyze_liveness(stmts: &[crate::parser::Stmt], liveness: &mut LivenessMap, position: &mut usize) {
+    for stmt in stmts {
+        analyze_stmt_liveness(stmt, liveness, position);
+    }
+}
+
+fn analyze_stmt_liveness(stmt: &crate::parser::Stmt, liveness: &mut LivenessMap, position: &mut usize) {
+    *position += 1; // Each statement gets a position
+    match stmt {
+        crate::parser::Stmt::Let { name: _, expr, .. } => {
+            // The variable is defined here, analyze the expression
+            analyze_expr_liveness(expr, liveness, position);
+            // Variable 'name' starts its life here (we track uses, not definitions)
+        }
+        crate::parser::Stmt::Assign { name, expr, .. } => {
+            *position += 1;
+            liveness.insert(name.clone(), *position);
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::AugAssign { target, expr, .. } => {
+            *position += 1;
+            match target {
+                crate::parser::AugAssignTarget::Variable(name) => {
+                    liveness.insert(name.clone(), *position);
+                }
+                crate::parser::AugAssignTarget::Field { object, name: _ } => {
+                    analyze_expr_liveness(object, liveness, position);
+                }
+            }
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::Return { expr, .. } => {
+            *position += 1;
+            if let Some(e) = expr {
+                analyze_expr_liveness(e, liveness, position);
+            }
+        }
+        crate::parser::Stmt::Expr(expr) => {
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::If { condition, then_branch, else_branch, .. } => {
+            analyze_expr_liveness(condition, liveness, position);
+            analyze_liveness(then_branch, liveness, position);
+            if let Some(else_b) = else_branch {
+                analyze_liveness(else_b, liveness, position);
+            }
+        }
+        crate::parser::Stmt::For { var_name, range, body, .. } => {
+            if let crate::parser::Expr::Range { start, end, .. } = range.as_ref() {
+                analyze_expr_liveness(start, liveness, position);
+                analyze_expr_liveness(end, liveness, position);
+            }
+            // Track uses of loop variable in body
+            analyze_liveness_with_var(body, liveness, position, var_name);
+        }
+        crate::parser::Stmt::While { condition, body, .. } => {
+            analyze_expr_liveness(condition, liveness, position);
+            analyze_liveness(body, liveness, position);
+        }
+        crate::parser::Stmt::TryCatch { try_block, catch_var, catch_block, .. } => {
+            analyze_liveness(try_block, liveness, position);
+            analyze_liveness_with_var(catch_block, liveness, position, catch_var);
+        }
+        crate::parser::Stmt::Throw { expr, .. } => {
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        // These don't affect local variable liveness
+        crate::parser::Stmt::Break(_) 
+        | crate::parser::Stmt::Continue(_)
+        | crate::parser::Stmt::Module { .. } 
+        | crate::parser::Stmt::Import { .. } 
+        | crate::parser::Stmt::Class(_) 
+        | crate::parser::Stmt::Interface(_) 
+        | crate::parser::Stmt::Enum(_) 
+        | crate::parser::Stmt::Function(_) 
+        | crate::parser::Stmt::TypeAlias(_) => {}
+    }
+}
+
+fn analyze_liveness_with_var(stmts: &[crate::parser::Stmt], liveness: &mut LivenessMap, position: &mut usize, var: &str) {
+    for stmt in stmts {
+        analyze_stmt_liveness_with_var(stmt, liveness, position, var);
+    }
+}
+
+fn analyze_stmt_liveness_with_var(stmt: &crate::parser::Stmt, liveness: &mut LivenessMap, position: &mut usize, var: &str) {
+    *position += 1;
+    match stmt {
+        crate::parser::Stmt::Let { name, expr, .. } => {
+            if name == var {
+                // Shadowing - stop tracking outer var
+                return;
+            }
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::Assign { name, expr, .. } => {
+            if name == var {
+                *position += 1;
+                liveness.insert(var.to_string(), *position);
+            }
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::AugAssign { target, expr, .. } => {
+            match target {
+                crate::parser::AugAssignTarget::Variable(name) => {
+                    if name == var {
+                        *position += 1;
+                        liveness.insert(var.to_string(), *position);
+                    }
+                }
+                crate::parser::AugAssignTarget::Field { object, name: _ } => {
+                    analyze_expr_liveness(object, liveness, position);
+                }
+            }
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::Return { expr, .. } => {
+            if let Some(e) = expr {
+                analyze_expr_liveness(e, liveness, position);
+            }
+        }
+        crate::parser::Stmt::Expr(expr) => {
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::If { condition, then_branch, else_branch, .. } => {
+            analyze_expr_liveness(condition, liveness, position);
+            analyze_liveness_with_var(then_branch, liveness, position, var);
+            if let Some(else_b) = else_branch {
+                analyze_liveness_with_var(else_b, liveness, position, var);
+            }
+        }
+        crate::parser::Stmt::For { var_name, range, body, .. } => {
+            if var_name == var {
+                return; // Shadowing
+            }
+            if let crate::parser::Expr::Range { start, end, .. } = range.as_ref() {
+                analyze_expr_liveness(start, liveness, position);
+                analyze_expr_liveness(end, liveness, position);
+            }
+            analyze_liveness_with_var(body, liveness, position, var);
+        }
+        crate::parser::Stmt::While { condition, body, .. } => {
+            analyze_expr_liveness(condition, liveness, position);
+            analyze_liveness_with_var(body, liveness, position, var);
+        }
+        crate::parser::Stmt::TryCatch { try_block, catch_var, catch_block, .. } => {
+            if catch_var == var {
+                analyze_liveness(catch_block, liveness, position);
+            } else {
+                analyze_liveness(try_block, liveness, position);
+                analyze_liveness_with_var(catch_block, liveness, position, var);
+            }
+        }
+        crate::parser::Stmt::Throw { expr, .. } => {
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Stmt::Break(_) 
+        | crate::parser::Stmt::Continue(_)
+        | crate::parser::Stmt::Module { .. } 
+        | crate::parser::Stmt::Import { .. } 
+        | crate::parser::Stmt::Class(_) 
+        | crate::parser::Stmt::Interface(_) 
+        | crate::parser::Stmt::Enum(_) 
+        | crate::parser::Stmt::Function(_) 
+        | crate::parser::Stmt::TypeAlias(_) => {}
+    }
+}
+
+fn analyze_expr_liveness(expr: &crate::parser::Expr, liveness: &mut LivenessMap, position: &mut usize) {
+    *position += 1;
+    match expr {
+        crate::parser::Expr::Variable { name, .. } => {
+            // Record use of this variable
+            liveness.insert(name.clone(), *position);
+        }
+        crate::parser::Expr::Literal(_) => {}
+        crate::parser::Expr::Binary { left, right, .. } => {
+            analyze_expr_liveness(left, liveness, position);
+            analyze_expr_liveness(right, liveness, position);
+        }
+        crate::parser::Expr::Unary { expr: operand, .. } => {
+            analyze_expr_liveness(operand, liveness, position);
+        }
+        crate::parser::Expr::Call { callee, args, .. } => {
+            analyze_expr_liveness(callee, liveness, position);
+            for arg in args {
+                analyze_expr_liveness(arg, liveness, position);
+            }
+        }
+        crate::parser::Expr::Get { object, .. } => {
+            analyze_expr_liveness(object, liveness, position);
+        }
+        crate::parser::Expr::Set { object, value, .. } => {
+            analyze_expr_liveness(object, liveness, position);
+            analyze_expr_liveness(value, liveness, position);
+        }
+        crate::parser::Expr::Range { start, end, .. } => {
+            analyze_expr_liveness(start, liveness, position);
+            analyze_expr_liveness(end, liveness, position);
+        }
+        crate::parser::Expr::Array { elements, .. } => {
+            for elem in elements {
+                analyze_expr_liveness(elem, liveness, position);
+            }
+        }
+        crate::parser::Expr::ObjectLiteral { fields, .. } => {
+            for field in fields {
+                analyze_expr_liveness(&field.value, liveness, position);
+            }
+        }
+        crate::parser::Expr::Interpolated { parts, .. } => {
+            for part in parts {
+                if let crate::parser::InterpPart::Expr(e) = part {
+                    analyze_expr_liveness(e, liveness, position);
+                }
+            }
+        }
+        crate::parser::Expr::Await { expr, .. } => {
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Expr::Cast { expr, .. } => {
+            analyze_expr_liveness(expr, liveness, position);
+        }
+        crate::parser::Expr::Index { object, index, .. } => {
+            analyze_expr_liveness(object, liveness, position);
+            analyze_expr_liveness(index, liveness, position);
+        }
+        crate::parser::Expr::Lambda { body, .. } => {
+            // For lambdas, analyze the body but variables inside are local to the lambda
+            analyze_liveness(body, liveness, position);
+        }
+    }
+}
+
 /// Compilation context for a single function/method
 struct CompileContext {
     /// Next available register
@@ -188,6 +438,16 @@ struct CompileContext {
     locals_map: std::collections::HashMap<String, usize>,
     /// Parameter names (for register assignment)
     params: Vec<String>,
+    /// Variable liveness tracking (only used in unsafe_fast mode)
+    variable_liveness: std::collections::HashMap<String, VariableLiveness>,
+    /// Stack of reusable registers (freed registers that can be reused)
+    reusable_regs: Vec<usize>,
+    /// Whether we're in unsafe_fast mode (enables register reuse)
+    unsafe_fast: bool,
+    /// Liveness analysis: maps variable names to their last use position
+    liveness_map: LivenessMap,
+    /// Current bytecode position during compilation
+    current_position: usize,
 }
 
 impl CompileContext {
@@ -197,6 +457,11 @@ impl CompileContext {
             max_reg: 0,
             locals_map: std::collections::HashMap::new(),
             params: Vec::new(),
+            variable_liveness: std::collections::HashMap::new(),
+            reusable_regs: Vec::new(),
+            unsafe_fast: false,
+            liveness_map: LivenessMap::new(),
+            current_position: 0,
         }
     }
 
@@ -205,6 +470,12 @@ impl CompileContext {
         // Assign parameters to R1, R2, ..., Rn
         for (i, param) in params.iter().enumerate() {
             ctx.locals_map.insert(param.clone(), i + 1);
+            // Parameters are declared variables
+            ctx.variable_liveness.insert(param.clone(), VariableLiveness {
+                register: i + 1,
+                is_declared: true,
+                can_reuse: false, // Parameters can't be reused until end of function
+            });
         }
         ctx.next_reg = params.len() + 1;
         ctx.max_reg = params.len();
@@ -212,7 +483,66 @@ impl CompileContext {
         ctx
     }
 
+    fn new_with_unsafe_fast(unsafe_fast: bool) -> Self {
+        let mut ctx = Self::new();
+        ctx.unsafe_fast = unsafe_fast;
+        ctx
+    }
+
+    fn with_params_and_unsafe_fast(params: Vec<String>, unsafe_fast: bool) -> Self {
+        let mut ctx = Self::with_params(params);
+        ctx.unsafe_fast = unsafe_fast;
+        ctx
+    }
+
+    /// Set liveness map from analysis
+    fn set_liveness_map(&mut self, liveness: LivenessMap) {
+        self.liveness_map = liveness;
+    }
+
+    /// Increment current position and return it
+    #[allow(dead_code)] // Reserved for future liveness improvements
+    fn advance_position(&mut self) -> usize {
+        self.current_position += 1;
+        self.current_position
+    }
+
+    /// Get current position
+    #[allow(dead_code)] // Reserved for future liveness improvements
+    fn get_position(&self) -> usize {
+        self.current_position
+    }
+
+    /// Check if a variable use at current position is its last use
+    #[allow(dead_code)] // Reserved for future liveness improvements
+    fn is_last_use(&self, name: &str) -> bool {
+        if !self.unsafe_fast {
+            return false;
+        }
+        self.liveness_map.get(name).copied() == Some(self.current_position)
+    }
+
+    /// Release a variable's register if it's no longer needed
+    fn release_if_last_use(&mut self, name: &str) {
+        if !self.unsafe_fast {
+            return;
+        }
+        if let Some(liveness) = self.variable_liveness.get_mut(name) {
+            if self.liveness_map.get(name).copied() == Some(self.current_position) {
+                self.reusable_regs.push(liveness.register);
+                liveness.can_reuse = true;
+            }
+        }
+    }
+
     fn allocate_reg(&mut self) -> usize {
+        // In unsafe_fast mode, try to reuse registers first
+        if self.unsafe_fast {
+            if let Some(reg) = self.reusable_regs.pop() {
+                return reg;
+            }
+        }
+        
         let reg = self.next_reg;
         self.next_reg += 1;
         if reg > self.max_reg {
@@ -223,6 +553,18 @@ impl CompileContext {
 
     fn allocate_regs(&mut self, count: usize) -> usize {
         if count == 0 { return self.next_reg; }
+        
+        // In unsafe_fast mode, try to reuse consecutive registers if available
+        if self.unsafe_fast && self.reusable_regs.len() >= count {
+            // Sort reusable regs to get consecutive ones if possible
+            self.reusable_regs.sort();
+            let start = self.reusable_regs[self.reusable_regs.len() - count];
+            for _ in 0..count {
+                self.reusable_regs.pop();
+            }
+            return start;
+        }
+        
         let start = self.next_reg;
         self.next_reg += count;
         if start + count - 1 > self.max_reg {
@@ -238,6 +580,63 @@ impl CompileContext {
             let reg = self.allocate_reg();
             self.locals_map.insert(name.to_string(), reg);
             reg
+        }
+    }
+
+    /// Declare a new variable with a register, tracking liveness
+    fn declare_variable(&mut self, name: String, unsafe_fast: bool) -> usize {
+        let reg = self.allocate_reg();
+        self.locals_map.insert(name.clone(), reg);
+        
+        if unsafe_fast {
+            self.variable_liveness.insert(name, VariableLiveness {
+                register: reg,
+                is_declared: true,
+                can_reuse: false, // Initially cannot reuse until we know it's last use
+            });
+        }
+        
+        reg
+    }
+
+    /// Get register for a variable, releasing it after last use in unsafe_fast mode
+    fn get_local_reg_and_maybe_release(&mut self, name: &str) -> usize {
+        let reg = self.get_local_reg(name);
+        self.advance_position();
+        self.release_if_last_use(name);
+        reg
+    }
+
+    /// Mark a variable as no longer needed, allowing register reuse in unsafe_fast mode
+    #[allow(dead_code)] // Used for future liveness improvements
+    fn release_variable(&mut self, name: &str) {
+        if !self.unsafe_fast {
+            return; // Don't release in normal mode - keep for debugger
+        }
+        
+        if let Some(liveness) = self.variable_liveness.get_mut(name) {
+            if liveness.is_declared {
+                // For declared variables, only release if explicitly marked as reusable
+                if liveness.can_reuse {
+                    self.reusable_regs.push(liveness.register);
+                }
+            } else {
+                // For temporary variables, always release
+                self.reusable_regs.push(liveness.register);
+            }
+        }
+    }
+
+    /// Mark a declared variable as eligible for register reuse
+    fn mark_variable_reusable(&mut self, name: &str) {
+        if !self.unsafe_fast {
+            return;
+        }
+        
+        if let Some(liveness) = self.variable_liveness.get_mut(name) {
+            if liveness.is_declared {
+                liveness.can_reuse = true;
+            }
         }
     }
 
@@ -259,6 +658,8 @@ pub struct Compiler {
     pub unsafe_fast: bool,
     pub enable_type_checking: bool,
     pub search_paths: Vec<String>,
+    /// Stack of scopes, each containing variables declared in that scope
+    scope_stack: Vec<Vec<String>>,
 }
 
 pub struct CompilerOptions {
@@ -285,11 +686,12 @@ impl Default for Compiler {
             _type_context: None,
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            current_ctx: CompileContext::new(),
+            current_ctx: CompileContext::new_with_unsafe_fast(false),
             global_vars: std::collections::HashSet::new(),
             unsafe_fast: false,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
+            scope_stack: Vec::new(),
         }
     }
 }
@@ -302,11 +704,12 @@ impl Compiler {
             _type_context: None,
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            current_ctx: CompileContext::new(),
+            current_ctx: CompileContext::new_with_unsafe_fast(false),
             global_vars: std::collections::HashSet::new(),
             unsafe_fast: false,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
+            scope_stack: Vec::new(),
         }
     }
 
@@ -317,11 +720,12 @@ impl Compiler {
             _type_context: None,
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            current_ctx: CompileContext::new(),
+            current_ctx: CompileContext::new_with_unsafe_fast(false),
             global_vars: std::collections::HashSet::new(),
             unsafe_fast: false,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
+            scope_stack: Vec::new(),
         }
     }
 
@@ -332,11 +736,12 @@ impl Compiler {
             _type_context: None,
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            current_ctx: CompileContext::new(),
+            current_ctx: CompileContext::new_with_unsafe_fast(unsafe_fast),
             global_vars: std::collections::HashSet::new(),
             unsafe_fast,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
+            scope_stack: Vec::new(),
         }
     }
 
@@ -347,11 +752,12 @@ impl Compiler {
             _type_context: None,
             break_jumps: Vec::new(),
             continue_targets: Vec::new(),
-            current_ctx: CompileContext::new(),
+            current_ctx: CompileContext::new_with_unsafe_fast(unsafe_fast),
             global_vars: std::collections::HashSet::new(),
             unsafe_fast,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
+            scope_stack: Vec::new(),
         }
     }
 
@@ -535,7 +941,15 @@ impl Compiler {
                 };
                 // Copy global variables to method compiler so it can reference them
                 method_compiler.global_vars = self.global_vars.clone();
-                method_compiler.current_ctx = CompileContext::with_params(method_params);
+                method_compiler.current_ctx = CompileContext::with_params_and_unsafe_fast(method_params, self.unsafe_fast);
+
+                // Run liveness analysis for unsafe_fast mode
+                if self.unsafe_fast {
+                    let mut liveness_map = LivenessMap::new();
+                    let mut position = 0;
+                    analyze_liveness(&method.body, &mut liveness_map, &mut position);
+                    method_compiler.current_ctx.set_liveness_map(liveness_map);
+                }
 
                 // Check if this is an auto-generated constructor (empty body, name is "constructor")
                 let is_auto_constructor = method.name == "constructor" && method.body.is_empty();
@@ -823,7 +1237,15 @@ impl Compiler {
             let mut func_compiler = Compiler::with_options(func_source, self.unsafe_fast);
             // Copy global variables to function compiler so it can reference them
             func_compiler.global_vars = self.global_vars.clone();
-            func_compiler.current_ctx = CompileContext::with_params(f.params.iter().map(|p| p.name.clone()).collect());
+            func_compiler.current_ctx = CompileContext::with_params_and_unsafe_fast(f.params.iter().map(|p| p.name.clone()).collect(), self.unsafe_fast);
+
+            // Run liveness analysis for unsafe_fast mode
+            if self.unsafe_fast {
+                let mut liveness_map = LivenessMap::new();
+                let mut position = 0;
+                analyze_liveness(&f.body, &mut liveness_map, &mut position);
+                func_compiler.current_ctx.set_liveness_map(liveness_map);
+            }
 
             for stmt in &f.body {
                 func_compiler.compile_stmt(stmt, &mut func_bytecode, &mut func_strings, &classes, Some(&func_ctx))?;
@@ -889,7 +1311,7 @@ impl Compiler {
         }
 
         // Initialize static fields at module level before any other code runs
-        self.current_ctx = CompileContext::new();
+        self.current_ctx = CompileContext::new_with_unsafe_fast(self.unsafe_fast);
         for (class_name, field_name, default_expr) in &static_field_initializers {
             let r_val = self.compile_expr(default_expr, &mut bytecode, &mut strings, &classes, type_context.as_ref())?;
             let idx = add_string(&mut strings, format!("static_{}.{}", class_name, field_name));
@@ -899,7 +1321,16 @@ impl Compiler {
         }
 
         // Compile module-level statements
-        self.current_ctx = CompileContext::new();
+        self.current_ctx = CompileContext::new_with_unsafe_fast(self.unsafe_fast);
+        
+        // Run liveness analysis for unsafe_fast mode
+        if self.unsafe_fast {
+            let mut liveness_map = LivenessMap::new();
+            let mut position = 0;
+            analyze_liveness(statements, &mut liveness_map, &mut position);
+            self.current_ctx.set_liveness_map(liveness_map);
+        }
+        
         for stmt in statements {
             self.compile_stmt(stmt, &mut bytecode, &mut strings, &classes, type_context.as_ref())?;
         }
@@ -926,6 +1357,29 @@ impl Compiler {
         let bytes = (target as u16).to_le_bytes();
         bytecode[pos] = bytes[0];
         bytecode[pos + 1] = bytes[1];
+    }
+
+    /// Enter a new scope (for block statements, loops, etc.)
+    fn enter_scope(&mut self) {
+        self.scope_stack.push(Vec::new());
+    }
+
+    /// Exit the current scope, releasing variables for register reuse in unsafe_fast mode
+    fn exit_scope(&mut self) {
+        if let Some(scope_vars) = self.scope_stack.pop() {
+            if self.unsafe_fast {
+                for var_name in scope_vars {
+                    self.current_ctx.mark_variable_reusable(&var_name);
+                }
+            }
+        }
+    }
+
+    /// Track a variable declaration in the current scope
+    fn track_var_in_scope(&mut self, name: String) {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.push(name);
+        }
     }
 
     /// Get type ID for overflow checking: 1: int8, 2: uint8, 3: int16, 4: uint16, 5: int32, 6: uint32, 7: int64, 8: uint64, 0: int
@@ -1007,6 +1461,12 @@ impl Compiler {
         bytecode.push(Opcode::Line as u8);
         bytecode.extend_from_slice(&(line as u16).to_le_bytes());
 
+        // Advance position for liveness tracking
+        self.current_ctx.advance_position();
+
+        // Track register count before statement for temporary cleanup
+        let reg_before = self.current_ctx.next_reg;
+
         match stmt {
             Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Interface(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
 
@@ -1015,9 +1475,9 @@ impl Compiler {
                 // Check if this is a global (module-level) variable
                 // Global variables are those not declared within a function/method context
                 // We detect this by checking if we're in a function context (current_method_params would be set)
-                let is_global = self.current_ctx.params.is_empty() && 
+                let is_global = self.current_ctx.params.is_empty() &&
                     !self.current_ctx.locals_map.contains_key("self");
-                
+
                 if is_global {
                     // Use StoreLocal for global variables (stores in VM's locals HashMap)
                     self.global_vars.insert(name.clone());
@@ -1027,10 +1487,13 @@ impl Compiler {
                     bytecode.push(r as u8);
                 } else {
                     // Use Move for local variables (stores in registers)
-                    let rd = self.current_ctx.get_local_reg(name);
+                    // In unsafe_fast mode, use declare_variable to track liveness
+                    let rd = self.current_ctx.declare_variable(name.clone(), self.unsafe_fast);
                     bytecode.push(Opcode::Move as u8);
                     bytecode.push(rd as u8);
                     bytecode.push(r as u8);
+                    // Track variable in current scope for release at scope end
+                    self.track_var_in_scope(name.clone());
                 }
             }
 
@@ -1267,9 +1730,12 @@ impl Compiler {
                 let else_jump_pos = bytecode.len();
                 bytecode.push(0); bytecode.push(0);
 
+                // Then branch is a new scope
+                self.enter_scope();
                 for stmt in then_branch {
                     self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
+                self.exit_scope();
 
                 if let Some(else_b) = else_branch {
                     let end_jump_pos = self.emit_jump(Opcode::Jump, bytecode);
@@ -1277,9 +1743,12 @@ impl Compiler {
                     let else_target = bytecode.len();
                     self.patch_jump(else_jump_pos, else_target, bytecode);
 
+                    // Else branch is a new scope
+                    self.enter_scope();
                     for stmt in else_b {
                         self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                     }
+                    self.exit_scope();
 
                     let end_target = bytecode.len();
                     self.patch_jump(end_jump_pos, end_target, bytecode);
@@ -1293,7 +1762,7 @@ impl Compiler {
                 if let Expr::Range { start, end, .. } = range.as_ref() {
                     let r_iter = self.current_ctx.get_local_reg(var_name);
                     let r_start_expr = self.compile_expr(start, bytecode, strings, classes, type_context)?;
-                    
+
                     // Initialize iterator
                     bytecode.push(Opcode::Move as u8);
                     bytecode.push(r_iter as u8);
@@ -1384,9 +1853,14 @@ impl Compiler {
                     let exit_jump_pos = bytecode.len();
                     bytecode.push(0); bytecode.push(0);
 
+                    // For loop body is a new scope
+                    self.enter_scope();
+                    // Track the loop variable in this scope
+                    self.track_var_in_scope(var_name.clone());
                     for stmt in body {
                         self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                     }
+                    self.exit_scope();
 
                     let jump_back = self.emit_jump(Opcode::Jump, bytecode);
                     self.patch_jump(jump_back, increment_start, bytecode);
@@ -1416,9 +1890,12 @@ impl Compiler {
                 let exit_jump_pos = bytecode.len();
                 bytecode.push(0); bytecode.push(0);
 
+                // While loop body is a new scope
+                self.enter_scope();
                 for stmt in body {
                     self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
+                self.exit_scope();
 
                 let jump_back = self.emit_jump(Opcode::Jump, bytecode);
                 self.patch_jump(jump_back, loop_start, bytecode);
@@ -1455,9 +1932,13 @@ impl Compiler {
                 let catch_reg = self.current_ctx.get_local_reg(catch_var);
                 bytecode.push(catch_reg as u8);
 
+                // Try block is a new scope
+                self.enter_scope();
+                self.track_var_in_scope(catch_var.clone());
                 for stmt in try_block {
                     self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
+                self.exit_scope();
 
                 bytecode.push(Opcode::TryEnd as u8);
                 let end_jump_pos = self.emit_jump(Opcode::Jump, bytecode);
@@ -1465,10 +1946,12 @@ impl Compiler {
                 let catch_start = bytecode.len();
                 self.patch_jump(catch_jump_pos, catch_start, bytecode);
 
-                // Exception is already in the catch register from TryStart
+                // Catch block is a new scope
+                self.enter_scope();
                 for stmt in catch_block {
                     self.compile_stmt(stmt, bytecode, strings, classes, type_context)?;
                 }
+                self.exit_scope();
 
                 let end_pos = bytecode.len();
                 self.patch_jump(end_jump_pos, end_pos, bytecode);
@@ -1479,6 +1962,21 @@ impl Compiler {
                 bytecode.push(Opcode::Throw as u8);
                 bytecode.push(r as u8);
             }
+        }
+
+        // In unsafe_fast mode, release temporary registers after statement
+        if self.unsafe_fast && self.current_ctx.next_reg > reg_before {
+            // Release all registers that were allocated during this statement
+            // (except those assigned to live variables)
+            for reg in reg_before..self.current_ctx.next_reg {
+                // Check if this register is assigned to any live variable
+                let is_assigned = self.current_ctx.variable_liveness.values().any(|v| v.register == reg && !v.can_reuse);
+                if !is_assigned {
+                    self.current_ctx.reusable_regs.push(reg);
+                }
+            }
+            // Reset next_reg to allow reuse
+            self.current_ctx.next_reg = reg_before;
         }
 
         Ok(())
@@ -1525,7 +2023,7 @@ impl Compiler {
 
                 // Check if it's a local variable or parameter first
                 if self.current_ctx.locals_map.contains_key(name) {
-                    return Ok(self.current_ctx.get_local_reg(name));
+                    return Ok(self.current_ctx.get_local_reg_and_maybe_release(name));
                 }
 
                 // Check if it's a global (module-level) variable
