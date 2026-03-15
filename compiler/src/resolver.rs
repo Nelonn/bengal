@@ -443,6 +443,7 @@ impl ModuleResolver {
                         is_async: func.is_async,
                         is_native: func.is_native,
                         private: func.private,
+                        type_params: func.type_params.clone(),
                         mangled_name: None,
                     };
 
@@ -583,68 +584,7 @@ impl ModuleResolver {
     }
 
     fn register_native_functions(&mut self) {
-        // std.io functions
-        self.type_context.add_function("print", FunctionSignature {
-            name: "print".to_string(),
-            params: vec![ParamSignature {
-                name: "text".to_string(),
-                type_name: Some(Type::Str),
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-            private: false,
-            mangled_name: None,
-        });
-
-        // println with multiple overloads for different types
-        self.type_context.add_function("println", FunctionSignature {
-            name: "println".to_string(),
-            params: vec![ParamSignature {
-                name: "line".to_string(),
-                type_name: Some(Type::Str),
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-            private: false,
-            mangled_name: None,
-        });
-
-        self.type_context.add_function("println", FunctionSignature {
-            name: "println".to_string(),
-            params: vec![ParamSignature {
-                name: "line".to_string(),
-                type_name: Some(Type::Int),
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-            private: false,
-            mangled_name: None,
-        });
-
-        self.type_context.add_function("println", FunctionSignature {
-            name: "println".to_string(),
-            params: vec![ParamSignature {
-                name: "line".to_string(),
-                type_name: Some(Type::Float),
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-            private: false,
-            mangled_name: None,
-        });
-
+        // breakpoint function (always available)
         self.type_context.add_function("breakpoint", FunctionSignature {
             name: "breakpoint".to_string(),
             params: vec![],
@@ -654,6 +594,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
 
@@ -670,6 +611,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.math.cos", FunctionSignature {
@@ -684,6 +626,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.math.tan", FunctionSignature {
@@ -698,6 +641,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.math.sqrt", FunctionSignature {
@@ -712,6 +656,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.math.min", FunctionSignature {
@@ -729,6 +674,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.math.max", FunctionSignature {
@@ -746,6 +692,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
 
@@ -762,6 +709,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.test.recordPass", FunctionSignature {
@@ -773,6 +721,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.test.setCurrentTest", FunctionSignature {
@@ -787,6 +736,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
         self.type_context.add_function("std.test.assertSame", FunctionSignature {
@@ -801,6 +751,7 @@ impl ModuleResolver {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         });
     }

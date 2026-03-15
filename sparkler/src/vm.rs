@@ -1122,6 +1122,15 @@ impl VM {
                             self.set_reg(rd, Value::Null);
                         }
                     }
+                    Value::Array(arr) => {
+                        // Handle array properties
+                        if name == "length" {
+                            let elements = arr.lock().unwrap();
+                            self.set_reg(rd, Value::Int64(elements.len() as i64));
+                        } else {
+                            return Err(Value::String(format!("Unknown property '{}' on Array", name)));
+                        }
+                    }
                     _ => {
                         return Err(Value::String(format!("Expected instance for property get, got {:?}", robj_val)));
                     }
@@ -1390,7 +1399,14 @@ impl VM {
                 // Check if this is an array method call
                 if let Some(Value::Array(_)) = args.first() {
                     // Handle array native methods directly
-                    let result = match name.as_str() {
+                    // Strip parameter signature from mangled name (e.g., "add(Unknown)" -> "add")
+                    let base_name = if let Some(paren_pos) = name.find('(') {
+                        &name[..paren_pos]
+                    } else {
+                        &name
+                    };
+                    
+                    let result = match base_name {
                         "length" => {
                             if let Value::Array(arr) = &args[0] {
                                 let elements = arr.lock().unwrap();

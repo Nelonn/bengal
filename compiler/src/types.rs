@@ -280,6 +280,7 @@ pub struct FunctionSignature {
     pub is_async: bool,
     pub is_native: bool,
     pub private: bool,
+    pub type_params: Vec<String>,
     /// Mangled name for VM lookup (includes type information for overloading)
     pub mangled_name: Option<String>,
 }
@@ -356,6 +357,7 @@ pub struct MethodSignature {
     pub is_async: bool,
     pub is_native: bool,
     pub is_static: bool,
+    pub type_params: Vec<String>,
     pub mangled_name: Option<String>,
 }
 
@@ -483,6 +485,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("std.json.stringify", json_stringify);
@@ -499,6 +502,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("std.json.parse", json_parse);
@@ -518,6 +522,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("std.reflect.type_of", reflect_typeof);
@@ -534,6 +539,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("std.reflect.class_name", reflect_class_name);
@@ -550,51 +556,20 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("std.reflect.fields", reflect_fields);
 
         self.import_paths.push("std.reflect".to_string());
 
-        // Register std.io functions (print, println)
-        let io_print = FunctionSignature {
-            name: "print".to_string(),
-            params: vec![ParamSignature {
-                name: "value".to_string(),
-                type_name: Some(Type::Unknown),
-            }],
-            return_type: Some(Type::Unknown),
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-            private: false,
-            mangled_name: None,
-        };
-        self.add_function("print", io_print);
-
-        let io_println = FunctionSignature {
-            name: "println".to_string(),
-            params: vec![ParamSignature {
-                name: "value".to_string(),
-                type_name: Some(Type::Unknown),
-            }],
-            return_type: Some(Type::Unknown),
-            return_optional: false,
-            is_method: false,
-            is_async: false,
-            is_native: true,
-            private: false,
-            mangled_name: None,
-        };
-        self.add_function("println", io_println);
-
-        self.import_paths.push("std.io".to_string());
+        // std.io functions (print, println) are registered only when std.io is explicitly imported
+        // See ModuleResolver::register_std_io_import() in resolver.rs
 
         // Built-in types methods
         // str methods
         let mut str_methods = HashMap::new();
-        str_methods.insert("length".to_string(), MethodSignature {
+        str_methods.insert("length()".to_string(), MethodSignature {
             name: "length".to_string(),
             params: vec![],
             return_type: Some(Type::Int),
@@ -603,9 +578,10 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             is_static: false,
-            mangled_name: None,
+            type_params: Vec::new(),
+            mangled_name: Some("length()".to_string()),
         });
-        str_methods.insert("trim".to_string(), MethodSignature {
+        str_methods.insert("trim()".to_string(), MethodSignature {
             name: "trim".to_string(),
             params: vec![],
             return_type: Some(Type::Str),
@@ -614,9 +590,10 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             is_static: false,
-            mangled_name: None,
+            type_params: Vec::new(),
+            mangled_name: Some("trim()".to_string()),
         });
-        str_methods.insert("split".to_string(), MethodSignature {
+        str_methods.insert("split(str)".to_string(), MethodSignature {
             name: "split".to_string(),
             params: vec![ParamSignature { name: "delimiter".to_string(), type_name: Some(Type::Str) }],
             return_type: Some(Type::Array(Box::new(Type::Str))),
@@ -625,7 +602,8 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             is_static: false,
-            mangled_name: None,
+            type_params: Vec::new(),
+            mangled_name: Some("split(str)".to_string()),
         });
         let mut str_method_overloads = HashMap::new();
         str_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
@@ -646,7 +624,7 @@ impl TypeContext {
 
         // Array methods
         let mut array_methods = HashMap::new();
-        array_methods.insert("length".to_string(), MethodSignature {
+        array_methods.insert("length()".to_string(), MethodSignature {
             name: "length".to_string(),
             params: vec![],
             return_type: Some(Type::Int),
@@ -655,9 +633,10 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             is_static: false,
-            mangled_name: None,
+            type_params: Vec::new(),
+            mangled_name: Some("length()".to_string()),
         });
-        array_methods.insert("add".to_string(), MethodSignature {
+        array_methods.insert("add(Unknown)".to_string(), MethodSignature {
             name: "add".to_string(),
             params: vec![ParamSignature { name: "element".to_string(), type_name: Some(Type::Unknown) }],
             return_type: None,
@@ -666,7 +645,8 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             is_static: false,
-            mangled_name: None,
+            type_params: Vec::new(),
+            mangled_name: Some("add(Unknown)".to_string()),
         });
         let mut array_method_overloads = HashMap::new();
         array_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
@@ -697,6 +677,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("str", str_fn);
@@ -714,6 +695,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("int", int_fn);
@@ -731,6 +713,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("float", float_fn);
@@ -748,6 +731,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("bool", bool_fn);
@@ -765,6 +749,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("int8", int8_fn);
@@ -782,6 +767,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("uint8", uint8_fn);
@@ -799,6 +785,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("int16", int16_fn);
@@ -816,6 +803,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("uint16", uint16_fn);
@@ -833,6 +821,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("int32", int32_fn);
@@ -850,6 +839,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("uint32", uint32_fn);
@@ -867,6 +857,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("int64", int64_fn);
@@ -884,6 +875,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("uint64", uint64_fn);
@@ -901,6 +893,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("float32", float32_fn);
@@ -918,6 +911,7 @@ impl TypeContext {
             is_async: false,
             is_native: true,
             private: false,
+            type_params: Vec::new(),
             mangled_name: None,
         };
         self.add_function("float64", float64_fn);
@@ -965,6 +959,7 @@ impl TypeContext {
                 is_async: method.is_async,
                 is_native: method.is_native,
                 is_static: method.is_static,
+                type_params: method.type_params.clone(),
                 mangled_name: Some(mangled.clone()),
             });
         }
@@ -985,6 +980,7 @@ impl TypeContext {
                 is_async: false,
                 is_native: false,
                 is_static: false,
+                type_params: Vec::new(),
                 mangled_name: Some(empty_ctor_mangled),
             });
 
@@ -1009,6 +1005,7 @@ impl TypeContext {
                     is_async: false,
                     is_native: false,
                     is_static: false,
+                    type_params: Vec::new(),
                     mangled_name: Some(field_ctor_mangled),
                 });
             }
@@ -1062,6 +1059,7 @@ impl TypeContext {
                 is_async: method.is_async,
                 is_native: method.is_native,
                 is_static: method.is_static,
+                type_params: method.type_params.clone(),
                 mangled_name: Some(mangled.clone()),
             });
         }
@@ -2144,6 +2142,22 @@ impl TypeChecker {
         Self { context }
     }
 
+    /// Parse a function name that may include generic type arguments
+    /// E.g., "identity<T>" -> ("identity", vec!["T"])
+    /// E.g., "wrap<T, U>" -> ("wrap", vec!["T", "U"])  
+    /// E.g., "foo" -> ("foo", vec![])
+    fn parse_generic_function_name(name: &str) -> (&str, Vec<String>) {
+        if let Some(angle_start) = name.find('<') {
+            if name.ends_with('>') {
+                let base_name = &name[..angle_start];
+                let args_str = &name[angle_start + 1..name.len() - 1];
+                let args: Vec<String> = args_str.split(',').map(|s| s.trim().to_string()).collect();
+                return (base_name, args);
+            }
+        }
+        (name, Vec::new())
+    }
+
     pub fn check(&mut self, statements: &[Stmt]) -> Result<&TypeContext, Vec<TypeError>> {
         self.check_with_options(statements, false)
     }
@@ -2205,6 +2219,7 @@ impl TypeChecker {
                             is_async: func.is_async,
                             is_native: func.is_native,
                             private: func.private,
+                            type_params: func.type_params.clone(),
                             mangled_name: None,
                         });
                     }
@@ -2588,6 +2603,16 @@ impl TypeChecker {
 
         self.context.current_method_return = return_type;
 
+        // Add type parameters as local type variables for generic functions
+        // This allows type parameters like T to be recognized in the function body
+        let mut added_type_params = Vec::new();
+        for type_param in &func.type_params {
+            // Add type parameter as a variable with TypeParameter type
+            // This allows the type checker to recognize T as a valid type
+            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false);
+            added_type_params.push(type_param.clone());
+        }
+
         // Add parameters as local variables
         let mut added_vars = Vec::new();
         for param in &func.params {
@@ -2606,6 +2631,11 @@ impl TypeChecker {
         // Clean up local variables
         for var in added_vars {
             self.context.variables.remove(&var);
+        }
+
+        // Clean up type parameters
+        for type_param in added_type_params {
+            self.context.variables.remove(&type_param);
         }
 
         self.context.current_method_return = old_return;
@@ -2639,6 +2669,13 @@ impl TypeChecker {
 
         self.context.current_method_return = return_type;
 
+        // Add type parameters as local type variables for generic methods
+        let mut added_type_params = Vec::new();
+        for type_param in &method.type_params {
+            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false);
+            added_type_params.push(type_param.clone());
+        }
+
         // Add parameters as local variables
         let mut added_vars = Vec::new();
         for param in &method.params {
@@ -2660,6 +2697,10 @@ impl TypeChecker {
         // Clean up local variables
         for var in added_vars {
             self.context.variables.remove(&var);
+        }
+        // Clean up type parameters
+        for type_param in added_type_params {
+            self.context.variables.remove(&type_param);
         }
         self.context.variables.remove("self");
 
@@ -2959,13 +3000,94 @@ impl TypeChecker {
                 }
             }
             Expr::Call { callee, args, span } => {
-                if let Expr::Variable { name: func_name, .. } = callee.as_ref() {
-                    // Check if it's a function call - use overload resolution
+                // Extract span from callee for accurate error reporting
+                let (func_name, func_span) = if let Expr::Variable { name: func_name, span: func_span } = callee.as_ref() {
+                    (func_name.as_str(), func_span)
+                } else {
+                    ("", span)
+                };
+                
+                if !func_name.is_empty() {
+                    // Check if this is a generic function call like identity<T>(args)
+                    let (base_func_name, type_args_str) = Self::parse_generic_function_name(func_name);
+
+                    if !type_args_str.is_empty() {
+                        // This is a generic function call with explicit type arguments
+                        // First, resolve the base function
+                        let arg_types: Vec<Type> = args.iter()
+                            .map(|arg| self.infer_expr(arg))
+                            .collect();
+
+                        let func_sig_opt = self.context.resolve_function_call(base_func_name, &arg_types);
+                        if let Some(sig) = func_sig_opt.cloned() {
+                            if !sig.type_params.is_empty() {
+                                // This is a generic function - substitute type parameters
+                                let type_args: Vec<Type> = type_args_str.iter().map(|t| Type::from_str(t)).collect();
+
+                                // Validate type argument count
+                                if type_args.len() != sig.type_params.len() {
+                                    self.context.add_error_with_location(
+                                        format!(
+                                            "Generic function '{}' expects {} type argument(s), got {}",
+                                            base_func_name,
+                                            sig.type_params.len(),
+                                            type_args.len()
+                                        ),
+                                        func_span.line, func_span.column, None, None
+                                    );
+                                }
+
+                                // Substitute type parameters in signature
+                                let substituted_params: Vec<ParamSignature> = sig.params.iter().map(|p| {
+                                    ParamSignature {
+                                        name: p.name.clone(),
+                                        type_name: p.type_name.as_ref().map(|t|
+                                            self.context.substitute_type_params(t, &type_args, &sig.type_params)
+                                        ),
+                                    }
+                                }).collect();
+
+                                let substituted_return = sig.return_type.as_ref().map(|t|
+                                    self.context.substitute_type_params(t, &type_args, &sig.type_params)
+                                );
+
+                                // Create substituted signature for checking
+                                let substituted_sig = FunctionSignature {
+                                    name: sig.name.clone(),
+                                    params: substituted_params,
+                                    return_type: substituted_return,
+                                    return_optional: sig.return_optional,
+                                    is_method: sig.is_method,
+                                    is_async: sig.is_async,
+                                    is_native: sig.is_native,
+                                    private: sig.private,
+                                    type_params: sig.type_params.clone(),
+                                    mangled_name: sig.mangled_name.clone(),
+                                };
+
+                                self.check_function_call(&substituted_sig, args, func_name);
+
+                                let mut return_type = substituted_sig.return_type.clone().unwrap_or(Type::Unknown);
+                                if sig.is_async {
+                                    if let Type::Promise(_) = return_type {
+                                        // Already a Promise type
+                                    } else {
+                                        return_type = Type::Promise(Box::new(return_type));
+                                    }
+                                }
+                                return return_type;
+                            }
+                            // Not a generic function, fall through to regular function call
+                        }
+                        // Function not found, fall through to class instantiation check
+                    }
+
+                    // Regular function call - use overload resolution
                     // First, infer argument types for overload resolution
                     let arg_types: Vec<Type> = args.iter()
                         .map(|arg| self.infer_expr(arg))
                         .collect();
-                    
+
                     // Use resolve_function_call for proper overload resolution
                     let func_sig = self.context.resolve_function_call(func_name, &arg_types);
                     if let Some(sig) = func_sig.cloned() {
@@ -2984,7 +3106,7 @@ impl TypeChecker {
                         // Check if it's a class instantiation (possibly generic)
                         // Parse func_name as a type to handle generic instances like ClassName<T>
                         let func_name_type = Type::from_str(func_name);
-                        
+
                         let (base_class_name, full_return_type) = match &func_name_type {
                             Type::GenericInstance(base_name, type_args) => {
                                 // This is a generic class instantiation like ClassName<T1, T2>
@@ -3000,7 +3122,7 @@ impl TypeChecker {
                                                     class_info.type_params.len(),
                                                     type_args.len()
                                                 ),
-                                                span.line, span.column, None, None
+                                                func_span.line, func_span.column, None, None
                                             );
                                         }
                                     }
@@ -3010,7 +3132,7 @@ impl TypeChecker {
                                     // Base class not found
                                     self.context.add_error_with_location(
                                         format!("Undefined class: '{}'", base_name),
-                                        span.line, span.column, None, None
+                                        func_span.line, func_span.column, None, None
                                     );
                                     return Type::Unknown;
                                 }
@@ -3032,7 +3154,7 @@ impl TypeChecker {
                                     // Not found at all
                                     self.context.add_error_with_location(
                                         format!("Undefined function: '{}'", func_name),
-                                        span.line, span.column, None, None
+                                        func_span.line, func_span.column, None, None
                                     );
                                     return Type::Unknown;
                                 }
@@ -3041,7 +3163,7 @@ impl TypeChecker {
                                 // Not a valid class type
                                 self.context.add_error_with_location(
                                     format!("Undefined function: '{}'", func_name),
-                                    span.line, span.column, None, None
+                                    func_span.line, func_span.column, None, None
                                 );
                                 return Type::Unknown;
                             }
@@ -3109,6 +3231,7 @@ impl TypeChecker {
                                                     is_async: sig.is_async,
                                                     is_native: sig.is_native,
                                                     is_static: sig.is_static,
+                                                    type_params: sig.type_params.clone(),
                                                     mangled_name: sig.mangled_name.clone(),
                                                 };
                                                 self.check_method_call(&substituted_sig, args, "constructor", &base_class_name);
@@ -3811,6 +3934,35 @@ impl TypeChecker {
                     Literal::Bool(_, _) => Type::Bool,
                     Literal::Null(_) => Type::Null,
                 }
+            }
+            Expr::Array { elements, span } => {
+                // Try to infer array element type from expected type
+                if let Some(expected) = expected_type {
+                    if let Type::Array(expected_element_type) = expected {
+                        // Use expected element type for type checking
+                        for el in elements {
+                            self.infer_expr_with_expected_type(el, &Some(*expected_element_type.clone()));
+                        }
+                        // Store the inferred type for code generation
+                        if let Type::TypeParameter(_param_name) = expected_element_type.as_ref() {
+                            // For type parameters, store the parameterized array type
+                            self.context.expr_types.insert((span.line, span.column), expected.to_str());
+                        }
+                        return expected.clone();
+                    }
+                }
+                // No expected type - infer from elements
+                let mut element_type = Type::Unknown;
+                if !elements.is_empty() {
+                    element_type = self.infer_expr(&elements[0]);
+                    for el in elements.iter().skip(1) {
+                        let ty = self.infer_expr(el);
+                        if !ty.is_assignable_to(&element_type) {
+                            // Elements should be compatible
+                        }
+                    }
+                }
+                Type::Array(Box::new(element_type))
             }
             Expr::ObjectLiteral { fields, span, .. } => {
                 // Try to infer the class type from the expected type

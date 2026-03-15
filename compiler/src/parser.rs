@@ -88,6 +88,7 @@ pub struct FunctionDef {
     pub is_async: bool,
     pub is_native: bool,
     pub private: bool,
+    pub type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +135,7 @@ pub struct Method {
     pub is_async: bool,
     pub is_native: bool,
     pub is_static: bool,
+    pub type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -781,6 +783,7 @@ impl Parser {
                 is_async: false,
                 is_native: false,
                 is_static: false,
+                type_params: Vec::new(),
             });
 
             // Constructor with all fields as parameters
@@ -799,6 +802,7 @@ impl Parser {
                     is_async: false,
                     is_native: false,
                     is_static: false,
+                    type_params: Vec::new(),
                 });
             }
         }
@@ -906,6 +910,27 @@ impl Parser {
             _ => return self.error_generic("Expected method name"),
         };
 
+        // Parse generic type parameters if present: fn name<T>(params)
+        let type_params = if self.match_token(&Token::LAngle) {
+            let mut params = Vec::new();
+            loop {
+                if let Token::Identifier(param) = self.advance() {
+                    params.push(param);
+                } else {
+                    return self.error_generic("Expected type parameter name");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after type parameters");
+            }
+            params
+        } else {
+            Vec::new()
+        };
+
         if !self.match_token(&Token::LParen) {
             return self.error_generic(&format!("Expected '(' after {} name", name));
         }
@@ -937,7 +962,7 @@ impl Parser {
             Vec::new()
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false, is_static: false })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false, is_static: false, type_params })
     }
 
     fn parse_enum(&mut self, is_private: bool) -> Result<Stmt, String> {
@@ -1022,6 +1047,27 @@ impl Parser {
             _ => return self.error("Expected function name"),
         };
 
+        // Parse generic type parameters if present
+        let type_params = if self.match_token(&Token::LAngle) {
+            let mut params = Vec::new();
+            loop {
+                if let Token::Identifier(param) = self.advance() {
+                    params.push(param);
+                } else {
+                    return self.error_generic("Expected type parameter name");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after type parameters");
+            }
+            params
+        } else {
+            Vec::new()
+        };
+
         if !self.match_token(&Token::LParen) {
             return self.error("Expected '(' after function name");
         }
@@ -1067,15 +1113,16 @@ impl Parser {
             body
         };
 
-        Ok(Stmt::Function(FunctionDef { 
-            name, 
-            params, 
-            return_type, 
-            return_optional, 
-            body, 
-            is_async, 
+        Ok(Stmt::Function(FunctionDef {
+            name,
+            params,
+            return_type,
+            return_optional,
+            body,
+            is_async,
             is_native,
-            private: is_private
+            private: is_private,
+            type_params
         }))
     }
 
@@ -1114,6 +1161,27 @@ impl Parser {
     }
 
     fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
+        // Parse generic type parameters if present: fn name<T>(params)
+        let type_params = if self.match_token(&Token::LAngle) {
+            let mut params = Vec::new();
+            loop {
+                if let Token::Identifier(param) = self.advance() {
+                    params.push(param);
+                } else {
+                    return self.error_generic("Expected type parameter name");
+                }
+                if !self.match_token(&Token::Comma) {
+                    break;
+                }
+            }
+            if !self.match_token(&Token::RAngle) {
+                return self.error_generic("Expected '>' after type parameters");
+            }
+            params
+        } else {
+            Vec::new()
+        };
+
         if !self.match_token(&Token::LParen) {
             return self.error_generic(&format!("Expected '(' after {} name", name));
         }
@@ -1158,7 +1226,7 @@ impl Parser {
             body
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native, is_static })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native, is_static, type_params })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
