@@ -1,10 +1,9 @@
 /// Bytecode viewer with Godbolt-style formatting
-/// 
+///
 /// Displays bytecode in a readable format similar to Compiler Explorer (godbolt.org):
 /// - Per-function organization with function headers
-/// - Line number annotations
 /// - Constant pool (.data section) display
-/// - Color-friendly formatting (works well with/without colors)
+/// - Clean address | opcode | operands format
 
 use sparkler::executor::Bytecode;
 use sparkler::opcodes::Opcode;
@@ -26,21 +25,21 @@ pub fn display_bytecode(bytecode: &Bytecode) {
 
 /// Display the .data section (constant pool)
 fn display_data_section(bytecode: &Bytecode) {
-    println!("  .data");
-    
+    println!(".data");
+
     // Display string constants
     for (i, s) in bytecode.strings.iter().enumerate() {
-        println!("    str.{:<4} = \"{}\"", i, escape_string(s));
+        println!("  str.{:<4} = \"{}\"", i, escape_string(s));
     }
-    
+
     // Display class information
     for class in &bytecode.classes {
-        println!("    class.{} =", class.name);
+        println!("  class.{} =", class.name);
         for (field_name, field_value) in &class.fields {
-            println!("      .{} = {:?}", field_name, field_value);
+            println!("    .{} = {:?}", field_name, field_value);
         }
     }
-    
+
     println!();
 }
 
@@ -56,74 +55,59 @@ fn display_root_code(bytecode: &Bytecode) {
     if bytecode.data.is_empty() {
         return;
     }
-    
-    println!("  .root:");
-    println!("    # module-level code");
-    
+
+    println!(".root:");
+    println!("# module-level code");
+
     let mut pc = 0;
     let data = &bytecode.data;
-    
+
     while pc < data.len() {
         let opcode_byte = data[pc];
         let opcode = opcode_from_byte(opcode_byte);
-        
-        let line_info = get_line_info(data, pc);
+
         let address = format!("{:04x}", pc);
-        
+
         let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, &bytecode.strings);
-        
-        if let Some(line) = line_info {
-            println!("    {:>6} | {} | {:<18} | {}", line, address, opcode_name, operands);
+
+        if operands.is_empty() {
+            println!("  {} | {}", address, opcode_name);
         } else {
-            println!("           | {} | {:<18} | {}", address, opcode_name, operands);
+            println!("  {} | {:<18} | {}", address, opcode_name, operands);
         }
-        
+
         pc += 1 + operand_count;
     }
-    
+
     println!();
 }
 
 /// Display a single function's bytecode
 fn display_function(function: &sparkler::vm::Function, bytecode: &Bytecode) {
-    println!("  .func {}({}):", function.name, function.param_count);
-    println!("    # registers: {}, source: {:?}", function.register_count, function.source_file);
-    
+    println!("{}:", function.name);
+    println!("# registers: {}, source: {:?}", function.register_count, function.source_file);
+
     let mut pc = 0;
     let data = &function.bytecode;
-    
+
     while pc < data.len() {
         let opcode_byte = data[pc];
         let opcode = opcode_from_byte(opcode_byte);
-        
-        // Format: line number | address | opcode | operands
-        let line_info = get_line_info(data, pc);
+
         let address = format!("{:04x}", pc);
-        
+
         let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, &bytecode.strings);
-        
-        // Format output similar to Godbolt
-        if let Some(line) = line_info {
-            println!("    {:>6} | {} | {:<18} | {}", line, address, opcode_name, operands);
+
+        if operands.is_empty() {
+            println!("  {} | {}", address, opcode_name);
         } else {
-            println!("           | {} | {:<18} | {}", address, opcode_name, operands);
+            println!("  {} | {:<18} | {}", address, opcode_name, operands);
         }
-        
+
         pc += 1 + operand_count;
     }
-    
-    println!();
-}
 
-/// Get line number information from Line opcode
-fn get_line_info(data: &[u8], pc: usize) -> Option<usize> {
-    // Check if this is a Line opcode
-    if pc + 2 < data.len() && data[pc] == Opcode::Line as u8 {
-        let line_number = u16::from_le_bytes([data[pc + 1], data[pc + 2]]) as usize;
-        Some(line_number)
-    } else {
-        None
-    }
+    println!();
 }
 
 /// Decode instruction and return (name, operands_string, operand_byte_count)
@@ -245,14 +229,15 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 let func_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, func_{}, args=[R{}..R{}]", 
-                    data[pc + 1], func_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, func_{}, args=[R{}..R{}]",
+                    data[pc + 1], func_idx, arg_start, arg_end);
                 (format!("CALL"), operands, 4)
             } else {
                 ("CALL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::CallNative => {
             if pc + 4 < data.len() {
                 let name_idx = data[pc + 2] as usize;
@@ -261,21 +246,23 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                     .unwrap_or_else(|| format!("str.{}", name_idx));
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, \"{}\", args=[R{}..R{}]", 
-                    data[pc + 1], name, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, \"{}\", args=[R{}..R{}]",
+                    data[pc + 1], name, arg_start, arg_end);
                 (format!("CALL_NATIVE"), operands, 4)
             } else {
                 ("CALL_NATIVE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Invoke => {
             if pc + 4 < data.len() {
                 let method_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, method_{}, args=[R{}..R{}]", 
-                    data[pc + 1], method_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, method_{}, args=[R{}..R{}]",
+                    data[pc + 1], method_idx, arg_start, arg_end);
                 (format!("INVOKE"), operands, 4)
             } else {
                 ("INVOKE".to_string(), String::new(), 0)
@@ -295,14 +282,15 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 let func_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, func_{}, args=[R{}..R{}]", 
-                    data[pc + 1], func_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, func_{}, args=[R{}..R{}]",
+                    data[pc + 1], func_idx, arg_start, arg_end);
                 (format!("CALL_ASYNC"), operands, 4)
             } else {
                 ("CALL_ASYNC".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::CallNativeAsync => {
             if pc + 4 < data.len() {
                 let name_idx = data[pc + 2] as usize;
@@ -311,21 +299,23 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                     .unwrap_or_else(|| format!("str.{}", name_idx));
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, \"{}\", args=[R{}..R{}]", 
-                    data[pc + 1], name, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, \"{}\", args=[R{}..R{}]",
+                    data[pc + 1], name, arg_start, arg_end);
                 (format!("CALL_NATIVE_ASYNC"), operands, 4)
             } else {
                 ("CALL_NATIVE_ASYNC".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::InvokeAsync => {
             if pc + 4 < data.len() {
                 let method_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, method_{}, args=[R{}..R{}]", 
-                    data[pc + 1], method_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, method_{}, args=[R{}..R{}]",
+                    data[pc + 1], method_idx, arg_start, arg_end);
                 (format!("INVOKE_ASYNC"), operands, 4)
             } else {
                 ("INVOKE_ASYNC".to_string(), String::new(), 0)
@@ -353,47 +343,51 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 let vtable_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, vtable_{}, args=[R{}..R{}]", 
-                    data[pc + 1], vtable_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, vtable_{}, args=[R{}..R{}]",
+                    data[pc + 1], vtable_idx, arg_start, arg_end);
                 (format!("INVOKE_INTERFACE"), operands, 4)
             } else {
                 ("INVOKE_INTERFACE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::InvokeInterfaceAsync => {
             if pc + 4 < data.len() {
                 let vtable_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let operands = format!("R{}, vtable_{}, args=[R{}..R{}]", 
-                    data[pc + 1], vtable_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, vtable_{}, args=[R{}..R{}]",
+                    data[pc + 1], vtable_idx, arg_start, arg_end);
                 (format!("INVOKE_INTERFACE_ASYNC"), operands, 4)
             } else {
                 ("INVOKE_INTERFACE_ASYNC".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::CallNativeIndexed => {
             if pc + 5 < data.len() {
                 let func_idx = u16::from_le_bytes([data[pc + 2], data[pc + 3]]) as usize;
                 let arg_start = data[pc + 4];
                 let arg_count = data[pc + 5];
-                let operands = format!("R{}, native_{}, args=[R{}..R{}]", 
-                    data[pc + 1], func_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, native_{}, args=[R{}..R{}]",
+                    data[pc + 1], func_idx, arg_start, arg_end);
                 (format!("CALL_NATIVE_INDEXED"), operands, 5)
             } else {
                 ("CALL_NATIVE_INDEXED".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::CallNativeIndexedAsync => {
             if pc + 5 < data.len() {
                 let func_idx = u16::from_le_bytes([data[pc + 2], data[pc + 3]]) as usize;
                 let arg_start = data[pc + 4];
                 let arg_count = data[pc + 5];
-                let operands = format!("R{}, native_{}, args=[R{}..R{}]", 
-                    data[pc + 1], func_idx, arg_start, arg_start + arg_count - 1);
+                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let operands = format!("R{}, native_{}, args=[R{}..R{}]",
+                    data[pc + 1], func_idx, arg_start, arg_end);
                 (format!("CALL_NATIVE_INDEXED_ASYNC"), operands, 5)
             } else {
                 ("CALL_NATIVE_INDEXED_ASYNC".to_string(), String::new(), 0)

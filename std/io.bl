@@ -9,9 +9,9 @@ async native fn sleep(ms: int) {}
 async native fn readLine(): str {}
 
 interface InputStream {
-
+  //fn read(size: int): ByteBuffer
 }
 
 interface OutputStream {
-
+  //fn write(todo)
 }
