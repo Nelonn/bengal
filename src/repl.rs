@@ -79,6 +79,7 @@ impl ReplState {
     /// Compile and run source code, returning the last expression result if any
     async fn compile_and_run(&mut self, source: &str, is_expr: bool) -> Result<Option<String>, String> {
         let mut compiler = Compiler::new(source);
+        compiler.enable_type_checking = true;
         let bytecode = match compiler.compile() {
             Ok(bc) => bc,
             Err(e) => return Err(e),

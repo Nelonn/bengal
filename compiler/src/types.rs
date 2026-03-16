@@ -2640,8 +2640,9 @@ impl TypeChecker {
                     self.context.current_method_return.clone()
                 };
 
-                if let Some(expected) = &expected_return {
-                    if let Some(e) = expr {
+                // Type check the return expression (even if there's no expected return type)
+                if let Some(e) = expr {
+                    if let Some(expected) = &expected_return {
                         // Use expected type for type deduction
                         let expr_type = self.infer_expr_with_expected_type(e, &expected_return);
                         if !expr_type.is_assignable_to(expected) {
@@ -2654,7 +2655,13 @@ impl TypeChecker {
                                 0
                             );
                         }
-                    } else if !matches!(expected, Type::Null | Type::Unknown) {
+                    } else {
+                        // No expected return type (e.g., module-level return or void function)
+                        // Still need to type-check the expression to catch errors like undeclared variables
+                        self.infer_expr(e);
+                    }
+                } else if let Some(expected) = &expected_return {
+                    if !matches!(expected, Type::Null | Type::Unknown) {
                         self.context.add_error(
                             format!(
                                 "Expected return value of type {}, but no value returned",
