@@ -797,6 +797,14 @@ impl Compiler {
 
             match resolver_instance.build_type_context_with_source(&statements, &self.source, self._source_path.as_deref()) {
                 Ok(ctx) => {
+                    // Check if there were any type errors
+                    if ctx.has_errors() {
+                        let mut error_msg = String::new();
+                        for error in ctx.get_errors() {
+                            error_msg.push_str(&format!("{}\n", error.message));
+                        }
+                        return Err(format!("Type checking failed:\n{}", error_msg));
+                    }
                     type_context = Some(ctx.clone());
                     resolver = Some(resolver_instance);
                 }

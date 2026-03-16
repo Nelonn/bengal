@@ -60,13 +60,13 @@ impl ReplState {
                 if !self.source_history.is_empty() {
                     self.source_history.push('\n');
                 }
-                self.source_history.push_str(input);
+                self.source_history.push_str(trimmed);
                 Ok(result)
             }
             Err(e) => {
                 // Error - rollback to state before this command
                 self.executor.vm.restore(&state_before);
-                
+
                 // Check if it might be an incomplete statement
                 if self.is_incomplete_statement(input) {
                     return Err(format!("incomplete: {}", e));
@@ -89,10 +89,14 @@ impl ReplState {
 
         match result {
             Ok(val) => {
-                // For expressions, always show the result
+                // For expressions, show the result unless it's Null (functions returning nothing)
                 // For statements, never show the result (return None)
                 if is_expr {
-                    Ok(val.map(|v| self.format_value(&v)))
+                    match val {
+                        Some(sparkler::vm::Value::Null) => Ok(None),
+                        Some(v) => Ok(Some(self.format_value(&v))),
+                        None => Ok(None),
+                    }
                 } else {
                     // Statements don't display results
                     Ok(None)
@@ -105,21 +109,36 @@ impl ReplState {
     /// Check if input looks like a pure expression (vs a statement)
     fn is_expression(&self, input: &str) -> bool {
         let trimmed = input.trim();
-        
+
         // Statements typically start with these keywords
         let statement_keywords = [
-            "let ", "fn ", "class ", "interface ", "enum ", 
+            "let ", "fn ", "class ", "interface ", "enum ",
             "type ", "import ", "module ", "return ",
             "if ", "while ", "for ", "break", "continue",
             "try ", "catch ", "throw ",
         ];
-        
+
         for keyword in &statement_keywords {
             if trimmed.starts_with(keyword) {
                 return false;
             }
         }
-        
+
+        // Check if it's an assignment (variable = expression)
+        // Assignments are statements, not expressions
+        if trimmed.contains('=') && !trimmed.contains("==") && !trimmed.contains("!=") {
+            // Make sure it's not a comparison or other operator with =
+            // Simple heuristic: if there's a single = not inside another operator, it's an assignment
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let left = parts[0].trim();
+                // Check if left side looks like a variable name (simple identifier)
+                if !left.is_empty() && left.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    return false;
+                }
+            }
+        }
+
         // If it doesn't start with a statement keyword, treat it as an expression
         true
     }
