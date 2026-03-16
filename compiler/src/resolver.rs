@@ -395,16 +395,21 @@ impl ModuleResolver {
                     } else {
                         format!("{}:{}", error.line, error.column)
                     };
-                    
+
                     error_msg.push_str(&format!("{}: error: {}\n", location, error.message));
-                    
-                    // Show code snippet if available
+
+                    // Show code snippet if available and message is single-line
                     if let Some(ref source_line) = error.source_line {
-                        error_msg.push_str(&format!("  {}\n", source_line));
-                        // Show caret pointing to the column
-                        let caret_pos = error.column.saturating_sub(1);
-                        let caret_line: String = " ".repeat(caret_pos) + "^";
-                        error_msg.push_str(&format!("  {}\n", caret_line));
+                        // For multi-line messages (containing newlines after first line), 
+                        // don't show caret as it's confusing
+                        let is_multiline = error.message.contains('\n');
+                        if !is_multiline {
+                            error_msg.push_str(&format!("  {}\n", source_line));
+                            // Show caret pointing to the column
+                            let caret_pos = error.column.saturating_sub(1);
+                            let caret_line: String = " ".repeat(caret_pos) + "^";
+                            error_msg.push_str(&format!("  {}\n", caret_line));
+                        }
                     }
                 }
                 Err(error_msg.trim().to_string())

@@ -1965,6 +1965,103 @@ impl TypeContext {
         score
     }
 
+    /// Get all available overloads for a function name (including from imports)
+    pub fn get_available_overloads(&self, name: &str, _arg_types: &[Type]) -> Vec<&FunctionSignature> {
+        let mut overloads = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // Helper to add overloads from a list of mangled names
+        let mut add_overloads = |overload_list: &[String]| {
+            for mangled in overload_list {
+                if let Some(sig) = self.functions.get(mangled) {
+                    if !seen.contains(&sig.name) {
+                        seen.insert(sig.name.clone());
+                        overloads.push(sig);
+                    }
+                }
+            }
+        };
+
+        // 1. Try direct overloads
+        if let Some(overload_list) = self.function_overloads.get(name) {
+            add_overloads(overload_list);
+        }
+
+        // 2. Try from imports
+        for import_entry in &self.imports {
+            let qualified = format!("{}.{}", import_entry.module_path, name);
+            if let Some(overload_list) = self.function_overloads.get(&qualified) {
+                add_overloads(overload_list);
+            }
+
+            // Also try parent module sub-access (e.g., import std and access io.println)
+            if let Some(dot_pos) = name.find('.') {
+                let (prefix, rest) = name.split_at(dot_pos);
+                let qualified2 = format!("{}.{}.{}", import_entry.module_path, prefix, &rest[1..]);
+                if let Some(overload_list) = self.function_overloads.get(&qualified2) {
+                    add_overloads(overload_list);
+                }
+            }
+        }
+
+        // 3. Try qualified lookup (functions ending with .name)
+        for (func_mangled, sig) in &self.functions {
+            let base_name = match func_mangled.find('(') {
+                Some(pos) => &func_mangled[..pos],
+                None => func_mangled,
+            };
+
+            if base_name.ends_with(&format!(".{}", name)) || base_name.ends_with(&format!("::{}", name)) {
+                if !seen.contains(&sig.name) {
+                    seen.insert(sig.name.clone());
+                    overloads.push(sig);
+                }
+            }
+        }
+
+        overloads
+    }
+
+    /// Generate a detailed error message for no matching overload (Clang-style)
+    pub fn format_no_matching_overload_error(&self, name: &str, arg_types: &[Type], _span_line: usize, _span_column: usize) -> String {
+        let overloads = self.get_available_overloads(name, arg_types);
+        
+        if overloads.is_empty() {
+            // No overloads found at all - function doesn't exist
+            return format!("Undefined function: '{}'", name);
+        }
+
+        // We found overloads, but none match - report them like Clang does
+        let mut msg = String::new();
+        msg.push_str(&format!("No matching function '{}' for arguments: (", name));
+        
+        // Show the argument types that were provided
+        let arg_types_str: Vec<String> = arg_types.iter().map(|t| t.to_str()).collect();
+        msg.push_str(&arg_types_str.join(", "));
+        msg.push_str(")\n");
+        
+        // List candidate overloads
+        msg.push_str("candidate function");
+        if overloads.len() != 1 {
+            msg.push_str("s");
+        }
+        msg.push_str(" not viable:\n");
+        for sig in &overloads {
+            let param_types: Vec<String> = sig.params.iter()
+                .map(|p| {
+                    if let Some(ref t) = p.type_name {
+                        t.to_str().to_string()
+                    } else {
+                        "<no type>".to_string()
+                    }
+                })
+                .collect();
+            msg.push_str(&format!("{}({}) [unconvertible]\n", name, param_types.join(", ")));
+        }
+        
+        msg
+    }
+
     /// Try to resolve a class name, including searching for unqualified names
     /// in qualified classes (e.g., "HttpClient" matches "std::http::HttpClient")
     pub fn resolve_class(&self, name: &str) -> Option<String> {
@@ -3191,6 +3288,16 @@ impl TypeChecker {
                         }
                         return_type
                     } else {
+                        // Function not found or no matching overload
+                        // Check if there are any overloads available for this function name
+                        let overloads = self.context.get_available_overloads(func_name, &arg_types);
+                        if !overloads.is_empty() {
+                            // Function exists but no matching overload - report detailed error
+                            let error_msg = self.context.format_no_matching_overload_error(func_name, &arg_types, func_span.line, func_span.column);
+                            self.context.add_error_with_location(error_msg, func_span.line, func_span.column, None, None);
+                            return Type::Unknown;
+                        }
+                        
                         // Check if it's a class instantiation (possibly generic)
                         // Parse func_name as a type to handle generic instances like ClassName<T>
                         let func_name_type = Type::from_str(func_name);
