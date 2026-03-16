@@ -124,6 +124,15 @@ impl ReplState {
             }
         }
 
+        // Check for augmented assignments (+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=)
+        // These are statements, not expressions
+        let aug_assign_ops = ["*=", "/=", "%=", "+=", "-=", "&=", "|=", "^=", "<<=", ">>="];
+        for op in &aug_assign_ops {
+            if trimmed.contains(op) {
+                return false;
+            }
+        }
+
         // Check if it's an assignment (variable = expression)
         // Assignments are statements, not expressions
         if trimmed.contains('=') && !trimmed.contains("==") && !trimmed.contains("!=") {
