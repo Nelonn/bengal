@@ -462,6 +462,13 @@ impl TypeContext {
             expr_types: HashMap::new(),
         };
 
+        // Register built-in global variables
+        ctx.variables.insert("ARGV".to_string(), crate::types::VariableInfo {
+            name: "ARGV".to_string(),
+            type_name: Type::Array(Box::new(Type::Str)),
+            private: false,
+        });
+
         // Register native classes
         ctx.register_native_classes();
 
@@ -605,16 +612,97 @@ impl TypeContext {
             type_params: Vec::new(),
             mangled_name: Some("split(str)".to_string()),
         });
+        str_methods.insert("toInt()".to_string(), MethodSignature {
+            name: "toInt".to_string(),
+            params: vec![],
+            return_type: Some(Type::Int),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+            is_static: false,
+            type_params: Vec::new(),
+            mangled_name: Some("toInt()".to_string()),
+        });
+        str_methods.insert("toFloat()".to_string(), MethodSignature {
+            name: "toFloat".to_string(),
+            params: vec![],
+            return_type: Some(Type::Float),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+            is_static: false,
+            type_params: Vec::new(),
+            mangled_name: Some("toFloat()".to_string()),
+        });
+        str_methods.insert("contains(str)".to_string(), MethodSignature {
+            name: "contains".to_string(),
+            params: vec![ParamSignature { name: "substr".to_string(), type_name: Some(Type::Str) }],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+            is_static: false,
+            type_params: Vec::new(),
+            mangled_name: Some("contains(str)".to_string()),
+        });
+        str_methods.insert("startsWith(str)".to_string(), MethodSignature {
+            name: "startsWith".to_string(),
+            params: vec![ParamSignature { name: "prefix".to_string(), type_name: Some(Type::Str) }],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+            is_static: false,
+            type_params: Vec::new(),
+            mangled_name: Some("startsWith(str)".to_string()),
+        });
+        str_methods.insert("endsWith(str)".to_string(), MethodSignature {
+            name: "endsWith".to_string(),
+            params: vec![ParamSignature { name: "suffix".to_string(), type_name: Some(Type::Str) }],
+            return_type: Some(Type::Bool),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+            is_static: false,
+            type_params: Vec::new(),
+            mangled_name: Some("endsWith(str)".to_string()),
+        });
+        str_methods.insert("substring(int,int)".to_string(), MethodSignature {
+            name: "substring".to_string(),
+            params: vec![
+                ParamSignature { name: "start".to_string(), type_name: Some(Type::Int) },
+                ParamSignature { name: "end".to_string(), type_name: Some(Type::Int) },
+            ],
+            return_type: Some(Type::Str),
+            return_optional: false,
+            private: false,
+            is_async: false,
+            is_native: true,
+            is_static: false,
+            type_params: Vec::new(),
+            mangled_name: Some("substring(int,int)".to_string()),
+        });
         let mut str_method_overloads = HashMap::new();
         str_method_overloads.insert("length".to_string(), vec!["length()".to_string()]);
         str_method_overloads.insert("trim".to_string(), vec!["trim()".to_string()]);
         str_method_overloads.insert("split".to_string(), vec!["split(str)".to_string()]);
+        str_method_overloads.insert("toInt".to_string(), vec!["toInt()".to_string()]);
+        str_method_overloads.insert("toFloat".to_string(), vec!["toFloat()".to_string()]);
+        str_method_overloads.insert("contains".to_string(), vec!["contains(str)".to_string()]);
+        str_method_overloads.insert("startsWith".to_string(), vec!["startsWith(str)".to_string()]);
+        str_method_overloads.insert("endsWith".to_string(), vec!["endsWith(str)".to_string()]);
+        str_method_overloads.insert("substring".to_string(), vec!["substring(int,int)".to_string()]);
         self.classes.insert("str".to_string(), ClassInfo {
             name: "str".to_string(),
             fields: HashMap::new(),
             methods: str_methods,
             method_overloads: str_method_overloads,
-            vtable: vec!["length".to_string(), "trim".to_string(), "split".to_string()],
+            vtable: vec!["length".to_string(), "trim".to_string(), "split".to_string(), "toInt".to_string(), "toFloat".to_string(), "contains".to_string(), "startsWith".to_string(), "endsWith".to_string(), "substring".to_string()],
             is_native: true,
             is_interface: false,
             private: false,

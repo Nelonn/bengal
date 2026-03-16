@@ -7,7 +7,7 @@ use clap::Parser;
 mod repl;
 mod bytecode_viewer;
 
-async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = match fs::read_to_string(source_file) {
         Ok(content) => content,
         Err(e) => {
@@ -16,7 +16,7 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool) -> Result<(
     };
 
     let mut compiler = Compiler::with_path_and_options(&source, source_file, unsafe_fast);
-    compiler.enable_type_checking = false;
+    compiler.enable_type_checking = true;
     let bytecode = match compiler.compile() {
         Ok(bc) => bc,
         Err(e) => {
@@ -26,6 +26,14 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool) -> Result<(
 
     let mut executor = Executor::new();
     bengal_std::register_all(&mut executor.vm);
+
+    // Pass arguments to the script as ARGV
+    use std::sync::{Arc, Mutex};
+    executor.vm.set_local("ARGV", sparkler::Value::Array(Arc::new(Mutex::new(
+        script_args.iter()
+            .map(|s| sparkler::Value::String(s.clone()))
+            .collect()
+    ))));
 
     if debug {
         executor.vm.is_debugging = true;
@@ -66,7 +74,7 @@ async fn run_tests(test_path: &str, unsafe_fast: bool) -> Result<(), Box<dyn std
         print!("Testing: {}... ", file_name);
         std::io::Write::flush(&mut std::io::stdout())?;
 
-        match run_file(&file_name, false, unsafe_fast).await {
+        match run_file(&file_name, false, unsafe_fast, Vec::new()).await {
             Ok(_) => {
                 println!("PASS");
                 passed += 1;
@@ -132,6 +140,10 @@ struct Args {
     /// Disable safety checks (overflow, division by zero) for faster execution
     #[arg(long)]
     unsafe_fast: bool,
+
+    /// Arguments to pass to the script
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    script_args: Vec<String>,
 }
 
 #[tokio::main]
@@ -181,7 +193,7 @@ async fn main() {
         return;
     }
 
-    if let Err(e) = run_file(&source_file, args.debug, args.unsafe_fast).await {
+    if let Err(e) = run_file(&source_file, args.debug, args.unsafe_fast, args.script_args).await {
         eprintln!("{}", e);
         std::process::exit(1);
     }

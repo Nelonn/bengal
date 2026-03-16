@@ -855,6 +855,16 @@ impl VM {
         Ok(())
     }
 
+    /// Set a local variable by name
+    pub fn set_local(&mut self, name: &str, value: Value) {
+        self.locals.insert(name.to_string(), value);
+    }
+
+    /// Get a local variable by name
+    pub fn get_local(&self, name: &str) -> Option<&Value> {
+        self.locals.get(name)
+    }
+
     /// Get current PC from the top frame
     #[inline]
     fn pc(&self) -> usize {
@@ -1486,7 +1496,7 @@ impl VM {
                     } else {
                         &name
                     };
-                    
+
                     let result = match base_name {
                         "length" => {
                             if let Value::Array(arr) = &args[0] {
@@ -1505,6 +1515,151 @@ impl VM {
                                 Ok(Value::Null)
                             } else {
                                 Err(Value::String("add requires an array".to_string()))
+                            }
+                        }
+                        _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
+                    };
+                    self.set_reg(rd, result?);
+                // Check if this is a string method call
+                } else if let Some(Value::String(_)) = args.first() {
+                    // Strip parameter signature from mangled name (e.g., "toInt()" -> "toInt")
+                    let base_name = if let Some(paren_pos) = name.find('(') {
+                        &name[..paren_pos]
+                    } else {
+                        &name
+                    };
+
+                    let result = match base_name {
+                        "length" => {
+                            if let Value::String(s) = &args[0] {
+                                Ok(Value::Int64(s.len() as i64))
+                            } else {
+                                Err(Value::String("length requires a string".to_string()))
+                            }
+                        }
+                        "trim" => {
+                            if let Value::String(s) = &args[0] {
+                                Ok(Value::String(s.trim().to_string()))
+                            } else {
+                                Err(Value::String("trim requires a string".to_string()))
+                            }
+                        }
+                        "toInt" => {
+                            if let Value::String(s) = &args[0] {
+                                match s.parse::<i64>() {
+                                    Ok(n) => Ok(Value::Int64(n)),
+                                    Err(_) => Ok(Value::Null),
+                                }
+                            } else {
+                                Err(Value::String("toInt requires a string".to_string()))
+                            }
+                        }
+                        "toFloat" => {
+                            if let Value::String(s) = &args[0] {
+                                match s.parse::<f64>() {
+                                    Ok(n) => Ok(Value::Float64(n)),
+                                    Err(_) => Ok(Value::Null),
+                                }
+                            } else {
+                                Err(Value::String("toFloat requires a string".to_string()))
+                            }
+                        }
+                        "contains" => {
+                            if args.len() < 2 {
+                                Err(Value::String("contains requires a string argument".to_string()))
+                            } else if let (Value::String(s), Value::String(substr)) = (&args[0], &args[1]) {
+                                Ok(Value::Bool(s.contains(substr)))
+                            } else {
+                                Err(Value::String("contains requires string arguments".to_string()))
+                            }
+                        }
+                        "startsWith" => {
+                            if args.len() < 2 {
+                                Err(Value::String("startsWith requires a string argument".to_string()))
+                            } else if let (Value::String(s), Value::String(prefix)) = (&args[0], &args[1]) {
+                                Ok(Value::Bool(s.starts_with(prefix)))
+                            } else {
+                                Err(Value::String("startsWith requires string arguments".to_string()))
+                            }
+                        }
+                        "endsWith" => {
+                            if args.len() < 2 {
+                                Err(Value::String("endsWith requires a string argument".to_string()))
+                            } else if let (Value::String(s), Value::String(suffix)) = (&args[0], &args[1]) {
+                                Ok(Value::Bool(s.ends_with(suffix)))
+                            } else {
+                                Err(Value::String("endsWith requires string arguments".to_string()))
+                            }
+                        }
+                        "substring" => {
+                            if args.len() < 3 {
+                                Err(Value::String("substring requires start and end arguments".to_string()))
+                            } else if let (Value::String(s), Value::Int64(start), Value::Int64(end)) = (&args[0], &args[1], &args[2]) {
+                                let start = *start as usize;
+                                let end = *end as usize;
+                                if start > s.len() || end > s.len() || start > end {
+                                    Err(Value::String("substring: invalid indices".to_string()))
+                                } else {
+                                    Ok(Value::String(s[start..end].to_string()))
+                                }
+                            } else {
+                                Err(Value::String("substring requires string and int arguments".to_string()))
+                            }
+                        }
+                        "toLower" => {
+                            if let Value::String(s) = &args[0] {
+                                Ok(Value::String(s.to_lowercase()))
+                            } else {
+                                Err(Value::String("toLower requires a string".to_string()))
+                            }
+                        }
+                        "toUpper" => {
+                            if let Value::String(s) = &args[0] {
+                                Ok(Value::String(s.to_uppercase()))
+                            } else {
+                                Err(Value::String("toUpper requires a string".to_string()))
+                            }
+                        }
+                        "replace" => {
+                            if args.len() < 3 {
+                                Err(Value::String("replace requires pattern and replacement arguments".to_string()))
+                            } else if let (Value::String(s), Value::String(pattern), Value::String(replacement)) = (&args[0], &args[1], &args[2]) {
+                                Ok(Value::String(s.replace(pattern, replacement)))
+                            } else {
+                                Err(Value::String("replace requires string arguments".to_string()))
+                            }
+                        }
+                        "split" => {
+                            if args.len() < 2 {
+                                Err(Value::String("split requires a delimiter argument".to_string()))
+                            } else if let (Value::String(s), Value::String(delimiter)) = (&args[0], &args[1]) {
+                                let elements: Vec<Value> = s.split(delimiter)
+                                    .map(|part| Value::String(part.to_string()))
+                                    .collect();
+                                Ok(Value::Array(Arc::new(Mutex::new(elements))))
+                            } else {
+                                Err(Value::String("split requires string arguments".to_string()))
+                            }
+                        }
+                        _ => Err(Value::String(format!("Method '{}' not found on str", name))),
+                    };
+                    self.set_reg(rd, result?);
+                // Check if this is an array method call
+                } else if let Some(Value::Array(_)) = args.first() {
+                    // Strip parameter signature from mangled name
+                    let base_name = if let Some(paren_pos) = name.find('(') {
+                        &name[..paren_pos]
+                    } else {
+                        &name
+                    };
+
+                    let result = match base_name {
+                        "length" => {
+                            if let Value::Array(arr) = &args[0] {
+                                let elements = arr.lock().unwrap();
+                                Ok(Value::Int64(elements.len() as i64))
+                            } else {
+                                Err(Value::String("length requires an array".to_string()))
                             }
                         }
                         _ => Err(Value::String(format!("Method '{}' not found on Array", name))),

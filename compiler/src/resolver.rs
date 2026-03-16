@@ -449,9 +449,15 @@ impl ModuleResolver {
 
                     self.type_context.add_function(&full_name, sig.clone());
 
-                    // Also add unqualified version for public functions
+                    // Also add unqualified version for public functions in the current module
+                    // (not for imported modules, to avoid name conflicts)
                     if !func.private {
-                        self.type_context.add_function(&func.name, sig);
+                        let is_current_module = self.type_context.current_module.as_ref()
+                            .map(|m| m == &module_name)
+                            .unwrap_or(false);
+                        if is_current_module {
+                            self.type_context.add_function(&func.name, sig);
+                        }
                     }
                 }
                 Stmt::Let { name, type_annotation, expr: _, private, .. } => {

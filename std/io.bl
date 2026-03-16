@@ -4,6 +4,10 @@ native fn print(text: str) {}
 
 native fn println(line: str) {}
 
+//fn println(line: str) {
+//  print(line + "\n")
+//}
+
 async native fn sleep(ms: int) {}
 
 async native fn readLine(): str {}

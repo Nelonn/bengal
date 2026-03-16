@@ -2129,6 +2129,19 @@ impl Compiler {
                     return Ok(rd);
                 }
 
+                // Check if it's a known global from the type context (e.g., built-in ARGV)
+                if let Some(ctx) = type_context {
+                    if ctx.variables.contains_key(name) {
+                        // Use LoadLocal for known globals
+                        let rd = self.current_ctx.allocate_reg();
+                        let idx = add_string(strings, name.clone());
+                        bytecode.push(Opcode::LoadLocal as u8);
+                        bytecode.push(rd as u8);
+                        bytecode.push(idx as u8);
+                        return Ok(rd);
+                    }
+                }
+
                 if let Some(ctx) = type_context {
                     if let Some(current_class_name) = &ctx.current_class {
                         if let Some(class_info) = ctx.get_class(current_class_name) {
@@ -3012,12 +3025,8 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        // For native functions, use the base name (not mangled name) for lookup
-                        let call_name = if is_native {
-                            func_name.clone()
-                        } else {
-                            resolved_name.clone()
-                        };
+                        // For native functions, use the resolved name (which includes module prefix for imports)
+                        let call_name = resolved_name.clone();
                         let idx = add_string(strings, call_name.clone());
 
                         // Use CallNative for native functions, Call for bytecode functions
