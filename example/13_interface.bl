@@ -17,3 +17,6 @@ class Circle : Drawable {
   fn draw(text: str) {
   }
 }
+
+let circle: Printable = Circle()
+circle.print("test")

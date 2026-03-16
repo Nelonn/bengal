@@ -713,6 +713,15 @@ pub struct VM {
     pub breakpoints: std::collections::HashSet<(String, usize)>,
     /// Whether debugging mode is enabled
     pub is_debugging: bool,
+    /// Vtables for interface method dispatch (indexed by vtable_idx)
+    vtables: Vec<VTable>,
+}
+
+/// VTable entry for interface method dispatch
+#[derive(Clone, Debug)]
+pub struct VTable {
+    pub class_name: String,
+    pub methods: Vec<String>,  // Ordered list of method names (by vtable index)
 }
 
 #[derive(Clone)]
@@ -754,6 +763,7 @@ impl VM {
             current_line: 1,
             breakpoints: std::collections::HashSet::new(),
             is_debugging: false,
+            vtables: Vec::new(),
         }
     }
 
@@ -805,9 +815,10 @@ impl VM {
     }
 
     /// Load bytecode and initialize the VM
-    pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>) -> Result<(), String> {
+    pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>, vtables: Vec<VTable>) -> Result<(), String> {
         self.bytecode = bytecode.to_vec();
         self.strings = strings;
+        self.vtables = vtables;
 
         self.classes.clear();
         for mut class in classes {
@@ -824,7 +835,7 @@ impl VM {
             }
             self.classes.insert(class.name.clone(), class);
         }
-        
+
         self.functions.clear();
         for function in functions {
             self.functions.insert(function.name.clone(), function);
@@ -833,7 +844,7 @@ impl VM {
         // Initialize for execution
         self.set_pc(0);
         self.registers.fill(Value::Null);
-        
+
         // Create initial call frame for module-level code
         self.call_stack = vec![CallFrame::new(
             0,
@@ -843,7 +854,7 @@ impl VM {
             "<main>".to_string(),
             self.source_file.clone(),
         )];
-        
+
         self.current_line = 1;
         Ok(())
     }
@@ -1677,117 +1688,157 @@ impl VM {
                             } else {
                                 self.set_reg(rd, result);
                             }
-                        } else if let Some(method) = class.methods.get(&name) {
-                            // Set up method call frame
-                            let caller_pc = self.pc();
-                            let caller_frame_base = self.frame_base();
-
-                            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-
-                            if new_frame_base + method.register_count as usize > self.registers.len() {
-                                return Err(Value::String("Register overflow in method call".to_string()));
-                            }
-
-                            let mut new_call_stack = self.call_stack.clone();
-                            if let Some(last_frame) = new_call_stack.last_mut() {
-                                last_frame.line_number = self.current_line;
-                            }
-                            new_call_stack.push(CallFrame::new(
-                                0,
-                                new_frame_base,
-                                arg_count,
-                                method.register_count,
-                                format!("{}.{}", class_name, name),
-                                self.source_file.clone(),
-                            ));
-                            self.call_stack = new_call_stack;
-
-                            // Copy arguments (first is self, placed in R1..Rn)
-                            for (i, arg) in args.iter().enumerate() {
-                                self.set_reg((i + 1) as u8, arg.clone());
-                            }
-
-                            let new_bytecode = method.bytecode.clone();
-                            let new_strings = self.strings.clone();
-                            let new_classes = self.classes.clone();
-                            let new_native_registry = self.native_registry.clone();
-
-                            let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
-                            let old_strings = std::mem::replace(&mut self.strings, new_strings);
-                            let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                            let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
-
-                            #[cfg(target_arch = "wasm32")]
-                            let result = Box::pin(self.run()).await;
-                            #[cfg(not(target_arch = "wasm32"))]
-                            let result = self.run().await;
-
-                            self.bytecode = old_bytecode;
-                            self.strings = old_strings;
-                            self.classes = old_classes;
-                            self.native_registry = old_native_registry;
-
-                            self.call_stack.pop();
-                            if let Some(frame) = self.call_stack.last_mut() {
-                                frame.pc = caller_pc;  // PC already points to next instruction
-                                frame.frame_base = caller_frame_base;
-                            }
-
-                            match result {
-                                Ok(RunResult::Finished(val)) => {
-                                    // For constructors, return the instance (self) instead of the method's return value
-                                    if name == "constructor" {
-                                        self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
-                                    } else {
-                                        self.set_reg(rd, val.unwrap_or(Value::Null));
-                                    }
-                                },
-                                Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
-                                Err(e) => return Err(e),
-                            }
                         } else {
-                            // Method not found - provide helpful error with available methods
-                            let base_name = if let Some(paren_pos) = name.find('(') {
-                                &name[..paren_pos]
-                            } else {
-                                &name
-                            };
-
-                            // Collect available native methods with matching base name
-                            let mut available_native: Vec<&String> = class.native_methods.keys()
-                                .filter(|k| {
-                                    if let Some(paren_pos) = k.find('(') {
-                                        &k[..paren_pos] == base_name
-                                    } else {
-                                        k.as_str() == base_name
-                                    }
-                                })
-                                .collect();
-
-                            // Collect available bytecode methods with matching base name
-                            let mut available_bytecode: Vec<&String> = class.methods.keys()
-                                .filter(|k| {
-                                    if let Some(paren_pos) = k.find('(') {
-                                        &k[..paren_pos] == base_name
-                                    } else {
-                                        k.as_str() == base_name
-                                    }
-                                })
-                                .collect();
+                            // For bytecode methods, try exact match first, then generic type parameter matching
+                            let method_opt = class.methods.get(&name);
                             
-                            if !available_native.is_empty() || !available_bytecode.is_empty() {
-                                let mut available = Vec::new();
-                                available_native.sort();
-                                available_bytecode.sort();
-                                available.extend(available_native.iter().map(|s| s.as_str()));
-                                available.extend(available_bytecode.iter().map(|s| s.as_str()));
-                                return Err(Value::String(format!(
-                                    "Method '{}' not found on class '{}'. Available methods: [{}]",
-                                    name, class_name, available.join(", ")
-                                )));
+                            // If not found, try to match with generic type parameters (T matches any type)
+                            let method_opt = method_opt.or_else(|| {
+                                let (base_name, requested_params) = if let Some(paren_pos) = name.find('(') {
+                                    let params_str = &name[paren_pos + 1..name.len() - 1];
+                                    (&name[..paren_pos], params_str.split(',').collect::<Vec<_>>())
+                                } else {
+                                    (&name[..], Vec::new())
+                                };
+                                
+                                // Find a method with same base name, same arg count, where each param is either
+                                // an exact match or a generic type parameter (single uppercase letter like T)
+                                class.methods.iter().find(|(k, _)| {
+                                    if let Some(paren_pos) = k.find('(') {
+                                        let k_base = &k[..paren_pos];
+                                        let k_params_str = &k[paren_pos + 1..k.len() - 1];
+                                        let k_params: Vec<&str> = k_params_str.split(',').collect();
+                                        
+                                        if k_base != base_name || k_params.len() != requested_params.len() {
+                                            return false;
+                                        }
+                                        
+                                        // Check each parameter - T matches anything
+                                        for (k_param, req_param) in k_params.iter().zip(requested_params.iter()) {
+                                            let is_generic = k_param.len() == 1 && k_param.chars().next().unwrap().is_uppercase();
+                                            if !is_generic && k_param != req_param {
+                                                return false;
+                                            }
+                                        }
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }).map(|(_, v)| v)
+                            });
+                            
+                            if let Some(method) = method_opt {
+                                // Set up method call frame
+                                let caller_pc = self.pc();
+                                let caller_frame_base = self.frame_base();
+
+                                let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+                                if new_frame_base + method.register_count as usize > self.registers.len() {
+                                    return Err(Value::String("Register overflow in method call".to_string()));
+                                }
+
+                                let mut new_call_stack = self.call_stack.clone();
+                                if let Some(last_frame) = new_call_stack.last_mut() {
+                                    last_frame.line_number = self.current_line;
+                                }
+                                new_call_stack.push(CallFrame::new(
+                                    0,
+                                    new_frame_base,
+                                    arg_count,
+                                    method.register_count,
+                                    format!("{}.{}", class_name, name),
+                                    self.source_file.clone(),
+                                ));
+                                self.call_stack = new_call_stack;
+
+                                // Copy arguments (first is self, placed in R1..Rn)
+                                for (i, arg) in args.iter().enumerate() {
+                                    self.set_reg((i + 1) as u8, arg.clone());
+                                }
+
+                                let new_bytecode = method.bytecode.clone();
+                                let new_strings = self.strings.clone();
+                                let new_classes = self.classes.clone();
+                                let new_native_registry = self.native_registry.clone();
+
+                                let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
+                                let old_strings = std::mem::replace(&mut self.strings, new_strings);
+                                let old_classes = std::mem::replace(&mut self.classes, new_classes);
+                                let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
+
+                                #[cfg(target_arch = "wasm32")]
+                                let result = Box::pin(self.run()).await;
+                                #[cfg(not(target_arch = "wasm32"))]
+                                let result = self.run().await;
+
+                                self.bytecode = old_bytecode;
+                                self.strings = old_strings;
+                                self.classes = old_classes;
+                                self.native_registry = old_native_registry;
+
+                                self.call_stack.pop();
+                                if let Some(frame) = self.call_stack.last_mut() {
+                                    frame.pc = caller_pc;  // PC already points to next instruction
+                                    frame.frame_base = caller_frame_base;
+                                }
+
+                                match result {
+                                    Ok(RunResult::Finished(val)) => {
+                                        // For constructors, return the instance (self) instead of the method's return value
+                                        if name == "constructor" {
+                                            self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                                        } else {
+                                            self.set_reg(rd, val.unwrap_or(Value::Null));
+                                        }
+                                    },
+                                    Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                    Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                                    Err(e) => return Err(e),
+                                }
                             } else {
-                                return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                                // Method not found - provide helpful error with available methods
+                                let base_name = if let Some(paren_pos) = name.find('(') {
+                                    &name[..paren_pos]
+                                } else {
+                                    &name
+                                };
+
+                                // Collect available native methods with matching base name
+                                let mut available_native: Vec<&String> = class.native_methods.keys()
+                                    .filter(|k| {
+                                        if let Some(paren_pos) = k.find('(') {
+                                            &k[..paren_pos] == base_name
+                                        } else {
+                                            k.as_str() == base_name
+                                        }
+                                    })
+                                    .collect();
+
+                                // Collect available bytecode methods with matching base name
+                                let mut available_bytecode: Vec<&String> = class.methods.keys()
+                                    .filter(|k| {
+                                        if let Some(paren_pos) = k.find('(') {
+                                            &k[..paren_pos] == base_name
+                                        } else {
+                                            k.as_str() == base_name
+                                        }
+                                    })
+                                    .collect();
+
+                                if !available_native.is_empty() || !available_bytecode.is_empty() {
+                                    let mut available = Vec::new();
+                                    available_native.sort();
+                                    available_bytecode.sort();
+                                    available.extend(available_native.iter().map(|s| s.as_str()));
+                                    available.extend(available_bytecode.iter().map(|s| s.as_str()));
+                                    return Err(Value::String(format!(
+                                        "Method '{}' not found on class '{}'. Available methods: [{}]",
+                                        name, class_name, available.join(", ")
+                                    )));
+                                } else {
+                                    return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                                }
                             }
                         }
                     } else {
@@ -1797,8 +1848,9 @@ impl VM {
             }
 
             // Invoke interface method via vtable
-            // Format: [InvokeInterface, Rd, vtable_idx, arg_start, arg_count]
+            // Format: [InvokeInterface, Rd, method_idx, arg_start, arg_count]
             // First argument (arg_start) is the receiver (self)
+            // method_idx is the index into the class's vtable
             x if x == Opcode::InvokeInterface as u8 || x == Opcode::InvokeInterfaceAsync as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
@@ -1809,10 +1861,6 @@ impl VM {
                 self.set_pc(self.pc() + 1);
                 let arg_count = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);  // Advance PC past all operands
-
-                let name = self.strings.get(method_idx)
-                    .ok_or_else(|| Value::String(format!("Invalid method index: {}", method_idx)))?
-                    .clone();
 
                 let mut args = Vec::new();
                 for i in 0..arg_count {
@@ -1826,11 +1874,30 @@ impl VM {
                 };
 
                 let class_name = instance.lock().unwrap().class.clone();
-                
+
                 // Look up the method through the vtable
                 if let Some(class) = self.classes.get(&class_name).cloned() {
-                    // First check if the class itself has the method
-                    if let Some(method) = class.methods.get(&name) {
+                    // Get the method name from the vtable by index
+                    let method_name = class.vtable.get(method_idx)
+                        .ok_or_else(|| Value::String(format!(
+                            "Vtable method index {} out of range for class '{}' (vtable size: {})",
+                            method_idx, class_name, class.vtable.len()
+                        )))?;
+
+                    // Look up the actual method by name (try different mangled variants)
+                    let method_opt = class.methods.get(method_name)
+                        .or_else(|| {
+                            // Try to find a method with matching base name
+                            class.methods.iter().find(|(k, _)| {
+                                if let Some(paren_pos) = k.find('(') {
+                                    &k[..paren_pos] == method_name
+                                } else {
+                                    k.as_str() == method_name
+                                }
+                            }).map(|(_, v)| v)
+                        });
+
+                    if let Some(method) = method_opt {
                         // Found the method in the class, invoke it
                         let caller_pc = self.pc();
                         let caller_frame_base = self.frame_base();
@@ -1850,7 +1917,7 @@ impl VM {
                             new_frame_base,
                             arg_count,
                             method.register_count,
-                            format!("{}.{}", class_name, name),
+                            format!("{}.{}", class_name, method_name),
                             self.source_file.clone(),
                         ));
                         self.call_stack = new_call_stack;
@@ -1888,7 +1955,7 @@ impl VM {
                         match result {
                             Ok(RunResult::Finished(val)) => {
                                 // For constructors, return the instance (self) instead of the method's return value
-                                if name == "constructor" {
+                                if method_name == "constructor" {
                                     self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
                                 } else {
                                     self.set_reg(rd, val.unwrap_or(Value::Null));
@@ -1903,22 +1970,31 @@ impl VM {
                         let mut found = false;
                         let mut found_method = None;
                         let mut found_iface_name = None;
-                        
+
                         for iface_name in &class.parent_interfaces {
                             if let Some(iface) = self.classes.get(iface_name) {
-                                if let Some(method) = iface.methods.get(&name) {
-                                    found_method = Some(method.clone());
+                                // Try to find method with matching base name
+                                let method = iface.methods.iter().find(|(k, _)| {
+                                    if let Some(paren_pos) = k.find('(') {
+                                        &k[..paren_pos] == method_name
+                                    } else {
+                                        k.as_str() == method_name
+                                    }
+                                }).map(|(_, v)| v.clone());
+                                
+                                if let Some(m) = method {
+                                    found_method = Some(m);
                                     found_iface_name = Some(iface_name.clone());
                                     found = true;
                                     break;
                                 }
                             }
                         }
-                        
+
                         if found {
                             let method = found_method.unwrap();
                             let iface_name = found_iface_name.unwrap();
-                            
+
                             // Found in parent interface, use default implementation
                             let caller_pc = self.pc();
                             let caller_frame_base = self.frame_base();
@@ -1937,7 +2013,7 @@ impl VM {
                                 new_frame_base,
                                 arg_count,
                                 method.register_count,
-                                format!("{}.{}", iface_name, name),
+                                format!("{}.{}", iface_name, method_name),
                                 self.source_file.clone(),
                             ));
                             self.call_stack = new_call_stack;
@@ -1979,7 +2055,7 @@ impl VM {
                                 Err(e) => return Err(e),
                             }
                         } else {
-                            return Err(Value::String(format!("Interface method '{}' not found in class '{}' or its interfaces", name, class_name)));
+                            return Err(Value::String(format!("Interface method '{}' not found in class '{}' or its interfaces", method_name, class_name)));
                         }
                     }
                 } else {

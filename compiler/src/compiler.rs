@@ -1337,11 +1337,36 @@ impl Compiler {
 
         bytecode.push(Opcode::Halt as u8);
 
+        // Build vtables for interface dispatch
+        // Each class that implements an interface gets a vtable entry
+        let mut vtables = Vec::new();
+        for class_def in &vm_classes {
+            if !class_def.parent_interfaces.is_empty() || class_def.is_interface {
+                // This class implements interfaces - create a vtable
+                let vtable_methods: Vec<String> = class_def.vtable.iter()
+                    .map(|method_name| {
+                        // Extract base method name (without parameter signature)
+                        if let Some(paren_pos) = method_name.find('(') {
+                            method_name[..paren_pos].to_string()
+                        } else {
+                            method_name.clone()
+                        }
+                    })
+                    .collect();
+                
+                vtables.push(sparkler::executor::VTable {
+                    class_name: class_def.name.clone(),
+                    methods: vtable_methods,
+                });
+            }
+        }
+
         Ok(Bytecode {
             data: bytecode,
             strings,
             classes: vm_classes,
             functions: vm_functions,
+            vtables,
         })
     }
 
@@ -2984,19 +3009,6 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        // Generate mangled method name based on argument count
-                        let mangled_method = if args.is_empty() {
-                            format!("{}()", func_name)
-                        } else {
-                            let mut params = Vec::new();
-                            for _ in 0..args.len() {
-                                params.push("T".to_string());
-                            }
-                            format!("{}({})", func_name, params.join(","))
-                        };
-
-                        let idx = add_string(strings, mangled_method);
-
                         // Check if this is an interface method
                         let is_interface_method = if let Some(ctx) = type_context {
                             if let Some(current_class) = &ctx.current_class {
@@ -3007,14 +3019,51 @@ impl Compiler {
                         } else { false };
 
                         if is_interface_method {
+                            // For interface calls, use method index in vtable
+                            // Find the method's position in the interface's vtable
+                            let method_idx = if let Some(ctx) = type_context {
+                                if let Some(current_class) = &ctx.current_class {
+                                    if let Some(class_info) = ctx.get_class(current_class) {
+                                        // Find the method index in the vtable
+                                        class_info.vtable.iter().position(|m| {
+                                            // Compare base names (without parameter signature)
+                                            if let Some(paren_pos) = m.find('(') {
+                                                &m[..paren_pos] == func_name
+                                            } else {
+                                                m == func_name
+                                            }
+                                        }).unwrap_or(0)
+                                    } else { 0 }
+                                } else { 0 }
+                            } else { 0 };
+
                             bytecode.push(Opcode::InvokeInterface as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(method_idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push((args.len() + 1) as u8);
                         } else {
+                            // Regular method call - use mangled method name
+                            let mangled_method = if args.is_empty() {
+                                format!("{}()", func_name)
+                            } else {
+                                // Infer types from arguments for proper overload resolution
+                                let ctx_for_infer = type_context.map(|tc| tc.clone()).unwrap_or_else(|| TypeContext::new());
+                                let mut params = Vec::new();
+                                for arg in args {
+                                    let arg_type = self.infer_expr_type(arg, &ctx_for_infer);
+                                    params.push(arg_type.to_str());
+                                }
+                                format!("{}({})", func_name, params.join(","))
+                            };
+
+                            let idx = add_string(strings, mangled_method);
                             bytecode.push(Opcode::Invoke as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push((args.len() + 1) as u8);
                         }
-                        bytecode.push(rd as u8);
-                        bytecode.push(idx as u8);
-                        bytecode.push(contiguous_start as u8);
-                        bytecode.push((args.len() + 1) as u8);
                     } else {
                         // Regular function call
                         let contiguous_start = self.current_ctx.allocate_regs(args.len());
@@ -3115,22 +3164,6 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        // Generate mangled method name based on actual argument types
-                        let mangled_method = if args.is_empty() {
-                            format!("{}()", name)
-                        } else {
-                            // Infer types from arguments for proper overload resolution
-                            let ctx_for_infer = type_context.map(|tc| tc.clone()).unwrap_or_else(|| TypeContext::new());
-                            let mut params = Vec::new();
-                            for arg in args {
-                                let arg_type = self.infer_expr_type(arg, &ctx_for_infer);
-                                params.push(arg_type.to_str());
-                            }
-                            format!("{}({})", name, params.join(","))
-                        };
-
-                        let idx = add_string(strings, mangled_method);
-
                         // Check if this is an interface method call
                         let is_interface_method = if let Some(ctx) = type_context {
                             // Try to get the type of the object
@@ -3144,14 +3177,48 @@ impl Compiler {
                         } else { false };
 
                         if is_interface_method {
+                            // For interface calls, use method index in vtable
+                            let method_idx = if let Some(ctx) = type_context {
+                                if let Some(current_class) = &ctx.current_class {
+                                    if let Some(class_info) = ctx.get_class(current_class) {
+                                        class_info.vtable.iter().position(|m| {
+                                            if let Some(paren_pos) = m.find('(') {
+                                                &m[..paren_pos] == name
+                                            } else {
+                                                m == name
+                                            }
+                                        }).unwrap_or(0)
+                                    } else { 0 }
+                                } else { 0 }
+                            } else { 0 };
+
                             bytecode.push(Opcode::InvokeInterface as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(method_idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push((args.len() + 1) as u8);
                         } else {
+                            // Regular method call - use mangled method name
+                            let mangled_method = if args.is_empty() {
+                                format!("{}()", name)
+                            } else {
+                                // Infer types from arguments for proper overload resolution
+                                let ctx_for_infer = type_context.map(|tc| tc.clone()).unwrap_or_else(|| TypeContext::new());
+                                let mut params = Vec::new();
+                                for arg in args {
+                                    let arg_type = self.infer_expr_type(arg, &ctx_for_infer);
+                                    params.push(arg_type.to_str());
+                                }
+                                format!("{}({})", name, params.join(","))
+                            };
+
+                            let idx = add_string(strings, mangled_method);
                             bytecode.push(Opcode::Invoke as u8);
+                            bytecode.push(rd as u8);
+                            bytecode.push(idx as u8);
+                            bytecode.push(contiguous_start as u8);
+                            bytecode.push((args.len() + 1) as u8);
                         }
-                        bytecode.push(rd as u8);
-                        bytecode.push(idx as u8);
-                        bytecode.push(contiguous_start as u8);
-                        bytecode.push((args.len() + 1) as u8);
                     }
                 }
                 Ok(rd)

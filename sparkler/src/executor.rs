@@ -4,11 +4,14 @@ use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use crate::async_runtime;
 use std::sync::{Arc, RwLock};
 
+pub use crate::vm::VTable;
+
 pub struct Bytecode {
     pub data: Vec<u8>,
     pub strings: Vec<String>,
     pub classes: Vec<Class>,
     pub functions: Vec<Function>,
+    pub vtables: Vec<VTable>,  // Vtables stored in .data section
 }
 
 pub struct Executor {
@@ -128,63 +131,63 @@ impl Executor {
                     // Try to get the opcode from the byte value
                     // We need to handle all possible opcode values
                     match opcode_byte {
-                        0x00 => Some(crate::opcodes::Opcode::Nop),
-                        0x10 => Some(crate::opcodes::Opcode::LoadConst),
-                        0x11 => Some(crate::opcodes::Opcode::LoadInt),
-                        0x12 => Some(crate::opcodes::Opcode::LoadFloat),
-                        0x13 => Some(crate::opcodes::Opcode::LoadBool),
-                        0x14 => Some(crate::opcodes::Opcode::LoadNull),
-                        0x20 => Some(crate::opcodes::Opcode::Move),
-                        0x21 => Some(crate::opcodes::Opcode::LoadLocal),
-                        0x22 => Some(crate::opcodes::Opcode::StoreLocal),
-                        0x30 => Some(crate::opcodes::Opcode::GetProperty),
-                        0x31 => Some(crate::opcodes::Opcode::SetProperty),
-                        0x40 => Some(crate::opcodes::Opcode::Call),
-                        0x41 => Some(crate::opcodes::Opcode::CallNative),
-                        0x42 => Some(crate::opcodes::Opcode::Invoke),
-                        0x43 => Some(crate::opcodes::Opcode::Return),
-                        0x44 => Some(crate::opcodes::Opcode::CallAsync),
-                        0x45 => Some(crate::opcodes::Opcode::CallNativeAsync),
-                        0x46 => Some(crate::opcodes::Opcode::InvokeAsync),
-                        0x47 => Some(crate::opcodes::Opcode::Await),
-                        0x48 => Some(crate::opcodes::Opcode::Spawn),
-                        0x49 => Some(crate::opcodes::Opcode::InvokeInterface),
-                        0x4A => Some(crate::opcodes::Opcode::InvokeInterfaceAsync),
-                        0x4B => Some(crate::opcodes::Opcode::CallNativeIndexed),
-                        0x4C => Some(crate::opcodes::Opcode::CallNativeIndexedAsync),
-                        0x50 => Some(crate::opcodes::Opcode::Jump),
-                        0x51 => Some(crate::opcodes::Opcode::JumpIfTrue),
-                        0x52 => Some(crate::opcodes::Opcode::JumpIfFalse),
-                        0x60 => Some(crate::opcodes::Opcode::Equal),
-                        0x61 => Some(crate::opcodes::Opcode::NotEqual),
-                        0x62 => Some(crate::opcodes::Opcode::And),
-                        0x63 => Some(crate::opcodes::Opcode::Or),
-                        0x64 => Some(crate::opcodes::Opcode::Not),
-                        0x65 => Some(crate::opcodes::Opcode::Concat),
-                        0x66 => Some(crate::opcodes::Opcode::Greater),
-                        0x67 => Some(crate::opcodes::Opcode::Less),
-                        0x68 => Some(crate::opcodes::Opcode::Add),
-                        0x69 => Some(crate::opcodes::Opcode::Subtract),
-                        0x6A => Some(crate::opcodes::Opcode::GreaterEqual),
-                        0x6B => Some(crate::opcodes::Opcode::LessEqual),
-                        0x70 => Some(crate::opcodes::Opcode::Multiply),
-                        0x71 => Some(crate::opcodes::Opcode::Divide),
-                        0x73 => Some(crate::opcodes::Opcode::Line),
-                        0x74 => Some(crate::opcodes::Opcode::Convert),
-                        0x75 => Some(crate::opcodes::Opcode::Modulo),
-                        0x76 => Some(crate::opcodes::Opcode::Array),
-                        0x77 => Some(crate::opcodes::Opcode::Index),
-                        0x78 => Some(crate::opcodes::Opcode::BitAnd),
-                        0x79 => Some(crate::opcodes::Opcode::BitOr),
-                        0x7A => Some(crate::opcodes::Opcode::BitXor),
-                        0x7B => Some(crate::opcodes::Opcode::BitNot),
-                        0x7C => Some(crate::opcodes::Opcode::ShiftLeft),
-                        0x7D => Some(crate::opcodes::Opcode::ShiftRight),
-                        0x80 => Some(crate::opcodes::Opcode::TryStart),
-                        0x81 => Some(crate::opcodes::Opcode::TryEnd),
-                        0x82 => Some(crate::opcodes::Opcode::Throw),
-                        0x90 => Some(crate::opcodes::Opcode::Breakpoint),
-                        0xFF => Some(crate::opcodes::Opcode::Halt),
+                        0x00 => Some(Opcode::Nop),
+                        0x10 => Some(Opcode::LoadConst),
+                        0x11 => Some(Opcode::LoadInt),
+                        0x12 => Some(Opcode::LoadFloat),
+                        0x13 => Some(Opcode::LoadBool),
+                        0x14 => Some(Opcode::LoadNull),
+                        0x20 => Some(Opcode::Move),
+                        0x21 => Some(Opcode::LoadLocal),
+                        0x22 => Some(Opcode::StoreLocal),
+                        0x30 => Some(Opcode::GetProperty),
+                        0x31 => Some(Opcode::SetProperty),
+                        0x40 => Some(Opcode::Call),
+                        0x41 => Some(Opcode::CallNative),
+                        0x42 => Some(Opcode::Invoke),
+                        0x43 => Some(Opcode::Return),
+                        0x44 => Some(Opcode::CallAsync),
+                        0x45 => Some(Opcode::CallNativeAsync),
+                        0x46 => Some(Opcode::InvokeAsync),
+                        0x47 => Some(Opcode::Await),
+                        0x48 => Some(Opcode::Spawn),
+                        0x49 => Some(Opcode::InvokeInterface),
+                        0x4A => Some(Opcode::InvokeInterfaceAsync),
+                        0x4B => Some(Opcode::CallNativeIndexed),
+                        0x4C => Some(Opcode::CallNativeIndexedAsync),
+                        0x50 => Some(Opcode::Jump),
+                        0x51 => Some(Opcode::JumpIfTrue),
+                        0x52 => Some(Opcode::JumpIfFalse),
+                        0x60 => Some(Opcode::Equal),
+                        0x61 => Some(Opcode::NotEqual),
+                        0x62 => Some(Opcode::And),
+                        0x63 => Some(Opcode::Or),
+                        0x64 => Some(Opcode::Not),
+                        0x65 => Some(Opcode::Concat),
+                        0x66 => Some(Opcode::Greater),
+                        0x67 => Some(Opcode::Less),
+                        0x68 => Some(Opcode::Add),
+                        0x69 => Some(Opcode::Subtract),
+                        0x6A => Some(Opcode::GreaterEqual),
+                        0x6B => Some(Opcode::LessEqual),
+                        0x70 => Some(Opcode::Multiply),
+                        0x71 => Some(Opcode::Divide),
+                        0x73 => Some(Opcode::Line),
+                        0x74 => Some(Opcode::Convert),
+                        0x75 => Some(Opcode::Modulo),
+                        0x76 => Some(Opcode::Array),
+                        0x77 => Some(Opcode::Index),
+                        0x78 => Some(Opcode::BitAnd),
+                        0x79 => Some(Opcode::BitOr),
+                        0x7A => Some(Opcode::BitXor),
+                        0x7B => Some(Opcode::BitNot),
+                        0x7C => Some(Opcode::ShiftLeft),
+                        0x7D => Some(Opcode::ShiftRight),
+                        0x80 => Some(Opcode::TryStart),
+                        0x81 => Some(Opcode::TryEnd),
+                        0x82 => Some(Opcode::Throw),
+                        0x90 => Some(Opcode::Breakpoint),
+                        0xFF => Some(Opcode::Halt),
                         _ => None,
                     }
                 }
@@ -213,7 +216,7 @@ impl Executor {
             Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
         
-        self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions)?;
+        self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
         match self.vm.run().await.map_err(|e| e.to_string())? {
             RunResult::Finished(val) => Ok(val),
             RunResult::Breakpoint => {
@@ -237,7 +240,7 @@ impl Executor {
             Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
         
-        self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions)?;
+        self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
         loop {
             let result = self.vm.run().await.map_err(|e| e.to_string())?;

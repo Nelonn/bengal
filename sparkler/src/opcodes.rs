@@ -36,8 +36,8 @@ pub enum Opcode {
     InvokeAsync = 0x46,
     Await = 0x47,
     Spawn = 0x48,
-    InvokeInterface = 0x49,  // Rd, vtable_idx, arg_start, arg_count
-    InvokeInterfaceAsync = 0x4A,  // Rd, vtable_idx, arg_start, arg_count
+    InvokeInterface = 0x49,  // Rd, method_idx, arg_start, arg_count
+    InvokeInterfaceAsync = 0x4A,  // Rd, method_idx, arg_start, arg_count
 
     // Indexed native calls (optimized - uses function index instead of string lookup)
     CallNativeIndexed = 0x4B,  // Rd, func_idx (u16), arg_start, arg_count
@@ -123,8 +123,8 @@ impl Opcode {
             Opcode::InvokeAsync => 5,
             Opcode::Await => 3,
             Opcode::Spawn => 3,
-            Opcode::InvokeInterface => 5,
-            Opcode::InvokeInterfaceAsync => 5,
+            Opcode::InvokeInterface => 6,
+            Opcode::InvokeInterfaceAsync => 6,
             Opcode::CallNativeIndexed => 6,
             Opcode::CallNativeIndexedAsync => 6,
             Opcode::Jump => 3,
