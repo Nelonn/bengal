@@ -1667,6 +1667,7 @@ impl VM {
 
                     let class_name = instance.lock().unwrap().class.clone();
                     if let Some(class) = self.classes.get(&class_name).cloned() {
+                        // Exact match lookup for native methods
                         if let Some(native_method) = class.native_methods.get(&name) {
                             let mut method_args = args.clone();
                             let result = native_method(&mut method_args)?;
@@ -1746,7 +1747,48 @@ impl VM {
                                 Err(e) => return Err(e),
                             }
                         } else {
-                            return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                            // Method not found - provide helpful error with available methods
+                            let base_name = if let Some(paren_pos) = name.find('(') {
+                                &name[..paren_pos]
+                            } else {
+                                &name
+                            };
+
+                            // Collect available native methods with matching base name
+                            let mut available_native: Vec<&String> = class.native_methods.keys()
+                                .filter(|k| {
+                                    if let Some(paren_pos) = k.find('(') {
+                                        &k[..paren_pos] == base_name
+                                    } else {
+                                        k.as_str() == base_name
+                                    }
+                                })
+                                .collect();
+
+                            // Collect available bytecode methods with matching base name
+                            let mut available_bytecode: Vec<&String> = class.methods.keys()
+                                .filter(|k| {
+                                    if let Some(paren_pos) = k.find('(') {
+                                        &k[..paren_pos] == base_name
+                                    } else {
+                                        k.as_str() == base_name
+                                    }
+                                })
+                                .collect();
+                            
+                            if !available_native.is_empty() || !available_bytecode.is_empty() {
+                                let mut available = Vec::new();
+                                available_native.sort();
+                                available_bytecode.sort();
+                                available.extend(available_native.iter().map(|s| s.as_str()));
+                                available.extend(available_bytecode.iter().map(|s| s.as_str()));
+                                return Err(Value::String(format!(
+                                    "Method '{}' not found on class '{}'. Available methods: [{}]",
+                                    name, class_name, available.join(", ")
+                                )));
+                            } else {
+                                return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                            }
                         }
                     } else {
                         return Err(Value::String(format!("Class '{}' not found", class_name)));

@@ -3074,14 +3074,16 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        // Generate mangled method name (same as stored in class)
-                        // Use "Unknown" as placeholder since methods are registered with concrete/Unknown types
+                        // Generate mangled method name based on actual argument types
                         let mangled_method = if args.is_empty() {
                             format!("{}()", name)
                         } else {
+                            // Infer types from arguments for proper overload resolution
+                            let ctx_for_infer = type_context.map(|tc| tc.clone()).unwrap_or_else(|| TypeContext::new());
                             let mut params = Vec::new();
-                            for _ in 0..args.len() {
-                                params.push("Unknown".to_string());
+                            for arg in args {
+                                let arg_type = self.infer_expr_type(arg, &ctx_for_infer);
+                                params.push(arg_type.to_str());
                             }
                             format!("{}({})", name, params.join(","))
                         };
@@ -3113,14 +3115,16 @@ impl Compiler {
                             bytecode.push(r as u8);
                         }
 
-                        // Generate mangled method name based on argument count
-                        // Use "Unknown" as placeholder since methods are registered with concrete/Unknown types
+                        // Generate mangled method name based on actual argument types
                         let mangled_method = if args.is_empty() {
                             format!("{}()", name)
                         } else {
+                            // Infer types from arguments for proper overload resolution
+                            let ctx_for_infer = type_context.map(|tc| tc.clone()).unwrap_or_else(|| TypeContext::new());
                             let mut params = Vec::new();
-                            for _ in 0..args.len() {
-                                params.push("Unknown".to_string());
+                            for arg in args {
+                                let arg_type = self.infer_expr_type(arg, &ctx_for_infer);
+                                params.push(arg_type.to_str());
                             }
                             format!("{}({})", name, params.join(","))
                         };
