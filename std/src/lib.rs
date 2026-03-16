@@ -15,34 +15,9 @@ pub mod test;
 use sparkler::{NativeModule, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
-    // Register print with mangled name and base name
-    vm.native("print(str)", io::native_print)
-        .description("Print without newline (str)")
-        .register(vm);
-    vm.native("print", io::native_print)
-        .description("Print without newline (any)")
-        .register(vm);
-
-    // Register println with multiple overloads for different types and base name
-    vm.native("println(str)", io::native_println)
-        .description("Print with newline (str)")
-        .register(vm);
-    vm.native("println(int)", io::native_println)
-        .description("Print with newline (int)")
-        .register(vm);
-    vm.native("println(float)", io::native_println)
-        .description("Print with newline (float)")
-        .register(vm);
-    vm.native("println(bool)", io::native_println)
-        .description("Print with newline (bool)")
-        .register(vm);
-    vm.native("println", io::native_println)
-        .description("Print with newline (any)")
-        .register(vm);
-
-    NativeModule::new("")
-        .function("std.io.print(str)", io::native_print)
-        .function("std.io.println(str)", io::native_println)
+    NativeModule::new("std.io")
+        .function("print(str)", io::native_print)
+        .function("println(str)", io::native_println)
         .register(vm);
 
     NativeModule::new("std.data")
@@ -207,12 +182,12 @@ pub fn register_all(vm: &mut VM) {
         .function("check_div_zero", math::native_math_check_div_zero)
         .register(vm);
 
-    NativeModule::new("")
-        .function("std.random.nextBool()", random::native_random_next_bool)
-        .function("std.random.nextInt()", random::native_random_next_int)
-        .function("std.random.nextIntRange(int,int)", random::native_random_next_int_range)
-        .function("std.random.nextFloat()", random::native_random_next_float)
-        .function("std.random.nextFloatRange(float,float)", random::native_random_next_float_range)
+    NativeModule::new("std.random")
+        .function("nextBool()", random::native_random_next_bool)
+        .function("nextInt()", random::native_random_next_int)
+        .function("nextIntRange(int,int)", random::native_random_next_int_range)
+        .function("nextFloat()", random::native_random_next_float)
+        .function("nextFloatRange(float,float)", random::native_random_next_float_range)
         .register(vm);
 
     NativeModule::new("std.test")

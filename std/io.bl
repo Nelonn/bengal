@@ -2,20 +2,18 @@ module std.io
 
 native fn print(text: str) {}
 
-native fn println(line: str) {}
-
-//fn println(line: str) {
-//  print(line + "\n")
-//}
+fn println(line: str) {
+  print(line + "\n")
+}
 
 async native fn sleep(ms: int) {}
 
 async native fn readLine(): str {}
 
 interface InputStream {
-  //fn read(size: int): ByteBuffer
+  async fn read(size: int): ByteBuffer
 }
 
 interface OutputStream {
-  //fn write(todo)
+  //async fn write(todo)
 }

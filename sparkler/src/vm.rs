@@ -405,7 +405,6 @@ pub struct NativeFunctionBuilder {
     func: NativeFn,
     param_count: Option<usize>,
     return_type: Option<String>,
-    description: Option<String>,
 }
 
 impl NativeFunctionBuilder {
@@ -415,7 +414,6 @@ impl NativeFunctionBuilder {
             func,
             param_count: None,
             return_type: None,
-            description: None,
         }
     }
 
@@ -426,11 +424,6 @@ impl NativeFunctionBuilder {
 
     pub fn returns(mut self, type_name: &str) -> Self {
         self.return_type = Some(type_name.to_string());
-        self
-    }
-
-    pub fn description(mut self, desc: &str) -> Self {
-        self.description = Some(desc.to_string());
         self
     }
 
