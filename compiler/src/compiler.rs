@@ -2048,15 +2048,27 @@ impl Compiler {
                 if let Some(ctx) = type_context {
                     if let Some(current_class_name) = &ctx.current_class {
                         if let Some(class_info) = ctx.get_class(current_class_name) {
-                            if class_info.fields.contains_key(name) {
-                                let r_self = self.current_ctx.get_local_reg("self");
-                                let rd = self.current_ctx.allocate_reg();
-                                let field_name_idx = add_string(strings, name.clone());
-                                bytecode.push(Opcode::GetProperty as u8);
-                                bytecode.push(rd as u8);
-                                bytecode.push(r_self as u8);
-                                bytecode.push(field_name_idx as u8);
-                                return Ok(rd);
+                            if let Some(field_info) = class_info.fields.get(name) {
+                                // Static fields are stored as module-level variables with "static_ClassName.fieldName" naming
+                                if field_info.is_static {
+                                    let rd = self.current_ctx.allocate_reg();
+                                    let static_field_name = format!("static_{}.{}", current_class_name, name);
+                                    let idx = add_string(strings, static_field_name);
+                                    bytecode.push(Opcode::LoadLocal as u8);
+                                    bytecode.push(rd as u8);
+                                    bytecode.push(idx as u8);
+                                    return Ok(rd);
+                                } else {
+                                    // Instance fields require self
+                                    let r_self = self.current_ctx.get_local_reg("self");
+                                    let rd = self.current_ctx.allocate_reg();
+                                    let field_name_idx = add_string(strings, name.clone());
+                                    bytecode.push(Opcode::GetProperty as u8);
+                                    bytecode.push(rd as u8);
+                                    bytecode.push(r_self as u8);
+                                    bytecode.push(field_name_idx as u8);
+                                    return Ok(rd);
+                                }
                             }
                         }
                     }
@@ -2216,46 +2228,113 @@ impl Compiler {
                     }
                     UnaryOp::PrefixIncrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
+                            // Check if this is a static field access within a class context
+                            let is_static_field = if let Some(ctx) = type_context {
+                                if let Some(current_class_name) = &ctx.current_class {
+                                    if let Some(class_info) = ctx.get_class(current_class_name) {
+                                        class_info.fields.get(name).map(|f| f.is_static).unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
                             // Check if this is a global (module-level) variable
                             let is_global = self.global_vars.contains(name);
-                            
-                            if is_global {
-                                // For global variables, use LoadLocal/StoreLocal
-                                let name_idx = add_string(strings, name.clone());
-                                
+
+                            if is_static_field {
+                                // Static fields are stored as module-level variables with "static_ClassName.fieldName" naming
+                                let static_field_name = if let Some(ctx) = type_context {
+                                    if let Some(current_class_name) = &ctx.current_class {
+                                        format!("static_{}.{}", current_class_name, name)
+                                    } else {
+                                        name.clone()
+                                    }
+                                } else {
+                                    name.clone()
+                                };
+                                let name_idx = add_string(strings, static_field_name);
+
                                 // Load current value
                                 let r_var = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::LoadLocal as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(name_idx as u8);
-                                
+
                                 // Save original value for overflow check
                                 let r_orig = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::Move as u8);
                                 bytecode.push(r_orig as u8);
                                 bytecode.push(r_var as u8);
-                                
+
                                 let r_one = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::LoadInt as u8);
                                 bytecode.push(r_one as u8);
                                 bytecode.extend_from_slice(&1i64.to_le_bytes());
-                                
+
                                 // Increment: r_var = r_var + 1
                                 bytecode.push(Opcode::Add as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_one as u8);
-                                
+
                                 if !self.unsafe_fast {
                                     let type_id = self.get_type_id_for_var(name, type_context);
                                     self.emit_overflow_check(r_orig, r_one, r_var, 0, type_id, bytecode, strings);
                                 }
-                                
+
+                                // Store back to static field
+                                bytecode.push(Opcode::StoreLocal as u8);
+                                bytecode.push(name_idx as u8);
+                                bytecode.push(r_var as u8);
+
+                                // Return new value
+                                let rd = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::Move as u8);
+                                bytecode.push(rd as u8);
+                                bytecode.push(r_var as u8);
+                                Ok(rd)
+                            } else if is_global {
+                                // For global variables, use LoadLocal/StoreLocal
+                                let name_idx = add_string(strings, name.clone());
+
+                                // Load current value
+                                let r_var = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::LoadLocal as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(name_idx as u8);
+
+                                // Save original value for overflow check
+                                let r_orig = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::Move as u8);
+                                bytecode.push(r_orig as u8);
+                                bytecode.push(r_var as u8);
+
+                                let r_one = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::LoadInt as u8);
+                                bytecode.push(r_one as u8);
+                                bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                                // Increment: r_var = r_var + 1
+                                bytecode.push(Opcode::Add as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_one as u8);
+
+                                if !self.unsafe_fast {
+                                    let type_id = self.get_type_id_for_var(name, type_context);
+                                    self.emit_overflow_check(r_orig, r_one, r_var, 0, type_id, bytecode, strings);
+                                }
+
                                 // Store back to global variable
                                 bytecode.push(Opcode::StoreLocal as u8);
                                 bytecode.push(name_idx as u8);
                                 bytecode.push(r_var as u8);
-                                
+
                                 // Return new value
                                 let rd = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::Move as u8);
@@ -2265,28 +2344,28 @@ impl Compiler {
                             } else {
                                 // For local variables, use register-based approach
                                 let r_var = self.current_ctx.get_local_reg(name);
-                                
+
                                 // Save original value for overflow check
                                 let r_orig = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::Move as u8);
                                 bytecode.push(r_orig as u8);
                                 bytecode.push(r_var as u8);
-                                
+
                                 let r_one = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::LoadInt as u8);
                                 bytecode.push(r_one as u8);
                                 bytecode.extend_from_slice(&1i64.to_le_bytes());
-                                
+
                                 bytecode.push(Opcode::Add as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_one as u8);
-                                
+
                                 if !self.unsafe_fast {
                                     let type_id = self.get_type_id_for_var(name, type_context);
                                     self.emit_overflow_check(r_orig, r_one, r_var, 0, type_id, bytecode, strings);
                                 }
-                                
+
                                 let rd = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::Move as u8);
                                 bytecode.push(rd as u8);
@@ -2486,46 +2565,108 @@ impl Compiler {
                     }
                     UnaryOp::PostfixIncrement => {
                         if let Expr::Variable { name, .. } = expr.as_ref() {
+                            // Check if this is a static field access within a class context
+                            let is_static_field = if let Some(ctx) = type_context {
+                                if let Some(current_class_name) = &ctx.current_class {
+                                    if let Some(class_info) = ctx.get_class(current_class_name) {
+                                        class_info.fields.get(name).map(|f| f.is_static).unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
                             // Check if this is a global (module-level) variable
                             let is_global = self.global_vars.contains(name);
-                            
-                            if is_global {
-                                // For global variables, use LoadLocal/StoreLocal
-                                let name_idx = add_string(strings, name.clone());
-                                
+
+                            if is_static_field {
+                                // Static fields are stored as module-level variables with "static_ClassName.fieldName" naming
+                                let static_field_name = if let Some(ctx) = type_context {
+                                    if let Some(current_class_name) = &ctx.current_class {
+                                        format!("static_{}.{}", current_class_name, name)
+                                    } else {
+                                        name.clone()
+                                    }
+                                } else {
+                                    name.clone()
+                                };
+                                let name_idx = add_string(strings, static_field_name);
+
                                 // Load current value and save as return value
                                 let r_var = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::LoadLocal as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(name_idx as u8);
-                                
+
                                 // Save original value for return
                                 let rd = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::Move as u8);
                                 bytecode.push(rd as u8);
                                 bytecode.push(r_var as u8);
-                                
+
                                 let r_one = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::LoadInt as u8);
                                 bytecode.push(r_one as u8);
                                 bytecode.extend_from_slice(&1i64.to_le_bytes());
-                                
+
                                 // Increment: r_var = r_var + 1
                                 bytecode.push(Opcode::Add as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_one as u8);
-                                
+
                                 if !self.unsafe_fast {
                                     let type_id = self.get_type_id_for_var(name, type_context);
                                     self.emit_overflow_check(rd, r_one, r_var, 0, type_id, bytecode, strings);
                                 }
-                                
+
+                                // Store back to static field
+                                bytecode.push(Opcode::StoreLocal as u8);
+                                bytecode.push(name_idx as u8);
+                                bytecode.push(r_var as u8);
+
+                                Ok(rd)
+                            } else if is_global {
+                                // For global variables, use LoadLocal/StoreLocal
+                                let name_idx = add_string(strings, name.clone());
+
+                                // Load current value and save as return value
+                                let r_var = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::LoadLocal as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(name_idx as u8);
+
+                                // Save original value for return
+                                let rd = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::Move as u8);
+                                bytecode.push(rd as u8);
+                                bytecode.push(r_var as u8);
+
+                                let r_one = self.current_ctx.allocate_reg();
+                                bytecode.push(Opcode::LoadInt as u8);
+                                bytecode.push(r_one as u8);
+                                bytecode.extend_from_slice(&1i64.to_le_bytes());
+
+                                // Increment: r_var = r_var + 1
+                                bytecode.push(Opcode::Add as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_var as u8);
+                                bytecode.push(r_one as u8);
+
+                                if !self.unsafe_fast {
+                                    let type_id = self.get_type_id_for_var(name, type_context);
+                                    self.emit_overflow_check(rd, r_one, r_var, 0, type_id, bytecode, strings);
+                                }
+
                                 // Store back to global variable
                                 bytecode.push(Opcode::StoreLocal as u8);
                                 bytecode.push(name_idx as u8);
                                 bytecode.push(r_var as u8);
-                                
+
                                 Ok(rd)
                             } else {
                                 // For local variables, use register-based approach
@@ -2534,22 +2675,22 @@ impl Compiler {
                                 bytecode.push(Opcode::Move as u8);
                                 bytecode.push(rd as u8);
                                 bytecode.push(r_var as u8);
-                                
+
                                 let r_one = self.current_ctx.allocate_reg();
                                 bytecode.push(Opcode::LoadInt as u8);
                                 bytecode.push(r_one as u8);
                                 bytecode.extend_from_slice(&1i64.to_le_bytes());
-                                
+
                                 bytecode.push(Opcode::Add as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_var as u8);
                                 bytecode.push(r_one as u8);
-                                
+
                                 if !self.unsafe_fast {
                                     let type_id = self.get_type_id_for_var(name, type_context);
                                     self.emit_overflow_check(rd, r_one, r_var, 0, type_id, bytecode, strings);
                                 }
-                                
+
                                 Ok(rd)
                             }
                         } else if let Expr::Get { object, name, .. } = expr.as_ref() {
