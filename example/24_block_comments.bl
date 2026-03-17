@@ -1,5 +1,7 @@
 // Test file for block comments
 
+import std.io
+
 /* This is a block comment */
 
 let x = 10  // line comment

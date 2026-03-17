@@ -1,6 +1,10 @@
 import std.io
 
 class MyClass {
+    static counter: int = 0
+
+    count: int = counter++
+
     constructor() {
         println("MyClass constructed!")
     }
@@ -14,7 +18,9 @@ fn main() {
 
     println("Creating array of MyClass...")
     let arr2 = [MyClass(), MyClass()]
-    println("arr2 length: 2")
+    println("arr2 length: " + arr2.length())
+    println("arr2[0]: " + str(arr2[0]))
+    println("arr2[1]: " + str(arr2[1]))
 
     let s = "hello"
     println("s[0]: " + s[0])

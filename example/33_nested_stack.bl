@@ -1,5 +1,7 @@
 // Test nested stack traces
 
+import std.io
+
 fn inner() {
     throw "Error from inner"
 }

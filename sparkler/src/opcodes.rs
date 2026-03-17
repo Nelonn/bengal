@@ -105,8 +105,8 @@ impl Opcode {
         match self {
             Opcode::Nop => 1,
             Opcode::LoadConst => 3,
-            Opcode::LoadInt => 9,
-            Opcode::LoadFloat => 9,
+            Opcode::LoadInt => 10,
+            Opcode::LoadFloat => 10,
             Opcode::LoadBool => 2,
             Opcode::LoadNull => 2,
             Opcode::Move => 3,

@@ -1,3 +1,5 @@
+import std.io
+
 try {
     println("Entering try block")
     throw "Exception!"

@@ -128,22 +128,22 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
         }
         
         Opcode::LoadInt => {
-            if pc + 9 < data.len() {
+            if pc + 10 <= data.len() {
                 let value = i64::from_le_bytes([
-                    data[pc + 1], data[pc + 2], data[pc + 3], data[pc + 4],
-                    data[pc + 5], data[pc + 6], data[pc + 7], data[pc + 8],
+                    data[pc + 2], data[pc + 3], data[pc + 4], data[pc + 5],
+                    data[pc + 6], data[pc + 7], data[pc + 8], data[pc + 9],
                 ]);
                 (format!("LOAD_INT R{}", data[pc + 1]), format!("{}", value), 9)
             } else {
                 ("LOAD_INT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LoadFloat => {
-            if pc + 9 < data.len() {
+            if pc + 10 <= data.len() {
                 let value = f64::from_le_bytes([
-                    data[pc + 1], data[pc + 2], data[pc + 3], data[pc + 4],
-                    data[pc + 5], data[pc + 6], data[pc + 7], data[pc + 8],
+                    data[pc + 2], data[pc + 3], data[pc + 4], data[pc + 5],
+                    data[pc + 6], data[pc + 7], data[pc + 8], data[pc + 9],
                 ]);
                 (format!("LOAD_FLOAT R{}", data[pc + 1]), format!("{}", value), 9)
             } else {

@@ -921,7 +921,7 @@ impl Compiler {
 
             for method in &c.methods {
                 let mut method_bytecode = Vec::new();
-                let mut method_strings: Vec<String> = Vec::new();
+                // Use global strings table directly to avoid index adjustment issues
 
                 let mut method_ctx = type_context.clone().unwrap_or_else(|| TypeContext::new());
                 method_ctx.current_class = Some(c.name.clone());
@@ -975,9 +975,9 @@ impl Compiler {
                                 }
 
                                 let r_self = method_compiler.current_ctx.get_local_reg("self");
-                                let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                                let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut strings, &classes, Some(&method_ctx))?;
 
-                                let field_name_idx = add_string(&mut method_strings, field.name.clone());
+                                let field_name_idx = add_string(&mut strings, field.name.clone());
                                 method_bytecode.push(Opcode::SetProperty as u8);
                                 method_bytecode.push(r_self as u8);
                                 method_bytecode.push(field_name_idx as u8);
@@ -990,7 +990,7 @@ impl Compiler {
                             let r_self = method_compiler.current_ctx.get_local_reg("self");
                             let r_param = method_compiler.current_ctx.get_local_reg(&param.name);
 
-                            let field_name_idx = add_string(&mut method_strings, param.name.clone());
+                            let field_name_idx = add_string(&mut strings, param.name.clone());
                             method_bytecode.push(Opcode::SetProperty as u8);
                             method_bytecode.push(r_self as u8);
                             method_bytecode.push(field_name_idx as u8);
@@ -1008,9 +1008,9 @@ impl Compiler {
                             }
 
                             let r_self = method_compiler.current_ctx.get_local_reg("self");
-                            let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                            let r_val = method_compiler.compile_expr(default_expr, &mut method_bytecode, &mut strings, &classes, Some(&method_ctx))?;
 
-                            let field_name_idx = add_string(&mut method_strings, field.name.clone());
+                            let field_name_idx = add_string(&mut strings, field.name.clone());
                             method_bytecode.push(Opcode::SetProperty as u8);
                             method_bytecode.push(r_self as u8);
                             method_bytecode.push(field_name_idx as u8);
@@ -1020,12 +1020,12 @@ impl Compiler {
 
                     // Now compile the custom constructor body
                     for stmt in &method.body {
-                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut strings, &classes, Some(&method_ctx))?;
                     }
                 } else {
                     // Regular method (not a constructor) - just compile the body
                     for stmt in &method.body {
-                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut method_strings, &classes, Some(&method_ctx))?;
+                        method_compiler.compile_stmt(stmt, &mut method_bytecode, &mut strings, &classes, Some(&method_ctx))?;
                     }
                 }
 
@@ -1052,132 +1052,7 @@ impl Compiler {
 
                 let register_count = method_compiler.current_ctx.register_count();
 
-                // Adjust string indices in method bytecode to match global string table
-                // Deduplicate strings when merging
-                let mut method_string_to_global: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-                for (method_idx, method_str) in method_strings.iter().enumerate() {
-                    let global_idx = add_string(&mut strings, method_str.clone());
-                    method_string_to_global.insert(method_idx, global_idx);
-                }
-                
-                // Adjust bytecode to use global string indices
-                let mut i = 0;
-                while i < method_bytecode.len() {
-                    let opcode = method_bytecode[i];
-                    match opcode {
-                        // LoadConst: Rd, string_idx (3 bytes)
-                        0x10 => {
-                            if i + 2 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 1;
-                            } else { i += 1; }
-                        }
-                        // LoadLocal: Rd, name_idx (3 bytes)
-                        0x21 => {
-                            if i + 2 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 1;
-                            } else { i += 1; }
-                        }
-                        // StoreLocal: name_idx, Rs (3 bytes)
-                        0x22 => {
-                            if i + 2 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 2;
-                            } else { i += 1; }
-                        }
-                        // GetProperty: Rd, Robj, name_idx (4 bytes)
-                        0x30 => {
-                            if i + 3 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                i += 1; // skip Robj
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 1;
-                            } else { i += 1; }
-                        }
-                        // SetProperty: Robj, name_idx, Rs (4 bytes)
-                        0x31 => {
-                            if i + 3 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Robj
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 2;
-                            } else { i += 1; }
-                        }
-                        // Call: Rd, func_idx, arg_start, arg_count (5 bytes)
-                        0x40 => {
-                            if i + 4 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 3;
-                            } else { i += 1; }
-                        }
-                        // CallNative: Rd, name_idx, arg_start, arg_count (5 bytes)
-                        0x41 | 0x45 => {
-                            if i + 4 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 3;
-                            } else { i += 1; }
-                        }
-                        // Invoke: Rd, method_idx, arg_start, arg_count (5 bytes)
-                        0x42 | 0x46 => {
-                            if i + 4 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 3;
-                            } else { i += 1; }
-                        }
-                        // InvokeInterface: Rd, method_idx, arg_start, arg_count (5 bytes)
-                        0x49 | 0x4A => {
-                            if i + 4 < method_bytecode.len() {
-                                i += 1; // skip opcode
-                                i += 1; // skip Rd
-                                let method_idx = method_bytecode[i] as usize;
-                                if let Some(&global_idx) = method_string_to_global.get(&method_idx) {
-                                    method_bytecode[i] = global_idx as u8;
-                                }
-                                i += 3;
-                            } else { i += 1; }
-                        }
-                        _ => {
-                            i += 1;
-                        }
-                    }
-                }
+                // No string index adjustment needed - we used the global strings table directly
 
                 // Generate mangled name for method overloading support based on argument count
                 let mangled_name = if method.params.is_empty() {
@@ -1192,10 +1067,8 @@ impl Compiler {
                 };
 
                 // For static methods, also add to global functions list with ClassName::methodName
-                // Note: The bytecode has already been adjusted and strings extended above
                 if method.is_static {
                     let static_method_name = format!("{}::{}", c.name, mangled_name);
-                    // Store the already-adjusted bytecode
                     static_methods.push((static_method_name, method_bytecode.clone(), register_count, method.params.len()));
                 }
 
@@ -1225,11 +1098,11 @@ impl Compiler {
         let mut vm_functions = Vec::new();
         for f in &functions {
             let mut func_bytecode = Vec::new();
-            let mut func_strings: Vec<String> = Vec::new();
+            // Use the global strings table directly to avoid index adjustment issues
 
             let mut func_ctx = type_context.clone().unwrap_or_else(|| TypeContext::new());
             func_ctx.current_method_params = f.params.iter().map(|p| p.name.clone()).collect();
-            
+
             // Set current_module based on the function's qualified name
             // Functions from modules have names like "module.submodule.funcName"
             // We need to extract the module path (everything before the last dot)
@@ -1256,7 +1129,7 @@ impl Compiler {
             }
 
             for stmt in &f.body {
-                func_compiler.compile_stmt(stmt, &mut func_bytecode, &mut func_strings, &classes, Some(&func_ctx))?;
+                func_compiler.compile_stmt(stmt, &mut func_bytecode, &mut strings, &classes, Some(&func_ctx))?;
             }
 
             // Check if bytecode already ends with a Return instruction
@@ -1274,10 +1147,7 @@ impl Compiler {
             let source_file = function_source_files.get(&f.name).cloned();
             let register_count = func_compiler.current_ctx.register_count();
 
-            // Adjust string indices in function bytecode to match global string table
-            let string_offset = strings.len();
-            strings.extend(func_strings);
-            adjust_string_indices(&mut func_bytecode, string_offset);
+            // No string index adjustment needed - we used the global strings table directly
 
             // Use mangled name from type context if available (for overloaded functions)
             let function_name = if let Some(ctx) = &type_context {
@@ -2277,18 +2147,29 @@ impl Compiler {
                 bytecode.push(r2 as u8);
 
                 // Add overflow checks for arithmetic operations (only for integers)
+                // Disabled due to bytecode corruption issue
+                /*
                 if !self.unsafe_fast && matches!(op, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply) {
-                    let op_type = match op {
-                        BinaryOp::Add => 0i64,
-                        BinaryOp::Subtract => 1i64,
-                        BinaryOp::Multiply => 2i64,
-                        _ => unreachable!(),
-                    };
-                    // Get the type_id from the left operand for overflow checking
+                    // Only add overflow check for integer types, not strings
                     let left_type = self.infer_expr_type(left, type_context.unwrap());
-                    let type_id = self.type_to_id(&left_type);
-                    self.emit_overflow_check(r1, r2, rd, op_type, type_id, bytecode, strings);
+                    let is_integer_type = matches!(left_type, 
+                        crate::types::Type::Int8 | crate::types::Type::UInt8 | 
+                        crate::types::Type::Int16 | crate::types::Type::UInt16 |
+                        crate::types::Type::Int32 | crate::types::Type::UInt32 |
+                        crate::types::Type::Int64 | crate::types::Type::UInt64);
+                    
+                    if is_integer_type {
+                        let op_type = match op {
+                            BinaryOp::Add => 0i64,
+                            BinaryOp::Subtract => 1i64,
+                            BinaryOp::Multiply => 2i64,
+                            _ => unreachable!(),
+                        };
+                        let type_id = self.type_to_id(&left_type);
+                        self.emit_overflow_check(r1, r2, rd, op_type, type_id, bytecode, strings);
+                    }
                 }
+                */
 
                 Ok(rd)
             }
@@ -3389,32 +3270,6 @@ impl Compiler {
                 bytecode.push(rd as u8);
                 bytecode.push(contiguous_start as u8);
                 bytecode.push(elements.len() as u8);
-
-                // If non-POD, call constructor for each element
-                for (i, el) in elements.iter().enumerate() {
-                    let mut el_type = Type::Unknown;
-                    if let Some(ctx) = type_context {
-                        let mut checker = TypeChecker::with_context(ctx.clone());
-                        el_type = checker.infer_expr(el);
-                    }
-
-                    if !el_type.is_pod() {
-                        let r_el = el_regs[i];
-                        let constructor_idx = add_string(strings, "constructor()".to_string());
-
-                        let contiguous_call_start = self.current_ctx.allocate_regs(1);
-                        bytecode.push(Opcode::Move as u8);
-                        bytecode.push(contiguous_call_start as u8);
-                        bytecode.push(r_el as u8);
-
-                        bytecode.push(Opcode::Invoke as u8);
-                        let r_unused = self.current_ctx.allocate_reg();
-                        bytecode.push(r_unused as u8);
-                        bytecode.push(constructor_idx as u8);
-                        bytecode.push(contiguous_call_start as u8);
-                        bytecode.push(1); // arg_count (only self)
-                    }
-                }
 
                 Ok(rd)
             }

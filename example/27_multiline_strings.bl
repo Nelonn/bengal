@@ -1,3 +1,5 @@
+import std.io
+
 let name = "Bengal"
 let version = 1.0
 
