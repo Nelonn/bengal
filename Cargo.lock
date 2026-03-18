@@ -93,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "bengal-compiler",
  "bengal-std",
+ "bytecode-viewer",
  "clap",
  "rustyline",
  "sparkler",
@@ -136,6 +137,13 @@ name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
+
+[[package]]
+name = "bytecode-viewer"
+version = "0.1.0"
+dependencies = [
+ "sparkler",
+]
 
 [[package]]
 name = "bytes"

@@ -1,11 +1,11 @@
 use bengal_compiler::Compiler;
 use sparkler::Executor;
+use bytecode_viewer;
 use std::fs;
 use std::path::{Path, PathBuf};
 use clap::Parser;
 
 mod repl;
-mod bytecode_viewer;
 
 async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = match fs::read_to_string(source_file) {

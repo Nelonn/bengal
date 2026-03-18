@@ -4,6 +4,7 @@ members = [
     "compiler",
     "sparkler",
     "std",
+    "bytecode-viewer",
     ".",
 ]
 
@@ -20,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 bengal-compiler = { path = "compiler" }
 sparkler = { path = "sparkler" }
+bytecode-viewer = { path = "bytecode-viewer" }
 bengal-std = { path = "std" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

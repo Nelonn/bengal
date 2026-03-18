@@ -1,0 +1,8 @@
+[package]
+name = "bytecode-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Bytecode viewer for Bengal language"
+
+[dependencies]
+sparkler = { path = "../sparkler" }
