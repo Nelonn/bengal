@@ -1,5 +1,7 @@
 // Test stack traces in exceptions - nested try-catch
 
+import std.io
+
 try {
     let x = 10
     try {

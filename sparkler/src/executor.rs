@@ -85,122 +85,45 @@ impl Executor {
     }
 
     /// Convert CallNative instructions to CallNativeIndexed for O(1) lookup
-    fn convert_to_indexed_calls(bytecode: &mut [u8], strings: &[String], registry: &NativeFunctionRegistry) {
+    fn convert_to_indexed_calls(bytecode: &mut Vec<u8>, strings: &[String], registry: &NativeFunctionRegistry) {
+        // Build new bytecode vector to avoid in-place corruption
+        let mut new_bytecode = Vec::with_capacity(bytecode.len() + bytecode.len() / 10);
         let mut i = 0;
+        
         while i < bytecode.len() {
             let opcode_byte = bytecode[i];
-            
-            // Get the opcode size to skip past this instruction
-            let opcode = match opcode_byte {
-                x if x == crate::opcodes::Opcode::CallNative as u8 || x == crate::opcodes::Opcode::CallNativeAsync as u8 => {
-                    // Format: [CallNative, Rd, name_idx, arg_start, arg_count] (5 bytes)
-                    if i + 4 < bytecode.len() {
-                        let rd = bytecode[i + 1];
-                        let name_idx = bytecode[i + 2] as usize;
-                        let arg_start = bytecode[i + 3];
-                        let arg_count = bytecode[i + 4];
 
-                        if let Some(name) = strings.get(name_idx) {
-                            if let Some(func_index) = registry.get_index(name) {
-                                // Replace with CallNativeIndexed
-                                // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count] (6 bytes)
-                                // Need to shift remaining bytecode by 1 byte to make room
-                                
-                                // Shift all bytes after this instruction by 1 position
-                                for j in (i + 5..bytecode.len()).rev() {
-                                    bytecode[j] = bytecode[j - 1];
-                                }
-                                
-                                // Write the new 6-byte instruction
-                                bytecode[i] = Opcode::CallNativeIndexed as u8;
-                                bytecode[i + 1] = rd;
-                                bytecode[i + 2] = (func_index & 0xFF) as u8;  // low byte
-                                bytecode[i + 3] = ((func_index >> 8) & 0xFF) as u8;  // high byte
-                                bytecode[i + 4] = arg_start;
-                                bytecode[i + 5] = arg_count;
-                                
-                                // Skip past the new instruction (6 bytes)
-                                i += 6;
-                                continue;
-                            }
+            // Check if this is CallNative or CallNativeAsync
+            if opcode_byte == Opcode::CallNative as u8 || opcode_byte == Opcode::CallNativeAsync as u8 {
+                // Format: [CallNative, Rd, name_idx, arg_start, arg_count] (5 bytes)
+                if i + 4 < bytecode.len() {
+                    let rd = bytecode[i + 1];
+                    let name_idx = bytecode[i + 2] as usize;
+                    let arg_start = bytecode[i + 3];
+                    let arg_count = bytecode[i + 4];
+
+                    if let Some(name) = strings.get(name_idx) {
+                        if let Some(func_index) = registry.get_index(name) {
+                            // Convert to CallNativeIndexed (6 bytes)
+                            new_bytecode.push(Opcode::CallNativeIndexed as u8);
+                            new_bytecode.push(rd);
+                            new_bytecode.push((func_index & 0xFF) as u8);
+                            new_bytecode.push(((func_index >> 8) & 0xFF) as u8);
+                            new_bytecode.push(arg_start);
+                            new_bytecode.push(arg_count);
+                            i += 5;
+                            continue;
                         }
                     }
-                    Some(Opcode::CallNative)
                 }
-                _ => {
-                    // Try to get the opcode from the byte value
-                    // We need to handle all possible opcode values
-                    match opcode_byte {
-                        0x00 => Some(Opcode::Nop),
-                        0x10 => Some(Opcode::LoadConst),
-                        0x11 => Some(Opcode::LoadInt),
-                        0x12 => Some(Opcode::LoadFloat),
-                        0x13 => Some(Opcode::LoadBool),
-                        0x14 => Some(Opcode::LoadNull),
-                        0x20 => Some(Opcode::Move),
-                        0x21 => Some(Opcode::LoadLocal),
-                        0x22 => Some(Opcode::StoreLocal),
-                        0x30 => Some(Opcode::GetProperty),
-                        0x31 => Some(Opcode::SetProperty),
-                        0x40 => Some(Opcode::Call),
-                        0x41 => Some(Opcode::CallNative),
-                        0x42 => Some(Opcode::Invoke),
-                        0x43 => Some(Opcode::Return),
-                        0x44 => Some(Opcode::CallAsync),
-                        0x45 => Some(Opcode::CallNativeAsync),
-                        0x46 => Some(Opcode::InvokeAsync),
-                        0x47 => Some(Opcode::Await),
-                        0x48 => Some(Opcode::Spawn),
-                        0x49 => Some(Opcode::InvokeInterface),
-                        0x4A => Some(Opcode::InvokeInterfaceAsync),
-                        0x4B => Some(Opcode::CallNativeIndexed),
-                        0x4C => Some(Opcode::CallNativeIndexedAsync),
-                        0x50 => Some(Opcode::Jump),
-                        0x51 => Some(Opcode::JumpIfTrue),
-                        0x52 => Some(Opcode::JumpIfFalse),
-                        0x60 => Some(Opcode::Equal),
-                        0x61 => Some(Opcode::NotEqual),
-                        0x62 => Some(Opcode::And),
-                        0x63 => Some(Opcode::Or),
-                        0x64 => Some(Opcode::Not),
-                        0x65 => Some(Opcode::Concat),
-                        0x66 => Some(Opcode::Greater),
-                        0x67 => Some(Opcode::Less),
-                        0x68 => Some(Opcode::Add),
-                        0x69 => Some(Opcode::Subtract),
-                        0x6A => Some(Opcode::GreaterEqual),
-                        0x6B => Some(Opcode::LessEqual),
-                        0x70 => Some(Opcode::Multiply),
-                        0x71 => Some(Opcode::Divide),
-                        0x73 => Some(Opcode::Line),
-                        0x74 => Some(Opcode::Convert),
-                        0x75 => Some(Opcode::Modulo),
-                        0x76 => Some(Opcode::Array),
-                        0x77 => Some(Opcode::Index),
-                        0x78 => Some(Opcode::BitAnd),
-                        0x79 => Some(Opcode::BitOr),
-                        0x7A => Some(Opcode::BitXor),
-                        0x7B => Some(Opcode::BitNot),
-                        0x7C => Some(Opcode::ShiftLeft),
-                        0x7D => Some(Opcode::ShiftRight),
-                        0x80 => Some(Opcode::TryStart),
-                        0x81 => Some(Opcode::TryEnd),
-                        0x82 => Some(Opcode::Throw),
-                        0x90 => Some(Opcode::Breakpoint),
-                        0xFF => Some(Opcode::Halt),
-                        _ => None,
-                    }
-                }
-            };
-            
-            // Skip past this instruction based on its size
-            if let Some(op) = opcode {
-                i += op.size();
-            } else {
-                // Unknown opcode, skip 1 byte
-                i += 1;
             }
+
+            // Copy original byte
+            new_bytecode.push(opcode_byte);
+            i += 1;
         }
+        
+        *bytecode = new_bytecode;
     }
 
     pub async fn run(&mut self, bytecode: Bytecode, source_file: Option<&str>) -> Result<Option<Value>, String> {
@@ -231,15 +154,15 @@ impl Executor {
         if let Some(file) = source_file {
             self.vm.set_source_file(file);
         }
-        
+
         let mut bytecode_data = bytecode.data;
         let strings = bytecode.strings;
-        
+
         // Link bytecode if linker is available
         if self.linker.is_some() {
             Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
-        
+
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
         loop {

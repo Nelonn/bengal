@@ -2917,19 +2917,24 @@ impl TypeChecker {
                 } else if let Some(current_class) = &self.context.current_class {
                     if let Some(class_info) = self.context.get_class(current_class) {
                         if let Some(field_info) = class_info.fields.get(name) {
-                            // Error: accessing class member without self
-                            let field_type = field_info.type_name.clone();
-                            self.context.add_error_with_location(
-                                format!(
-                                    "Cannot access class member '{}' without 'self' keyword. Use 'self.{}' instead.",
-                                    name, name
-                                ),
-                                span.line,
-                                span.column,
-                                None,
-                                None,
-                            );
-                            return field_type;
+                            // Static fields can be accessed without self, instance fields require self
+                            if field_info.is_static {
+                                return field_info.type_name.clone();
+                            } else {
+                                // Error: accessing instance member without self
+                                let field_type = field_info.type_name.clone();
+                                self.context.add_error_with_location(
+                                    format!(
+                                        "Cannot access class member '{}' without 'self' keyword. Use 'self.{}' instead.",
+                                        name, name
+                                    ),
+                                    span.line,
+                                    span.column,
+                                    None,
+                                    None,
+                                );
+                                return field_type;
+                            }
                         }
                     }
                     // Variable not found in class context - check if it's a class name (for static access)

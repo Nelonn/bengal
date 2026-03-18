@@ -2,6 +2,8 @@
 // Since user-defined function calls are not yet fully implemented in the VM,
 // this tests the core async/await mechanics
 
+import std.io
+
 print("Testing async/await...")
 
 // For now, just test that the code compiles and runs

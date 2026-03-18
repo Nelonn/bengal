@@ -5,20 +5,21 @@
 /// - Constant pool (.data section) display
 /// - Clean address | opcode | operands format
 
-use sparkler::executor::Bytecode;
-use sparkler::opcodes::Opcode;
+use sparkler::Bytecode;
+use sparkler::Function;
+use sparkler::Opcode;
 
 /// Display bytecode in Godbolt-style format
 pub fn display_bytecode(bytecode: &Bytecode) {
     println!("# Bytecode Viewer - Bengal");
     println!();
-    
+
     // Display .data section (constants)
     display_data_section(bytecode);
-    
+
     // Display module-level (root) code
     display_root_code(bytecode);
-    
+
     // Display functions
     display_functions(bytecode);
 }
@@ -83,7 +84,7 @@ fn display_root_code(bytecode: &Bytecode) {
 }
 
 /// Display a single function's bytecode
-fn display_function(function: &sparkler::vm::Function, bytecode: &Bytecode) {
+fn display_function(function: &Function, bytecode: &Bytecode) {
     println!("{}:", function.name);
     println!("# registers: {}, source: {:?}", function.register_count, function.source_file);
 
@@ -114,7 +115,7 @@ fn display_function(function: &sparkler::vm::Function, bytecode: &Bytecode) {
 fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]) -> (String, String, usize) {
     match opcode {
         Opcode::Nop => ("NOP".to_string(), String::new(), 0),
-        
+
         Opcode::LoadConst => {
             if pc + 2 < data.len() {
                 let str_idx = data[pc + 2] as usize;
@@ -126,31 +127,31 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LOAD_CONST".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LoadInt => {
-            if pc + 9 < data.len() {
+            if pc + 10 <= data.len() {
                 let value = i64::from_le_bytes([
-                    data[pc + 1], data[pc + 2], data[pc + 3], data[pc + 4],
-                    data[pc + 5], data[pc + 6], data[pc + 7], data[pc + 8],
+                    data[pc + 2], data[pc + 3], data[pc + 4], data[pc + 5],
+                    data[pc + 6], data[pc + 7], data[pc + 8], data[pc + 9],
                 ]);
                 (format!("LOAD_INT R{}", data[pc + 1]), format!("{}", value), 9)
             } else {
                 ("LOAD_INT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LoadFloat => {
-            if pc + 9 < data.len() {
+            if pc + 10 <= data.len() {
                 let value = f64::from_le_bytes([
-                    data[pc + 1], data[pc + 2], data[pc + 3], data[pc + 4],
-                    data[pc + 5], data[pc + 6], data[pc + 7], data[pc + 8],
+                    data[pc + 2], data[pc + 3], data[pc + 4], data[pc + 5],
+                    data[pc + 6], data[pc + 7], data[pc + 8], data[pc + 9],
                 ]);
                 (format!("LOAD_FLOAT R{}", data[pc + 1]), format!("{}", value), 9)
             } else {
                 ("LOAD_FLOAT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LoadBool => {
             if pc + 2 < data.len() {
                 let value = data[pc + 2] != 0;
@@ -159,7 +160,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LOAD_BOOL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LoadNull => {
             if pc + 1 < data.len() {
                 (format!("LOAD_NULL R{}", data[pc + 1]), String::new(), 1)
@@ -167,7 +168,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LOAD_NULL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Move => {
             if pc + 2 < data.len() {
                 (format!("MOVE R{}, R{}", data[pc + 1], data[pc + 2]), String::new(), 2)
@@ -175,7 +176,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("MOVE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LoadLocal => {
             if pc + 2 < data.len() {
                 let name_idx = data[pc + 2] as usize;
@@ -187,7 +188,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LOAD_LOCAL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::StoreLocal => {
             if pc + 2 < data.len() {
                 let name_idx = data[pc + 1] as usize;
@@ -199,7 +200,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("STORE_LOCAL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::GetProperty => {
             if pc + 3 < data.len() {
                 let name_idx = data[pc + 3] as usize;
@@ -211,7 +212,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("GET_PROPERTY".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::SetProperty => {
             if pc + 3 < data.len() {
                 let name_idx = data[pc + 2] as usize;
@@ -223,7 +224,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("SET_PROPERTY".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Call => {
             if pc + 4 < data.len() {
                 let func_idx = data[pc + 2] as usize;
@@ -268,7 +269,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("INVOKE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Return => {
             if pc + 1 < data.len() {
                 (format!("RETURN R{}", data[pc + 1]), String::new(), 1)
@@ -276,7 +277,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("RETURN".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::CallAsync => {
             if pc + 4 < data.len() {
                 let func_idx = data[pc + 2] as usize;
@@ -321,7 +322,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("INVOKE_ASYNC".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Await => {
             if pc + 2 < data.len() {
                 (format!("AWAIT R{}, R{}", data[pc + 1], data[pc + 2]), String::new(), 2)
@@ -329,7 +330,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("AWAIT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Spawn => {
             if pc + 2 < data.len() {
                 (format!("SPAWN R{}", data[pc + 1]), String::new(), 1)
@@ -337,7 +338,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("SPAWN".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::InvokeInterface => {
             if pc + 4 < data.len() {
                 let vtable_idx = data[pc + 2] as usize;
@@ -393,7 +394,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("CALL_NATIVE_INDEXED_ASYNC".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Jump => {
             if pc + 2 < data.len() {
                 let target = u16::from_le_bytes([data[pc + 1], data[pc + 2]]);
@@ -402,7 +403,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("JUMP".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::JumpIfTrue => {
             if pc + 3 < data.len() {
                 let target = u16::from_le_bytes([data[pc + 2], data[pc + 3]]);
@@ -411,7 +412,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("JUMP_IF_TRUE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::JumpIfFalse => {
             if pc + 3 < data.len() {
                 let target = u16::from_le_bytes([data[pc + 2], data[pc + 3]]);
@@ -420,7 +421,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("JUMP_IF_FALSE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Equal => {
             if pc + 3 < data.len() {
                 (format!("EQUAL R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -428,7 +429,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("EQUAL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::NotEqual => {
             if pc + 3 < data.len() {
                 (format!("NOT_EQUAL R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -436,7 +437,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("NOT_EQUAL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Greater => {
             if pc + 3 < data.len() {
                 (format!("GREATER R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -444,7 +445,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("GREATER".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Less => {
             if pc + 3 < data.len() {
                 (format!("LESS R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -452,7 +453,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LESS".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::GreaterEqual => {
             if pc + 3 < data.len() {
                 (format!("GREATER_EQUAL R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -460,7 +461,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("GREATER_EQUAL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::LessEqual => {
             if pc + 3 < data.len() {
                 (format!("LESS_EQUAL R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -468,7 +469,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LESS_EQUAL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::And => {
             if pc + 3 < data.len() {
                 (format!("AND R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -476,7 +477,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("AND".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Or => {
             if pc + 3 < data.len() {
                 (format!("OR R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -484,7 +485,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("OR".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Not => {
             if pc + 2 < data.len() {
                 (format!("NOT R{}, R{}", data[pc + 1], data[pc + 2]), String::new(), 2)
@@ -492,7 +493,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("NOT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Add => {
             if pc + 3 < data.len() {
                 (format!("ADD R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -500,7 +501,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("ADD".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Subtract => {
             if pc + 3 < data.len() {
                 (format!("SUB R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -508,7 +509,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("SUB".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Multiply => {
             if pc + 3 < data.len() {
                 (format!("MUL R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -516,7 +517,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("MUL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Divide => {
             if pc + 3 < data.len() {
                 (format!("DIV R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -524,7 +525,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("DIV".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Modulo => {
             if pc + 3 < data.len() {
                 (format!("MOD R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -532,7 +533,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("MOD".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::BitAnd => {
             if pc + 3 < data.len() {
                 (format!("BIT_AND R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -540,7 +541,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("BIT_AND".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::BitOr => {
             if pc + 3 < data.len() {
                 (format!("BIT_OR R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -548,7 +549,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("BIT_OR".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::BitXor => {
             if pc + 3 < data.len() {
                 (format!("BIT_XOR R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -556,7 +557,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("BIT_XOR".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::BitNot => {
             if pc + 2 < data.len() {
                 (format!("BIT_NOT R{}, R{}", data[pc + 1], data[pc + 2]), String::new(), 2)
@@ -564,7 +565,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("BIT_NOT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::ShiftLeft => {
             if pc + 3 < data.len() {
                 (format!("SHL R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -572,7 +573,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("SHL".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::ShiftRight => {
             if pc + 3 < data.len() {
                 (format!("SHR R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -580,7 +581,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("SHR".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Concat => {
             if pc + 3 < data.len() {
                 (format!("CONCAT R{}, R{}, count={}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -588,7 +589,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("CONCAT".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Convert => {
             if pc + 3 < data.len() {
                 let cast_type = data[pc + 3];
@@ -597,7 +598,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("CAST".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Array => {
             if pc + 3 < data.len() {
                 (format!("ARRAY R{}, R{}, count={}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -605,7 +606,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("ARRAY".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Index => {
             if pc + 3 < data.len() {
                 (format!("INDEX R{}, R{}, R{}", data[pc + 1], data[pc + 2], data[pc + 3]), String::new(), 3)
@@ -613,7 +614,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("INDEX".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Line => {
             if pc + 2 < data.len() {
                 let line_number = u16::from_le_bytes([data[pc + 1], data[pc + 2]]);
@@ -622,7 +623,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("LINE".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::TryStart => {
             if pc + 3 < data.len() {
                 let catch_pc = u16::from_le_bytes([data[pc + 1], data[pc + 2]]);
@@ -632,9 +633,9 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("TRY_START".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::TryEnd => ("TRY_END".to_string(), String::new(), 0),
-        
+
         Opcode::Throw => {
             if pc + 1 < data.len() {
                 (format!("THROW R{}", data[pc + 1]), String::new(), 1)
@@ -642,9 +643,9 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 ("THROW".to_string(), String::new(), 0)
             }
         }
-        
+
         Opcode::Breakpoint => ("BREAKPOINT".to_string(), String::new(), 0),
-        
+
         Opcode::Halt => ("HALT".to_string(), String::new(), 0),
     }
 }
