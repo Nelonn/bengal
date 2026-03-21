@@ -1,14 +1,14 @@
-# Build Bengal CLI for all platforms on release
-# Creates packages for:
+# Build Bengal CLI for all platforms on pull request to main
+# Creates artifacts for:
 # - Linux (.deb, .rpm, .tar.gz) - amd64, arm64
 # - macOS (.tar.gz, .pkg) - amd64, arm64
-# - Windows (.exe, .msi) - amd64, arm64
+# - Windows (.exe, .zip) - amd64, arm64
 
 name: Build Releases
 
 on:
-  release:
-    types: [published]
+  pull_request:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,7 +17,7 @@ env:
 # ========== LINUX ==========
 jobs:
   # ========== DEBIAN/UBUNTU (.deb) ==========
-  build-deb-amd64:
+ build-deb-amd64:
     name: Build Debian Package (amd64)
     runs-on: ubuntu-latest
     steps:
@@ -45,7 +45,21 @@ jobs:
 
       - name: Create DEB package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          VERSION=${RAW_VERSION#v}
+          # Extract numeric prefix, force numeric version for deb
+          # e.g., "1.2.3" -> "1.2.3", "1.2.3-beta" -> "1.2.3~beta", "dirty" -> "0.0.0+dirty"
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            NUMERIC_PART=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            SUFFIX=${VERSION#$NUMERIC_PART}
+            if [ -n "$SUFFIX" ]; then
+              DEB_VERSION="${NUMERIC_PART}~${SUFFIX}"
+            else
+              DEB_VERSION="$NUMERIC_PART"
+            fi
+          else
+            DEB_VERSION="0.0.0+${VERSION}"
+          fi
           mkdir -p debian-package/DEBIAN
           mkdir -p debian-package/usr/bin
           mkdir -p debian-package/usr/share/doc/bengal
@@ -55,7 +69,7 @@ jobs:
 
           cat > debian-package/DEBIAN/control << EOF
           Package: bengal
-          Version: ${VERSION#v}
+          Version: $DEB_VERSION
           Section: utils
           Priority: optional
           Architecture: amd64
@@ -69,8 +83,20 @@ jobs:
 
       - name: Build DEB package
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          fakeroot dpkg-deb --build debian-package bengal_${VERSION#v}_amd64.deb
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          VERSION=${RAW_VERSION#v}
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            NUMERIC_PART=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            SUFFIX=${VERSION#$NUMERIC_PART}
+            if [ -n "$SUFFIX" ]; then
+              DEB_VERSION="${NUMERIC_PART}~${SUFFIX}"
+            else
+              DEB_VERSION="$NUMERIC_PART"
+            fi
+          else
+            DEB_VERSION="0.0.0+${VERSION}"
+          fi
+          fakeroot dpkg-deb --build debian-package bengal_${DEB_VERSION}_amd64.deb
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -78,12 +104,7 @@ jobs:
           name: bengal-deb-amd64
           path: bengal_*.deb
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: bengal_*.deb
-
-  build-deb-arm64:
+build-deb-arm64:
     name: Build Debian Package (arm64)
     runs-on: ubuntu-latest
     steps:
@@ -145,7 +166,21 @@ jobs:
 
       - name: Create DEB package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          VERSION=${RAW_VERSION#v}
+          # Extract numeric prefix, force numeric version for deb
+          # e.g., "1.2.3" -> "1.2.3", "1.2.3-beta" -> "1.2.3~beta", "dirty" -> "0.0.0+dirty"
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            NUMERIC_PART=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            SUFFIX=${VERSION#$NUMERIC_PART}
+            if [ -n "$SUFFIX" ]; then
+              DEB_VERSION="${NUMERIC_PART}~${SUFFIX}"
+            else
+              DEB_VERSION="$NUMERIC_PART"
+            fi
+          else
+            DEB_VERSION="0.0.0+${VERSION}"
+          fi
           mkdir -p debian-package/DEBIAN
           mkdir -p debian-package/usr/bin
           mkdir -p debian-package/usr/share/doc/bengal
@@ -155,7 +190,7 @@ jobs:
 
           cat > debian-package/DEBIAN/control << EOF
           Package: bengal
-          Version: ${VERSION#v}
+          Version: $DEB_VERSION
           Section: utils
           Priority: optional
           Architecture: arm64
@@ -169,19 +204,26 @@ jobs:
 
       - name: Build DEB package
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          fakeroot dpkg-deb --build debian-package bengal_${VERSION#v}_arm64.deb
+          RAW_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          VERSION=${RAW_VERSION#v}
+          if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            NUMERIC_PART=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            SUFFIX=${VERSION#$NUMERIC_PART}
+            if [ -n "$SUFFIX" ]; then
+              DEB_VERSION="${NUMERIC_PART}~${SUFFIX}"
+            else
+              DEB_VERSION="$NUMERIC_PART"
+            fi
+          else
+            DEB_VERSION="0.0.0+${VERSION}"
+          fi
+          fakeroot dpkg-deb --build debian-package bengal_${DEB_VERSION}_arm64.deb
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
         with:
           name: bengal-deb-arm64
           path: bengal_*.deb
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: bengal_*.deb
 
   # ========== FEDORA/RHEL (.rpm) ==========
   build-rpm-amd64:
@@ -212,7 +254,7 @@ jobs:
 
       - name: Create RPM package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p rpm-package/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           mkdir -p rpm-package/SOURCES/bengal-${VERSION#v}
 
@@ -249,7 +291,7 @@ jobs:
 
       - name: Build RPM package
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           rpmbuild -bb rpm-package/SPECS/bengal.spec \
             --define "_topdir $(pwd)/rpm-package" \
             --define "_rpmdir $(pwd)/rpm-package/RPMS"
@@ -261,11 +303,6 @@ jobs:
         with:
           name: bengal-rpm-amd64
           path: rpm-package/bengal_*.rpm
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: rpm-package/bengal_*.rpm
 
   build-rpm-arm64:
     name: Build RPM Package (arm64)
@@ -326,7 +363,7 @@ jobs:
 
       - name: Create RPM package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p rpm-package/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           mkdir -p rpm-package/SOURCES/bengal-${VERSION#v}
 
@@ -363,7 +400,7 @@ jobs:
 
       - name: Build RPM package
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           rpmbuild -bb rpm-package/SPECS/bengal.spec \
             --define "_topdir $(pwd)/rpm-package" \
             --define "_rpmdir $(pwd)/rpm-package/RPMS" \
@@ -377,10 +414,6 @@ jobs:
           name: bengal-rpm-arm64
           path: rpm-package/bengal_*.rpm
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: rpm-package/bengal_*.rpm
   # ========== ARCH LINUX (.tar.gz) ==========
   build-arch-amd64:
     name: Build Arch Linux Package (amd64)
@@ -405,7 +438,7 @@ jobs:
 
       - name: Create Arch package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p arch-package/usr/bin
           mkdir -p arch-package/usr/share/doc/bengal
 
@@ -413,11 +446,11 @@ jobs:
           chmod 755 arch-package/usr/bin/bengal
           cp README.md arch-package/usr/share/doc/bengal/
 
-          tar -czf bengal_${VERSION#v}_amd64.tar.gz -C arch-package usr
+          tar --zstd -cf bengal_${VERSION#v}_amd64.tar.zst -C arch-package usr
 
       - name: Create PKGBUILD
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           cat > PKGBUILD << EOF
           pkgname=bengal
           pkgver=${VERSION#v}
@@ -437,7 +470,7 @@ jobs:
 
       - name: Create .SRCINFO
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           cat > .SRCINFO << EOF
           pkgbase = bengal
           pkgver = ${VERSION#v}
@@ -457,11 +490,6 @@ jobs:
             bengal_*.tar.gz
             PKGBUILD
             .SRCINFO
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: bengal_*.tar.gz
 
   build-arch-arm64:
     name: Build Arch Linux Package (arm64)
@@ -523,7 +551,7 @@ jobs:
 
       - name: Create Arch package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p arch-package/usr/bin
           mkdir -p arch-package/usr/share/doc/bengal
 
@@ -535,7 +563,7 @@ jobs:
 
       - name: Create PKGBUILD
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           cat > PKGBUILD << EOF
           pkgname=bengal
           pkgver=${VERSION#v}
@@ -555,7 +583,7 @@ jobs:
 
       - name: Create .SRCINFO
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           cat > .SRCINFO << EOF
           pkgbase = bengal
           pkgver = ${VERSION#v}
@@ -576,11 +604,6 @@ jobs:
             bengal_*.tar.gz
             PKGBUILD
             .SRCINFO
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: bengal_*.tar.gz
 
   # ========== MACOS ==========
   build-macos-amd64:
@@ -608,7 +631,7 @@ jobs:
 
       - name: Create macOS package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p macos-package/bin
           mkdir -p macos-package/share/doc/bengal
 
@@ -620,7 +643,7 @@ jobs:
 
       - name: Create installer package (.pkg)
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p pkg-root/usr/bin
           cp target/x86_64-apple-darwin/release/bengal pkg-root/usr/bin/
           chmod 755 pkg-root/usr/bin/bengal
@@ -636,13 +659,6 @@ jobs:
         with:
           name: bengal-macos-amd64
           path: |
-            bengal_*_macos_amd64.tar.gz
-            bengal_*_macos_amd64.pkg
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
             bengal_*_macos_amd64.tar.gz
             bengal_*_macos_amd64.pkg
 
@@ -671,7 +687,7 @@ jobs:
 
       - name: Create macOS package structure
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p macos-package/bin
           mkdir -p macos-package/share/doc/bengal
 
@@ -683,7 +699,7 @@ jobs:
 
       - name: Create installer package (.pkg)
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
           mkdir -p pkg-root/usr/bin
           cp target/aarch64-apple-darwin/release/bengal pkg-root/usr/bin/
           chmod 755 pkg-root/usr/bin/bengal
@@ -699,13 +715,6 @@ jobs:
         with:
           name: bengal-macos-arm64
           path: |
-            bengal_*_macos_arm64.tar.gz
-            bengal_*_macos_arm64.pkg
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
             bengal_*_macos_arm64.tar.gz
             bengal_*_macos_arm64.pkg
 
@@ -735,36 +744,17 @@ jobs:
 
       - name: Create Windows package
         run: |
-          $VERSION = "${env:GITHUB_REF}".Replace("refs/tags/", "")
+          $VERSION = git describe --tags --always --dirty 2>$null; if (!$VERSION) { $VERSION = "dev" }
           New-Item -ItemType Directory -Path windows-package\bin -Force
           Copy-Item target\x86_64-pc-windows-msvc\release\bengal.exe windows-package\bin\
           Copy-Item README.md windows-package\
           Compress-Archive -Path windows-package\* -DestinationPath bengal_${VERSION}_windows_amd64.zip -Force
-
-      - name: Create Windows installer (.msi)
-        run: |
-          $VERSION = "${env:GITHUB_REF}".Replace("refs/tags/", "").Replace("v", "")
-          New-Item -ItemType Directory -Path msi-root\ProgramFiles\bengal -Force
-          Copy-Item target\x86_64-pc-windows-msvc\release\bengal.exe msi-root\ProgramFiles\bengal\
-
-          $wix = "C:\Program Files (x86)\WiX Toolset v3.14\bin"
-          if (Test-Path $wix) {
-            & "$wix\heat.exe" dir msi-root\ProgramFiles\bengal -gg -sfrag -sreg -srd -dr INSTALLFOLDER -cg BengalFiles -var var.BengalSource -o Product.wxs
-            # Note: Full MSI build requires additional wix configuration
-          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bengal-windows-amd64
           path: |
-            bengal_*_windows_amd64.zip
-            bengal_*_windows_amd64.exe
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
             bengal_*_windows_amd64.zip
             bengal_*_windows_amd64.exe
 
@@ -796,7 +786,7 @@ jobs:
 
       - name: Create Windows package
         run: |
-          $VERSION = "${env:GITHUB_REF}".Replace("refs/tags/", "")
+          $VERSION = git describe --tags --always --dirty 2>$null; if (!$VERSION) { $VERSION = "dev" }
           New-Item -ItemType Directory -Path windows-package\bin -Force
           Copy-Item target\aarch64-pc-windows-msvc\release\bengal.exe windows-package\bin\
           Copy-Item README.md windows-package\
@@ -807,12 +797,5 @@ jobs:
         with:
           name: bengal-windows-arm64
           path: |
-            bengal_*_windows_arm64.zip
-            bengal_*_windows_arm64.exe
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
             bengal_*_windows_arm64.zip
             bengal_*_windows_arm64.exe
