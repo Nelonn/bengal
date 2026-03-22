@@ -1,8 +1,7 @@
-use sparkler::{PromiseState, Value};
+use sparkler::Value;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
 
 pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     if args.is_empty() {
@@ -10,23 +9,10 @@ pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     }
     let url = args[0].to_string();
 
-    let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
-    let p_clone = promise.clone();
-
-    tokio::spawn(async move {
-        match http_get_async(&url).await {
-            Ok(response) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Resolved(Value::String(response));
-            }
-            Err(e) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Rejected(Value::String(e));
-            }
-        }
-    });
-
-    Ok(Value::Promise(promise))
+    match http_get(&url) {
+        Ok(response) => Ok(Value::String(response)),
+        Err(e) => Err(Value::String(e)),
+    }
 }
 
 pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
@@ -38,26 +24,31 @@ pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     let url = args[0].to_string();
     let body = args[1].to_string();
 
-    let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
-    let p_clone = promise.clone();
-
-    tokio::spawn(async move {
-        match http_post_async(&url, &body).await {
-            Ok(response) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Resolved(Value::String(response));
-            }
-            Err(e) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Rejected(Value::String(e));
-            }
-        }
-    });
-
-    Ok(Value::Promise(promise))
+    match http_post(&url, &body) {
+        Ok(response) => Ok(Value::String(response)),
+        Err(e) => Err(Value::String(e)),
+    }
 }
 
-// Async HTTP functions
+// Synchronous HTTP functions using blocking reqwest
+pub fn http_get(url: &str) -> Result<String, String> {
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(http_get_async(&url))
+    }).join().unwrap()
+}
+
+pub fn http_post(url: &str, body: &str) -> Result<String, String> {
+    let url = url.to_string();
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(http_post_async(&url, &body))
+    }).join().unwrap()
+}
+
+// Async HTTP functions (used internally with blocking)
 pub async fn http_get_async(url: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
 
@@ -193,7 +184,26 @@ pub fn parse_headers(headers_str: &str) -> HashMap<String, String> {
     headers
 }
 
-pub async fn http_client_request_async(
+pub fn http_client_request(
+    config: &HttpClientConfig,
+    method: &str,
+    url: &str,
+    headers_str: &str,
+    body: Option<&str>,
+) -> Result<HttpResponse, String> {
+    let config = config.clone();
+    let method = method.to_string();
+    let url = url.to_string();
+    let headers_str = headers_str.to_string();
+    let body = body.map(|s| s.to_string());
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(http_client_request_async(&config, &method, &url, &headers_str, body.as_deref()))
+    }).join().unwrap()
+}
+
+async fn http_client_request_async(
     config: &HttpClientConfig,
     method: &str,
     url: &str,
@@ -228,10 +238,7 @@ pub async fn http_client_request_async(
         req_builder = req_builder.body(body_content.to_string());
     }
 
-    let response = req_builder
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+    let response = req_builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
 
     let status = response.status().as_u16();
     let status_text = response
@@ -246,10 +253,7 @@ pub async fn http_client_request_async(
         response_headers.push_str(&format!("{}: {}\n", name, value.to_str().unwrap_or("")));
     }
 
-    let response_body = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+    let response_body = response.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
 
     Ok(HttpResponse {
         status,
@@ -428,23 +432,10 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     let url = args[1].to_string();
     let state_clone = state.lock().unwrap().clone();
 
-    let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
-    let p_clone = promise.clone();
-
-    tokio::spawn(async move {
-        match http_client_request_async(&state_clone.into(), "GET", &url, "", None).await {
-            Ok(response) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Resolved(Value::String(response.body));
-            }
-            Err(e) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Rejected(Value::String(e));
-            }
-        }
-    });
-
-    Ok(Value::Promise(promise))
+    match http_client_request(&state_clone.into(), "GET", &url, "", None) {
+        Ok(response) => Ok(Value::String(response.body)),
+        Err(e) => Err(Value::String(e)),
+    }
 }
 
 pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
@@ -459,23 +450,10 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     let body = args[2].to_string();
     let state_clone = state.lock().unwrap().clone();
 
-    let promise = Arc::new(TokioMutex::new(PromiseState::Pending));
-    let p_clone = promise.clone();
-
-    tokio::spawn(async move {
-        match http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body)).await {
-            Ok(response) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Resolved(Value::String(response.body));
-            }
-            Err(e) => {
-                let mut state = p_clone.lock().await;
-                *state = PromiseState::Rejected(Value::String(e));
-            }
-        }
-    });
-
-    Ok(Value::Promise(promise))
+    match http_client_request(&state_clone.into(), "POST", &url, "", Some(&body)) {
+        Ok(response) => Ok(Value::String(response.body)),
+        Err(e) => Err(Value::String(e)),
+    }
 }
 
 // CamelCase aliases for Bengal API compatibility
