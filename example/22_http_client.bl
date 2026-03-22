@@ -1,7 +1,7 @@
 import std.http
 import std.io
 
-async fn main() {
+fn main() {
     // Print enum values (they are integers)
     println("HTTP Client example loaded!")
 
@@ -16,8 +16,9 @@ async fn main() {
     println("HttpClient created and configured!")
     println("Ready to make HTTP requests!")
 
-    let result = await client.get("https://jsonplaceholder.typicode.com/posts")
+    let result = client.get("https://jsonplaceholder.typicode.com/posts")
     println(str(result))
+    println("After!")
 }
 
 main()

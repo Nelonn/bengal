@@ -266,18 +266,18 @@ pub async fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let readline = rl.readline(">>> ");
-        
+
         match readline {
             Ok(line) => {
                 rl.add_history_entry(line.clone())?;
-                
+
                 let trimmed = line.trim();
-                
+
                 // Handle REPL commands
                 if trimmed == "exit" || trimmed == "quit" {
                     break;
                 }
-                
+
                 if trimmed == "clear" {
                     state.clear();
                     println!("REPL state cleared.");

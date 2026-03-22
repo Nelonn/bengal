@@ -12,7 +12,7 @@ pub mod str;
 pub mod sys;
 pub mod test;
 
-use sparkler::{NativeModule, Value, VM};
+use sparkler::{NativeModule, NativeResult, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
     NativeModule::new("std.io")
@@ -198,7 +198,7 @@ pub fn register_all(vm: &mut VM) {
         .register(vm);
 
     vm.register_fallback(|_args| {
-        Err(Value::String(
+        NativeResult::Ready(Value::String(
             "Native method not available or disabled by runtime".to_string(),
         ))
     });

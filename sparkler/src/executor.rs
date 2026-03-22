@@ -1,8 +1,8 @@
-use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult};
-use crate::opcodes::Opcode;
+use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, set_async_callback_sender};
+use crate::{debug_vm, Opcode};
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
-use crate::async_runtime;
 use std::sync::{Arc, RwLock};
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 pub use crate::vm::VTable;
 
@@ -18,13 +18,19 @@ pub struct Executor {
     pub vm: VM,
     /// Optional runtime linker for dynamic linking and hot-swap
     pub linker: Option<RuntimeLinker>,
+    /// Channel for receiving async native callbacks
+    callback_rx: Option<Receiver<Result<Value, Value>>>,
+    callback_tx: Option<Sender<Result<Value, Value>>>,
 }
 
 impl Executor {
     pub fn new() -> Self {
+        let (tx, rx) = channel();
         Self {
             vm: VM::new(),
             linker: None,
+            callback_rx: Some(rx),
+            callback_tx: Some(tx),
         }
     }
 
@@ -35,9 +41,12 @@ impl Executor {
         let mut vm = VM::new();
         // Share the same registry between VM and linker
         vm.native_registry = (*registry.read().unwrap()).clone();
+        let (tx, rx) = channel();
         Self {
             vm,
             linker: Some(linker),
+            callback_rx: Some(rx),
+            callback_tx: Some(tx),
         }
     }
 
@@ -45,9 +54,12 @@ impl Executor {
     pub fn with_registry(registry: Arc<RwLock<NativeFunctionRegistry>>) -> Self {
         let mut vm = VM::new();
         vm.native_registry = (*registry.read().unwrap()).clone();
+        let (tx, rx) = channel();
         Self {
             vm,
             linker: Some(RuntimeLinker::with_registry(registry)),
+            callback_rx: Some(rx),
+            callback_tx: Some(tx),
         }
     }
 
@@ -89,12 +101,12 @@ impl Executor {
         // Build new bytecode vector to avoid in-place corruption
         let mut new_bytecode = Vec::with_capacity(bytecode.len() + bytecode.len() / 10);
         let mut i = 0;
-        
+
         while i < bytecode.len() {
             let opcode_byte = bytecode[i];
 
-            // Check if this is CallNative or CallNativeAsync
-            if opcode_byte == Opcode::CallNative as u8 || opcode_byte == Opcode::CallNativeAsync as u8 {
+            // Check if this is CallNative
+            if opcode_byte == Opcode::CallNative as u8 {
                 // Format: [CallNative, Rd, name_idx, arg_start, arg_count] (5 bytes)
                 if i + 4 < bytecode.len() {
                     let rd = bytecode[i + 1];
@@ -126,27 +138,30 @@ impl Executor {
         *bytecode = new_bytecode;
     }
 
-    pub async fn run(&mut self, bytecode: Bytecode, source_file: Option<&str>) -> Result<Option<Value>, String> {
+    pub fn run(&mut self, bytecode: Bytecode, source_file: Option<&str>) -> Result<Option<Value>, String> {
         if let Some(file) = source_file {
             self.vm.set_source_file(file);
         }
-        
+
         let mut bytecode_data = bytecode.data;
         let strings = bytecode.strings;
-        
+
         // Link bytecode if linker is available
         if self.linker.is_some() {
             Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
-        
+
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
-        match self.vm.run().await.map_err(|e| e.to_string())? {
+        match self.vm.run().map_err(|e| e.to_string())? {
             RunResult::Finished(val) => Ok(val),
             RunResult::Breakpoint => {
                 println!("Breakpoint hit at line {}", self.vm.get_line());
                 Ok(None)
             }
-            RunResult::Awaiting(promise) => Ok(Some(Value::Promise(promise))),
+            RunResult::Suspended => {
+                // VM suspended for async native - should be handled by run_to_completion
+                Ok(None)
+            }
         }
     }
 
@@ -165,26 +180,62 @@ impl Executor {
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
+        // Take the callback receiver and keep sender alive
+        let mut callback_rx = Some(self.callback_rx.take().unwrap());
+        let callback_tx = self.callback_tx.take().unwrap();
+
+        // Set the callback sender in thread local storage for native functions
+        // Keep a clone alive for the duration of run_to_completion
+        let _tx_guard = callback_tx.clone();
+        set_async_callback_sender(callback_tx.clone());
+
         loop {
-            let result = self.vm.run().await.map_err(|e| e.to_string())?;
+            let result = self.vm.run().map_err(|e| e.to_string())?;
 
             match result {
-                RunResult::Finished(val) => return Ok(val),
+                RunResult::Finished(val) => {
+                    return Ok(val);
+                }
                 RunResult::Breakpoint => {
                     println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                     continue;
                 }
-                RunResult::Awaiting(promise) => {
-                    let mut state = promise.lock().await;
-                    match &mut *state {
-                        PromiseState::Pending => {
-                            drop(state);
-                            async_runtime::sleep(std::time::Duration::from_millis(10)).await;
-                            continue;
+                RunResult::Suspended => {
+                    // VM is suspended waiting for async native callback
+                    debug_vm!("executor: VM suspended, waiting for callback");
+                    // Use std::thread to wait for callback to avoid tokio state machine corruption
+                    let rx = callback_rx.take().unwrap();
+                    debug_vm!("executor: Waiting for callback in spawned thread");
+                    let result = std::thread::spawn(move || {
+                        rx.recv().map_err(|_| "Callback channel closed".to_string())
+                    }).join().unwrap();
+                    debug_vm!("executor: Thread joined, result = {:?}", result.is_ok());
+                    let result = result?;
+
+                    // result is Result<Result<Value, Value>, String>, need to flatten
+                    let result: Result<Value, Value> = match result {
+                        Ok(val) => {
+                            debug_vm!("executor: Received Ok(val), val = {:?}", match &val { Value::String(s) => format!("String({} chars)", s.len()), Value::Null => "Null".to_string(), _ => "Other".to_string() });
+                            Ok(val)
                         }
-                        PromiseState::Resolved(_) | PromiseState::Rejected(_) => {
-                            drop(state);
-                            continue;
+                        Err(e) => Err(Value::String(e.to_string())),
+                    };
+                    debug_vm!("executor: About to resume VM with result");
+
+                    // Resume VM with the result
+                    match self.vm.resume_with_result(result) {
+                        Ok(RunResult::Finished(val)) => {
+                            return Ok(val);
+                        }
+                        Ok(RunResult::Breakpoint) => {
+                            println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
+                        }
+                        Ok(RunResult::Suspended) => {
+                            // Still suspended - this shouldn't happen with current implementation
+                            return Err("VM still suspended after callback".to_string());
+                        }
+                        Err(e) => {
+                            return Err(e.to_string());
                         }
                     }
                 }

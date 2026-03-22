@@ -6,14 +6,14 @@ fn println(line: str) {
   print(line + "\n")
 }
 
-async native fn sleep(ms: int) {}
+native fn sleep(ms: int) {}
 
-async native fn readLine(): str {}
+native fn readLine(): str {}
 
 interface InputStream {
-  async fn read(size: int): ByteBuffer
+  fn read(size: int): ByteBuffer
 }
 
 interface OutputStream {
-  //async fn write(todo)
+  //fn write(todo)
 }

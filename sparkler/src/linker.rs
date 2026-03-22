@@ -1,5 +1,5 @@
 //! Runtime linker for native functions with indexed lookup and hot-swap support
-//! 
+//!
 //! This module provides:
 //! - O(1) indexed native function lookup instead of HashMap string lookups
 //! - Dynamic runtime linking for hot-swap of native functions
@@ -7,16 +7,31 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use crate::vm::NativeFn;
+use crate::vm::{NativeFn, NativeFnAsync};
 
 /// Maximum number of native functions that can be registered
 pub const MAX_NATIVE_FUNCTIONS: usize = 65535;  // u16::MAX
 
+/// Type of native function (sync or async)
+pub enum NativeFnType {
+    Sync(NativeFn),
+    Async(NativeFnAsync),
+}
+
+impl Clone for NativeFnType {
+    fn clone(&self) -> Self {
+        match self {
+            NativeFnType::Sync(f) => NativeFnType::Sync(*f),
+            NativeFnType::Async(f) => NativeFnType::Async(*f),
+        }
+    }
+}
+
 /// A native function entry with metadata for hot-swap support
 #[derive(Clone)]
 pub struct NativeFunctionEntry {
-    /// The function pointer
-    pub func: NativeFn,
+    /// The function pointer (sync or async)
+    pub func: NativeFnType,
     /// The function name for debugging and lookup
     pub name: String,
     /// Parameter count (optional, for validation)
@@ -28,7 +43,7 @@ pub struct NativeFunctionEntry {
 }
 
 /// Registry for native functions using indexed lookup
-/// 
+///
 /// Instead of HashMap<String, NativeFn>, we use:
 /// - Vec<NativeFunctionEntry> for O(1) indexed access
 /// - HashMap<String, u16> for name-to-index mapping (only during linking)
@@ -39,7 +54,7 @@ pub struct NativeFunctionRegistry {
     /// Name to index mapping for registration and linking
     name_to_index: HashMap<String, u16>,
     /// Fallback function for unknown natives
-    fallback: Option<NativeFn>,
+    fallback: Option<NativeFnType>,
     /// Version counter for tracking changes
     version: u64,
     /// Callback when functions are updated (for relinking)
@@ -70,13 +85,13 @@ impl NativeFunctionRegistry {
     }
 
     /// Register a native function and return its index
-    /// 
+    ///
     /// Returns the index that should be used for calls
     pub fn register(&mut self, name: &str, func: NativeFn) -> u16 {
         if let Some(&index) = self.name_to_index.get(name) {
             // Function already exists, update it (hot-swap)
             if let Some(Some(entry)) = self.functions.get_mut(index as usize) {
-                entry.func = func;
+                entry.func = NativeFnType::Sync(func);
                 entry.version = self.version;
                 self.version += 1;
                 if let Some(ref callback) = self.on_update {
@@ -94,7 +109,41 @@ impl NativeFunctionRegistry {
 
         self.name_to_index.insert(name.to_string(), index as u16);
         self.functions.push(Some(NativeFunctionEntry {
-            func,
+            func: NativeFnType::Sync(func),
+            name: name.to_string(),
+            param_count: None,
+            hot_swappable: true,
+            version: self.version,
+        }));
+        self.version += 1;
+
+        index as u16
+    }
+
+    /// Register an async native function and return its index
+    pub fn register_async(&mut self, name: &str, func: NativeFnAsync) -> u16 {
+        if let Some(&index) = self.name_to_index.get(name) {
+            // Function already exists, update it (hot-swap)
+            if let Some(Some(entry)) = self.functions.get_mut(index as usize) {
+                entry.func = NativeFnType::Async(func);
+                entry.version = self.version;
+                self.version += 1;
+                if let Some(ref callback) = self.on_update {
+                    callback();
+                }
+                return index;
+            }
+        }
+
+        // New function, assign an index
+        let index = self.functions.len();
+        if index >= MAX_NATIVE_FUNCTIONS {
+            panic!("Too many native functions registered (max: {}). Last function: {}", MAX_NATIVE_FUNCTIONS, name);
+        }
+
+        self.name_to_index.insert(name.to_string(), index as u16);
+        self.functions.push(Some(NativeFunctionEntry {
+            func: NativeFnType::Async(func),
             name: name.to_string(),
             param_count: None,
             hot_swappable: true,
@@ -115,7 +164,7 @@ impl NativeFunctionRegistry {
     ) -> u16 {
         if let Some(&index) = self.name_to_index.get(name) {
             if let Some(Some(entry)) = self.functions.get_mut(index as usize) {
-                entry.func = func;
+                entry.func = NativeFnType::Sync(func);
                 entry.param_count = param_count;
                 entry.hot_swappable = hot_swappable;
                 entry.version = self.version;
@@ -134,7 +183,7 @@ impl NativeFunctionRegistry {
 
         self.name_to_index.insert(name.to_string(), index);
         self.functions.push(Some(NativeFunctionEntry {
-            func,
+            func: NativeFnType::Sync(func),
             name: name.to_string(),
             param_count,
             hot_swappable,
@@ -146,10 +195,10 @@ impl NativeFunctionRegistry {
     }
 
     /// Get a native function by index (O(1) operation)
-    pub fn get_by_index(&self, index: u16) -> Option<NativeFn> {
+    pub fn get_by_index(&self, index: u16) -> Option<NativeFnType> {
         self.functions
             .get(index as usize)
-            .and_then(|entry| entry.as_ref().map(|e| e.func))
+            .and_then(|entry| entry.as_ref().map(|e| e.func.clone()))
     }
 
     /// Get a native function entry by index with metadata
@@ -164,12 +213,12 @@ impl NativeFunctionRegistry {
 
     /// Set the fallback function
     pub fn set_fallback(&mut self, func: NativeFn) {
-        self.fallback = Some(func);
+        self.fallback = Some(NativeFnType::Sync(func));
     }
 
     /// Get the fallback function
-    pub fn get_fallback(&self) -> Option<NativeFn> {
-        self.fallback
+    pub fn get_fallback(&self) -> Option<NativeFnType> {
+        self.fallback.clone()
     }
 
     /// Hot-swap a native function (replace implementation at runtime)
@@ -179,7 +228,7 @@ impl NativeFunctionRegistry {
         if let Some(&index) = self.name_to_index.get(name) {
             if let Some(Some(entry)) = self.functions.get_mut(index as usize) {
                 if entry.hot_swappable {
-                    entry.func = new_func;
+                    entry.func = NativeFnType::Sync(new_func);
                     entry.version = self.version;
                     self.version += 1;
                     if let Some(ref callback) = self.on_update {

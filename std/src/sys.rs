@@ -1,5 +1,4 @@
-use sparkler::vm::Instance;
-use sparkler::Value;
+use sparkler::{vm::Instance, Value, NativeResult};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -29,30 +28,30 @@ impl ProcessData {
     }
 }
 
-pub fn native_process_native_create(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_native_create(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process native_create requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process native_create requires instance".to_string()));
     };
 
     let mut inst = instance.lock().unwrap();
     inst.native_data = Arc::new(Mutex::new(Some(Box::new(ProcessData::new()))));
 
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_process_start(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_start(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.start requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.start requires instance".to_string()));
     };
 
     let command_str = if let Value::String(s) = &args[1] {
         s.clone()
     } else {
-        return Err(Value::String("Process.start requires a command string".to_string()));
+        return NativeResult::Ready(Value::String("Process.start requires a command string".to_string()));
     };
 
     let args_vec = if args.len() > 2 {
@@ -123,29 +122,29 @@ pub fn native_process_start(args: &mut Vec<Value>) -> Result<Value, Value> {
                     proc_data.stdout_handle = child.stdout.take();
                     proc_data.stderr_handle = child.stderr.take();
                     proc_data.child = Some(child);
-                    return Ok(Value::Null);
+                    return NativeResult::Ready(Value::Null);
                 }
                 Err(e) => {
-                    return Err(Value::String(format!("Failed to start process: {}", e)));
+                    return NativeResult::Ready(Value::String(format!("Failed to start process: {}", e)));
                 }
             }
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_write_stdin(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_write_stdin(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.write_stdin requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.write_stdin requires instance".to_string()));
     };
 
     let input = if let Value::String(s) = &args[1] {
         s.clone().into_bytes()
     } else {
-        return Err(Value::String("Process.write_stdin requires a string argument".to_string()));
+        return NativeResult::Ready(Value::String("Process.write_stdin requires a string argument".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -154,27 +153,27 @@ pub fn native_process_write_stdin(args: &mut Vec<Value>) -> Result<Value, Value>
         if let Some(proc_data) = data.downcast_mut::<ProcessData>() {
             if let Some(stdin) = &mut proc_data.stdin_handle {
                 match stdin.write_all(&input) {
-                    Ok(_) => return Ok(Value::Null),
+                    Ok(_) => return NativeResult::Ready(Value::Null),
                     Err(e) => {
-                        return Err(Value::String(format!("Failed to write to stdin: {}", e)))
+                        return NativeResult::Ready(Value::String(format!("Failed to write to stdin: {}", e)))
                     }
                 }
             } else {
-                return Err(Value::String(
+                return NativeResult::Ready(Value::String(
                     "Process stdin not available (may be inherited or closed)".to_string(),
                 ));
             }
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_close_stdin(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_close_stdin(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.close_stdin requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.close_stdin requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -182,18 +181,18 @@ pub fn native_process_close_stdin(args: &mut Vec<Value>) -> Result<Value, Value>
     if let Some(data) = native_data.as_mut() {
         if let Some(proc_data) = data.downcast_mut::<ProcessData>() {
             proc_data.stdin_handle = None;
-            return Ok(Value::Null);
+            return NativeResult::Ready(Value::Null);
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_read_stdout(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_read_stdout(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.read_stdout requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.read_stdout requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -205,36 +204,36 @@ pub fn native_process_read_stdout(args: &mut Vec<Value>) -> Result<Value, Value>
                 match stdout.read(&mut buffer) {
                     Ok(n) if n > 0 => {
                         proc_data.stdout_captured.extend_from_slice(&buffer[..n]);
-                        return Ok(Value::String(
+                        return NativeResult::Ready(Value::String(
                             String::from_utf8_lossy(&buffer[..n]).to_string(),
                         ));
                     }
                     Ok(_) => {
-                        return Ok(Value::String(String::new()));
+                        return NativeResult::Ready(Value::String(String::new()));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        return Ok(Value::String(String::new()));
+                        return NativeResult::Ready(Value::String(String::new()));
                     }
                     Err(e) => {
-                        return Err(Value::String(format!("Failed to read stdout: {}", e)));
+                        return NativeResult::Ready(Value::String(format!("Failed to read stdout: {}", e)));
                     }
                 }
             } else {
-                return Err(Value::String(
+                return NativeResult::Ready(Value::String(
                     "Process stdout not available (may be inherited or closed)".to_string(),
                 ));
             }
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_read_stderr(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_read_stderr(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.read_stderr requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.read_stderr requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -246,36 +245,36 @@ pub fn native_process_read_stderr(args: &mut Vec<Value>) -> Result<Value, Value>
                 match stderr.read(&mut buffer) {
                     Ok(n) if n > 0 => {
                         proc_data.stderr_captured.extend_from_slice(&buffer[..n]);
-                        return Ok(Value::String(
+                        return NativeResult::Ready(Value::String(
                             String::from_utf8_lossy(&buffer[..n]).to_string(),
                         ));
                     }
                     Ok(_) => {
-                        return Ok(Value::String(String::new()));
+                        return NativeResult::Ready(Value::String(String::new()));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        return Ok(Value::String(String::new()));
+                        return NativeResult::Ready(Value::String(String::new()));
                     }
                     Err(e) => {
-                        return Err(Value::String(format!("Failed to read stderr: {}", e)));
+                        return NativeResult::Ready(Value::String(format!("Failed to read stderr: {}", e)));
                     }
                 }
             } else {
-                return Err(Value::String(
+                return NativeResult::Ready(Value::String(
                     "Process stderr not available (may be inherited or closed)".to_string(),
                 ));
             }
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_wait(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_wait(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.wait requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.wait requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -306,26 +305,26 @@ pub fn native_process_wait(args: &mut Vec<Value>) -> Result<Value, Value> {
                             }
                         }
 
-                        return Ok(Value::Null);
+                        return NativeResult::Ready(Value::Null);
                     }
                     Err(e) => {
-                        return Err(Value::String(format!("Failed to wait for process: {}", e)));
+                        return NativeResult::Ready(Value::String(format!("Failed to wait for process: {}", e)));
                     }
                 }
             } else {
-                return Err(Value::String("Process not started or already completed".to_string()));
+                return NativeResult::Ready(Value::String("Process not started or already completed".to_string()));
             }
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_exit_code(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_exit_code(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.exit_code requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.exit_code requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -333,21 +332,21 @@ pub fn native_process_exit_code(args: &mut Vec<Value>) -> Result<Value, Value> {
     if let Some(data) = native_data.as_ref() {
         if let Some(proc_data) = data.downcast_ref::<ProcessData>() {
             if let Some(code) = proc_data.exit_code {
-                return Ok(Value::Int64(code as i64));
+                return NativeResult::Ready(Value::Int64(code as i64));
             } else {
-                return Ok(Value::Null);
+                return NativeResult::Ready(Value::Null);
             }
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_get_stdout(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_get_stdout(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.get_stdout requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.get_stdout requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -355,18 +354,18 @@ pub fn native_process_get_stdout(args: &mut Vec<Value>) -> Result<Value, Value> 
     if let Some(data) = native_data.as_ref() {
         if let Some(proc_data) = data.downcast_ref::<ProcessData>() {
             let output = String::from_utf8_lossy(&proc_data.stdout_captured).to_string();
-            return Ok(Value::String(output));
+            return NativeResult::Ready(Value::String(output));
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_get_stderr(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_get_stderr(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process.get_stderr requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process.get_stderr requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -374,18 +373,18 @@ pub fn native_process_get_stderr(args: &mut Vec<Value>) -> Result<Value, Value> 
     if let Some(data) = native_data.as_ref() {
         if let Some(proc_data) = data.downcast_ref::<ProcessData>() {
             let output = String::from_utf8_lossy(&proc_data.stderr_captured).to_string();
-            return Ok(Value::String(output));
+            return NativeResult::Ready(Value::String(output));
         }
     }
 
-    Err(Value::String("Process native data not initialized".to_string()))
+    NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_native_destroy(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_process_native_destroy(args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
-        return Err(Value::String("Process native_destroy requires instance".to_string()));
+        return NativeResult::Ready(Value::String("Process native_destroy requires instance".to_string()));
     };
 
     let inst = instance.lock().unwrap();
@@ -404,20 +403,20 @@ pub fn native_process_native_destroy(args: &mut Vec<Value>) -> Result<Value, Val
         }
     }
 
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_sys_env(args: &mut Vec<Value>) -> NativeResult {
     if !args.is_empty() {
         if let Value::String(key) = &args[0] {
             return match std::env::var(key) {
-                Ok(val) => Ok(Value::String(val)),
-                Err(_) => Ok(Value::Null),
+                Ok(val) => NativeResult::Ready(Value::String(val)),
+                Err(_) => NativeResult::Ready(Value::Null),
             };
         } else if let Value::Null = &args[0] {
             // Fall through to returning all env vars
         } else {
-            return Err(Value::String(
+            return NativeResult::Ready(Value::String(
                 "env requires a string argument or null".to_string(),
             ));
         }
@@ -428,7 +427,7 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
         env_map.insert(key, Value::String(value));
     }
 
-    Ok(Value::Instance(Arc::new(Mutex::new(Instance {
+    NativeResult::Ready(Value::Instance(Arc::new(Mutex::new(Instance {
         class: "Object".to_string(),
         fields: env_map,
         private_fields: std::collections::HashSet::new(),
@@ -436,19 +435,19 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> Result<Value, Value> {
     }))))
 }
 
-pub fn native_sys_set_pwd(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_sys_set_pwd(args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
-        return Err(Value::String("set_pwd requires a directory argument".to_string()));
+        return NativeResult::Ready(Value::String("set_pwd requires a directory argument".to_string()));
     }
 
     let dir = if let Value::String(s) = &args[0] {
         s.clone()
     } else {
-        return Err(Value::String("set_pwd requires a string argument".to_string()));
+        return NativeResult::Ready(Value::String("set_pwd requires a string argument".to_string()));
     };
 
     match std::env::set_current_dir(&dir) {
-        Ok(()) => Ok(Value::Null),
-        Err(e) => Err(Value::String(format!("Failed to change directory: {}", e))),
+        Ok(()) => NativeResult::Ready(Value::Null),
+        Err(e) => NativeResult::Ready(Value::String(format!("Failed to change directory: {}", e))),
     }
 }

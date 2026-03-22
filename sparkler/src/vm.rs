@@ -1,15 +1,37 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use crate::async_runtime::{self, Mutex as AsyncMutex};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use serde::ser::SerializeMap;
 use serde::de::{MapAccess, Visitor};
 use std::fmt;
-#[cfg(not(target_arch = "wasm32"))]
-use async_recursion::async_recursion;
 use std::any::Any;
 use crate::linker::NativeFunctionRegistry;
 use crate::opcodes::Opcode;
+use crate::async_runtime::Mutex as AsyncMutex;
+
+#[macro_export]
+macro_rules! debug_vm {
+    ($($arg:tt)*) => {
+        if cfg!(feature = "debug_log") {
+            println!($($arg)*);
+        }
+    };
+}
+
+thread_local! {
+    pub static ASYNC_CALLBACK_SENDER: std::cell::RefCell<Option<std::sync::mpsc::Sender<Result<Value, Value>>>> = std::cell::RefCell::new(None);
+}
+
+pub fn set_async_callback_sender(tx: std::sync::mpsc::Sender<Result<Value, Value>>) {
+    ASYNC_CALLBACK_SENDER.with(|s| {
+        *s.borrow_mut() = Some(tx);
+    });
+}
+
+pub fn get_async_callback_sender() -> Option<std::sync::mpsc::Sender<Result<Value, Value>>> {
+    let result = ASYNC_CALLBACK_SENDER.with(|s| s.borrow().clone());
+    result
+}
 
 /// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
 fn extract_base_class_name(name: &str) -> &str {
@@ -112,8 +134,8 @@ pub enum Value {
     Null,
     Instance(Arc<Mutex<Instance>>),
     Array(Arc<Mutex<Vec<Value>>>),
-    Promise(Arc<AsyncMutex<PromiseState>>),
     Exception(Exception),
+    Promise(Arc<AsyncMutex<PromiseState>>),
 }
 
 impl fmt::Debug for Value {
@@ -134,8 +156,8 @@ impl fmt::Debug for Value {
             Value::Null => write!(f, "Null"),
             Value::Instance(_) => write!(f, "Instance(...)"),
             Value::Array(_) => write!(f, "Array(...)"),
-            Value::Promise(_) => write!(f, "Promise(...)"),
             Value::Exception(e) => write!(f, "Exception({})", e.message),
+            Value::Promise(_) => write!(f, "Promise(...)"),
         }
     }
 }
@@ -148,8 +170,8 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Instance(a), Value::Instance(b)) => Arc::ptr_eq(a, b),
             (Value::Array(a), Value::Array(b)) => Arc::ptr_eq(a, b),
-            (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             (Value::Exception(a), Value::Exception(b)) => a.message == b.message,
+            (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             (Value::Int64(a), Value::Int64(b)) => a == b,
             (Value::Int64(a), Value::Int8(b)) => *a == *b as i64,
             (Value::Int64(a), Value::Int16(b)) => *a == *b as i64,
@@ -334,8 +356,8 @@ impl Value {
                         Value::Null => "null".to_string(),
                         Value::Instance(_) => "[instance]".to_string(),
                         Value::Array(_) => "[array]".to_string(),
-                        Value::Promise(_) => "[promise]".to_string(),
                         Value::Exception(e) => format!("[exception: {}]", e.message),
+                        Value::Promise(_) => "[promise]".to_string(),
                     };
                     fields_str.push(format!("\"{}\": {}", key, value_str));
                 }
@@ -346,17 +368,10 @@ impl Value {
                 let elements_str: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
                 format!("[{}]", elements_str.join(", "))
             }
-            Value::Promise(_) => "[promise]".to_string(),
             Value::Exception(e) => e.to_string(),
+            Value::Promise(_) => "[promise]".to_string(),
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum PromiseState {
-    Pending,
-    Resolved(Value),
-    Rejected(String),
 }
 
 #[derive(Clone)]
@@ -398,7 +413,35 @@ pub struct Function {
     pub source_file: Option<String>,
 }
 
-pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, Value>;
+/// Result from a native function call
+#[derive(Debug)]
+pub enum NativeResult {
+    /// Function completed immediately with a value
+    Ready(Value),
+    /// Function is pending, will callback with result later
+    Pending,
+}
+
+impl From<Value> for NativeResult {
+    fn from(val: Value) -> Self {
+        NativeResult::Ready(val)
+    }
+}
+
+impl From<Result<Value, Value>> for NativeResult {
+    fn from(result: Result<Value, Value>) -> Self {
+        match result {
+            Ok(val) => NativeResult::Ready(val),
+            Err(val) => NativeResult::Ready(val),
+        }
+    }
+}
+
+/// Async callback for native functions
+pub type AsyncCallback = Box<dyn FnOnce(Result<Value, Value>) + Send + 'static>;
+
+pub type NativeFn = fn(&mut Vec<Value>) -> NativeResult;
+pub type NativeFnAsync = fn(&mut Vec<Value>, AsyncCallback) -> NativeResult;
 
 pub struct NativeFunctionBuilder {
     name: String,
@@ -694,7 +737,7 @@ pub struct VM {
     /// Native function registry with indexed lookup (optimized)
     pub native_registry: NativeFunctionRegistry,
     /// Fallback native handler
-    pub fallback_native: Option<NativeFn>,
+    pub fallback_native: Option<crate::linker::NativeFnType>,
     /// Pending native methods to be attached to classes
     pending_native_methods: HashMap<String, HashMap<String, NativeFn>>,
     /// Pending class native_create callbacks
@@ -715,6 +758,20 @@ pub struct VM {
     pub is_debugging: bool,
     /// Vtables for interface method dispatch (indexed by vtable_idx)
     vtables: Vec<VTable>,
+    /// Pending native result register (for async native callbacks)
+    pending_native_result: Option<u8>,
+    /// Callback for pending native operation
+    pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
+    /// Saved bytecode for function call suspension
+    saved_bytecode: Option<Vec<u8>>,
+    /// Saved strings for function call suspension
+    saved_strings: Option<Vec<String>>,
+    /// Saved functions for function call suspension
+    saved_functions: Option<HashMap<String, Function>>,
+    /// Saved native registry for function call suspension
+    saved_native_registry: Option<NativeFunctionRegistry>,
+    /// Saved classes for function call suspension
+    saved_classes: Option<HashMap<String, Class>>,
 }
 
 /// VTable entry for interface method dispatch
@@ -764,6 +821,13 @@ impl VM {
             breakpoints: std::collections::HashSet::new(),
             is_debugging: false,
             vtables: Vec::new(),
+            pending_native_result: None,
+            pending_native_callback: None,
+            saved_bytecode: None,
+            saved_strings: None,
+            saved_functions: None,
+            saved_native_registry: None,
+            saved_classes: None,
         }
     }
 
@@ -810,7 +874,7 @@ impl VM {
     }
 
     pub fn register_fallback(&mut self, f: NativeFn) {
-        self.fallback_native = Some(f);
+        self.fallback_native = Some(crate::linker::NativeFnType::Sync(f));
         self.native_registry.set_fallback(f);
     }
 
@@ -929,131 +993,95 @@ impl VM {
         self.source_file.clone()
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_recursion)]
-    #[cfg_attr(target_arch = "wasm32", allow(unused))]
-    pub async fn run(&mut self) -> Result<RunResult, Value> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            use std::pin::Pin;
-            use std::future::Future;
-            
-            // On WASM, use Box::pin for recursive calls
-            let mut result: Option<Result<RunResult, Value>> = None;
-            
-            loop {
-                if self.pc() >= self.bytecode.len() {
-                    if let Some(frame) = self.call_stack.last() {
-                        if frame.is_native {
-                            self.call_stack.pop();
-                            if self.call_stack.is_empty() {
-                                break;
-                            }
-                            continue;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                
-                let opcode = self.bytecode[self.pc()];
-                let exec_result = match self.execute(opcode).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        let exception = match &e {
-                            Value::Exception(existing) => existing.clone(),
-                            _ => self.build_exception(&e),
-                        };
-
-                        let mut has_local_handler = false;
-                        if let Some(handler) = self.exception_handlers.last() {
-                            if handler.call_stack_depth == self.call_stack.len() {
-                                has_local_handler = true;
-                            }
-                        }
-
-                        if has_local_handler {
-                            let handler = self.exception_handlers.pop().unwrap();
-                            self.set_pc(handler.catch_pc);
-                            self.set_reg(handler.catch_register as u8, Value::Exception(exception));
-                            continue;
-                        } else {
-                            return Err(Value::Exception(exception));
-                        }
-                    }
-                };
-
-                if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
-                    if !self.call_stack.is_empty() {
-                        self.call_stack.pop();
-                        if self.call_stack.is_empty() {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                match exec_result {
-                    ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
-                    ExecutionResult::Breakpoint => {
-                        return Ok(RunResult::Breakpoint);
-                    }
-                    ExecutionResult::Continue => {}
-                }
+    pub fn run(&mut self) -> Result<RunResult, Value> {
+        loop {
+            if self.pc() >= self.bytecode.len() {
+                break;
             }
 
-            Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
-        }
-        
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            loop {
-                if self.pc() >= self.bytecode.len() {
-                    break;
-                }
-                
-                let opcode = self.bytecode[self.pc()];
-                let result = match self.execute(opcode).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        let exception = match &e {
-                            Value::Exception(existing) => existing.clone(),
-                            _ => self.build_exception(&e),
-                        };
+            let opcode = self.bytecode[self.pc()];
+            let result = match self.execute(opcode) {
+                Ok(res) => res,
+                Err(e) => {
+                    let exception = match &e {
+                        Value::Exception(existing) => existing.clone(),
+                        _ => self.build_exception(&e),
+                    };
 
-                        let mut has_local_handler = false;
-                        if let Some(handler) = self.exception_handlers.last() {
-                            if handler.call_stack_depth == self.call_stack.len() {
-                                has_local_handler = true;
-                            }
-                        }
-
-                        if has_local_handler {
-                            let handler = self.exception_handlers.pop().unwrap();
-                            self.set_pc(handler.catch_pc);
-                            self.set_reg(handler.catch_register as u8, Value::Exception(exception));
-                            continue;
-                        } else {
-                            return Err(Value::Exception(exception));
+                    let mut has_local_handler = false;
+                    if let Some(handler) = self.exception_handlers.last() {
+                        if handler.call_stack_depth == self.call_stack.len() {
+                            has_local_handler = true;
                         }
                     }
-                };
 
-                if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
-                    break;
-                }
-
-                match result {
-                    ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
-                    ExecutionResult::Breakpoint => {
-                        return Ok(RunResult::Breakpoint);
+                    if has_local_handler {
+                        let handler = self.exception_handlers.pop().unwrap();
+                        self.set_pc(handler.catch_pc);
+                        self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                        continue;
+                    } else {
+                        return Err(Value::Exception(exception));
                     }
-                    ExecutionResult::Continue => {}
                 }
+            };
+
+            if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
+                break;
             }
 
-            Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
+            match result {
+                ExecutionResult::Breakpoint => {
+                    return Ok(RunResult::Breakpoint);
+                }
+                ExecutionResult::Suspended => {
+                    // VM suspended waiting for async native callback
+                    return Ok(RunResult::Suspended);
+                }
+                ExecutionResult::Continue => {}
+            }
         }
+
+        Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
+    }
+
+    /// Set the callback for a pending native operation
+    pub fn set_pending_callback<F>(&mut self, callback: F)
+    where
+        F: FnOnce(Result<Value, Value>) + Send + 'static,
+    {
+        self.pending_native_callback = Some(Box::new(callback));
+    }
+
+    /// Resume execution after a native callback with the result
+    pub fn resume_with_result(&mut self, result: Result<Value, Value>) -> Result<RunResult, Value> {
+        debug_vm!("resume_with_result: PC = {}, bytecode.len() = {}", self.pc(), self.bytecode.len());
+        if let Some(reg) = self.pending_native_result.take() {
+            debug_vm!("resume_with_result: Setting reg {} with result", reg);
+            match result {
+                Ok(val) => self.set_reg(reg, val),
+                Err(val) => self.set_reg(reg, val),
+            }
+            // PC was already advanced past the Invoke instruction when it was executed
+            // Just continue execution from the current PC
+        }
+        // Restore saved state if any
+        if let Some(bytecode) = self.saved_bytecode.take() {
+            self.bytecode = bytecode;
+            self.strings = self.saved_strings.take().unwrap();
+            self.functions = self.saved_functions.take().unwrap();
+            self.native_registry = self.saved_native_registry.take().unwrap();
+            self.classes = self.saved_classes.take().unwrap();
+            debug_vm!("resume_with_result: Restored saved state, bytecode.len() = {}", self.bytecode.len());
+        }
+        // Continue execution
+        debug_vm!("resume_with_result: Calling self.run()");
+        self.run()
+    }
+
+    /// Check if VM is suspended
+    pub fn is_suspended(&self) -> bool {
+        self.pending_native_result.is_some()
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -1074,8 +1102,7 @@ impl VM {
         Exception::new(message, stack_trace)
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_recursion)]
-    async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
+    fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
         match opcode {
             x if x == Opcode::Nop as u8 => {
                 self.set_pc(self.pc() + 1);
@@ -1258,7 +1285,7 @@ impl VM {
             // Call function
             // Format: [Call, Rd, func_idx, arg_start, arg_count]
             // Rd receives the result, args are in registers [arg_start..arg_start+arg_count]
-            x if x == Opcode::Call as u8 || x == Opcode::CallAsync as u8 => {
+            x if x == Opcode::Call as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1289,18 +1316,30 @@ impl VM {
                     // Call native_create if it exists
                     if let Some(native_create) = class.native_create {
                         let mut args = vec![instance];
-                        native_create(&mut args)?;
+                        let _ = native_create(&mut args);
                     }
                 }
                 // Check if it's a native function using indexed registry lookup
                 else if let Some(idx) = self.native_registry.get_index(&func_name) {
-                    if let Some(native_f) = self.native_registry.get_by_index(idx) {
+                    if let Some(func_type) = self.native_registry.get_by_index(idx) {
                         let mut args = Vec::new();
                         for i in 0..arg_count {
                             args.push(self.get_reg(arg_start + i).clone());
                         }
-                        let result = native_f(&mut args)?;
-                        self.set_reg(rd, result);
+                        let result = match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(_f) => {
+                                NativeResult::Pending
+                            }
+                        };
+                        match result {
+                            NativeResult::Ready(val) => self.set_reg(rd, val),
+                            NativeResult::Pending => {
+                                // VM should suspend - save state for callback
+                                self.pending_native_result = Some(rd);
+                                return Ok(ExecutionResult::Suspended);
+                            }
+                        }
                     } else {
                         return Err(Value::String(format!("Native function not found: {}", func_name)));
                     }
@@ -1322,7 +1361,7 @@ impl VM {
                     // Calculate new frame base - place args in R1..Rn of new frame
                     // R0 of new frame will be the return value
                     let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-                    
+
                     // Check register bounds
                     if new_frame_base + function.register_count as usize > self.registers.len() {
                         return Err(Value::String("Register overflow: too many nested calls".to_string()));
@@ -1363,30 +1402,72 @@ impl VM {
                     let old_classes = std::mem::replace(&mut self.classes, new_classes);
 
                     // Execute function
-                    #[cfg(target_arch = "wasm32")]
-                    let result = Box::pin(self.run()).await;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let result = self.run().await;
-
-                    // Restore state
-                    self.bytecode = old_bytecode;
-                    self.strings = old_strings;
-                    self.functions = old_functions;
-                    self.native_registry = old_native_registry;
-                    self.classes = old_classes;
-
-                    // Pop frame and restore caller
-                    self.call_stack.pop();
-                    if let Some(frame) = self.call_stack.last_mut() {
-                        frame.pc = caller_pc;  // PC already points to next instruction
-                        frame.frame_base = caller_frame_base;
-                    }
+                    let result = self.run();
 
                     match result {
-                        Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
-                        Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                        Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
-                        Err(e) => return Err(e),
+                        Ok(RunResult::Finished(val)) => {
+                            // Restore state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+
+                            // Pop frame and restore caller
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;  // PC already points to next instruction
+                                frame.frame_base = caller_frame_base;
+                            }
+                            self.set_reg(rd, val.unwrap_or(Value::Null));
+                        }
+                        Ok(RunResult::Breakpoint) => {
+                            // Restore state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+
+                            // Pop frame and restore caller
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;
+                                frame.frame_base = caller_frame_base;
+                            }
+                            return Ok(ExecutionResult::Breakpoint);
+                        }
+                        Ok(RunResult::Suspended) => {
+                            // Save CURRENT state for later restoration (we're suspended inside the function)
+                            self.saved_bytecode = Some(self.bytecode.clone());
+                            self.saved_strings = Some(self.strings.clone());
+                            self.saved_functions = Some(self.functions.clone());
+                            self.saved_native_registry = Some(self.native_registry.clone());
+                            self.saved_classes = Some(self.classes.clone());
+                            // Then restore caller's state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+                            return Ok(ExecutionResult::Suspended);
+                        }
+                        Err(e) => {
+                            // Restore state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+
+                            // Pop frame and restore caller
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;
+                                frame.frame_base = caller_frame_base;
+                            }
+                            return Err(e);
+                        }
                     }
                 } else {
                     return Err(Value::String(format!("Function not found: {}", func_name)));
@@ -1395,7 +1476,7 @@ impl VM {
 
             // Call native function
             // Format: [CallNative, Rd, name_idx, arg_start, arg_count]
-            x if x == Opcode::CallNative as u8 || x == Opcode::CallNativeAsync as u8 => {
+            x if x == Opcode::CallNative as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1416,23 +1497,48 @@ impl VM {
 
                 // Try indexed lookup first, fall back to fallback handler
                 let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
-                    Some(f) => f(&mut args)?,
+                    Some(func_type) => {
+                        match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(_f) => {
+                                // For async functions, return Pending to suspend VM
+                                NativeResult::Pending
+                            }
+                        }
+                    }
                     None => {
-                        match &self.fallback_native {
-                            Some(f) => f(&mut args)?,
+                        match self.fallback_native.clone() {
+                            Some(func_type) => {
+                                match func_type {
+                                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                                    crate::linker::NativeFnType::Async(_f) => {
+                                        NativeResult::Pending
+                                    }
+                                }
+                            }
                             None => {
                                 return Err(Value::String(format!("Native function not found: {}", name)));
                             }
                         }
                     }
                 };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
+
+                match result {
+                    NativeResult::Ready(val) => {
+                        self.set_reg(rd, val);
+                        self.set_pc(self.pc() + 1);
+                    }
+                    NativeResult::Pending => {
+                        // VM should suspend - save state for callback
+                        self.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                }
             }
-            
+
             // Call native function by index (optimized - O(1) lookup)
             // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count]
-            x if x == Opcode::CallNativeIndexed as u8 || x == Opcode::CallNativeIndexedAsync as u8 => {
+            x if x == Opcode::CallNativeIndexed as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1442,7 +1548,7 @@ impl VM {
                 let func_idx_hi = self.bytecode[self.pc()] as u16;
                 self.set_pc(self.pc() + 1);
                 let func_index = (func_idx_hi << 8) | func_idx_lo;
-                
+
                 let arg_start = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
                 let arg_count = self.bytecode[self.pc()] as u8;
@@ -1454,24 +1560,48 @@ impl VM {
 
                 // Direct indexed lookup - O(1)
                 let result = match self.native_registry.get_by_index(func_index) {
-                    Some(f) => f(&mut args)?,
+                    Some(func_type) => {
+                        match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(_f) => {
+                                NativeResult::Pending
+                            }
+                        }
+                    }
                     None => {
-                        match &self.fallback_native {
-                            Some(f) => f(&mut args)?,
+                        match self.fallback_native.clone() {
+                            Some(func_type) => {
+                                match func_type {
+                                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                                    crate::linker::NativeFnType::Async(_f) => {
+                                        NativeResult::Pending
+                                    }
+                                }
+                            }
                             None => {
                                 return Err(Value::String(format!("Native function not found at index: {}", func_index)));
                             }
                         }
                     }
                 };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
+
+                match result {
+                    NativeResult::Ready(val) => {
+                        self.set_reg(rd, val);
+                        self.set_pc(self.pc() + 1);
+                    }
+                    NativeResult::Pending => {
+                        // VM should suspend - save state for callback
+                        self.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                }
             }
 
             // Invoke method on instance
             // Format: [Invoke, Rd, method_idx, arg_start, arg_count]
             // First argument (arg_start) is the receiver (self)
-            x if x == Opcode::Invoke as u8 || x == Opcode::InvokeAsync as u8 => {
+            x if x == Opcode::Invoke as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1681,12 +1811,21 @@ impl VM {
                         // Exact match lookup for native methods
                         if let Some(native_method) = class.native_methods.get(&name) {
                             let mut method_args = args.clone();
-                            let result = native_method(&mut method_args)?;
-                            // For constructors, return the instance (self) instead of the method's return value
-                            if name == "constructor" {
-                                self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
-                            } else {
-                                self.set_reg(rd, result);
+                            let result = native_method(&mut method_args);
+                            match result {
+                                NativeResult::Ready(val) => {
+                                    // For constructors, return the instance (self) instead of the method's return value
+                                    if name == "constructor" {
+                                        self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                                    } else {
+                                        self.set_reg(rd, val);
+                                    }
+                                }
+                                NativeResult::Pending => {
+                                    // VM should suspend - save state for callback
+                                    self.pending_native_result = Some(rd);
+                                    return Ok(ExecutionResult::Suspended);
+                                }
                             }
                         } else {
                             // For bytecode methods, try exact match first, then generic type parameter matching
@@ -1767,10 +1906,7 @@ impl VM {
                                 let old_classes = std::mem::replace(&mut self.classes, new_classes);
                                 let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
-                                #[cfg(target_arch = "wasm32")]
-                                let result = Box::pin(self.run()).await;
-                                #[cfg(not(target_arch = "wasm32"))]
-                                let result = self.run().await;
+                                let result = self.run();
 
                                 self.bytecode = old_bytecode;
                                 self.strings = old_strings;
@@ -1793,7 +1929,7 @@ impl VM {
                                         }
                                     },
                                     Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                    Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                                    Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                                     Err(e) => return Err(e),
                                 }
                             } else {
@@ -1851,7 +1987,7 @@ impl VM {
             // Format: [InvokeInterface, Rd, method_idx, arg_start, arg_count]
             // First argument (arg_start) is the receiver (self)
             // method_idx is the index into the class's vtable
-            x if x == Opcode::InvokeInterface as u8 || x == Opcode::InvokeInterfaceAsync as u8 => {
+            x if x == Opcode::InvokeInterface as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1936,10 +2072,7 @@ impl VM {
                         let old_classes = std::mem::replace(&mut self.classes, new_classes);
                         let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
-                        #[cfg(target_arch = "wasm32")]
-                        let result = Box::pin(self.run()).await;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let result = self.run().await;
+                        let result = self.run();
 
                         self.bytecode = old_bytecode;
                         self.strings = old_strings;
@@ -1962,7 +2095,7 @@ impl VM {
                                 }
                             },
                             Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                            Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                            Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                             Err(e) => return Err(e),
                         }
                     } else {
@@ -2032,10 +2165,7 @@ impl VM {
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
                             let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
-                            #[cfg(target_arch = "wasm32")]
-                            let result = Box::pin(self.run()).await;
-                            #[cfg(not(target_arch = "wasm32"))]
-                            let result = self.run().await;
+                            let result = self.run();
 
                             self.bytecode = old_bytecode;
                             self.strings = old_strings;
@@ -2051,7 +2181,7 @@ impl VM {
                             match result {
                                 Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
                                 Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
+                                Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                                 Err(e) => return Err(e),
                             }
                         } else {
@@ -2061,41 +2191,6 @@ impl VM {
                 } else {
                     return Err(Value::String(format!("Class '{}' not found", class_name)));
                 }
-            }
-
-            // Await a promise
-            // Format: [Await, Rd, Rs]
-            x if x == Opcode::Await as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-
-                let value = self.get_reg(rs).clone();
-                match value {
-                    Value::Promise(promise) => {
-                        loop {
-                            let mut state = promise.lock().await;
-                            match &mut *state {
-                                PromiseState::Pending => {
-                                    drop(state);
-                                    async_runtime::sleep(std::time::Duration::from_millis(10)).await;
-                                }
-                                PromiseState::Resolved(v) => {
-                                    self.set_reg(rd, v.clone());
-                                    break;
-                                }
-                                PromiseState::Rejected(e) => {
-                                    return Err(Value::String(format!("Promise rejected: {}", e)));
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        return Err(Value::String("Can only await Promise values".to_string()));
-                    }
-                }
-                self.set_pc(self.pc() + 1);
             }
 
             // Return from function
@@ -2808,17 +2903,24 @@ impl VM {
 }
 
 #[derive(Debug, Clone)]
+pub enum PromiseState {
+    Pending,
+    Resolved(Value),
+    Rejected(Value),
+}
+
+#[derive(Debug, Clone)]
 pub enum RunResult {
     Finished(Option<Value>),
     Breakpoint,
-    Awaiting(Arc<AsyncMutex<PromiseState>>),
+    Suspended,
 }
 
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     Continue,
     Breakpoint,
-    Awaiting(Arc<AsyncMutex<PromiseState>>),
+    Suspended,
 }
 
 impl Serialize for Value {
@@ -2857,9 +2959,8 @@ impl Serialize for Value {
                 }
                 seq.end()
             }
-            Value::Promise(_) => serializer.serialize_none(),
-
             Value::Exception(e) => serializer.serialize_str(&e.message),
+            Value::Promise(_) => serializer.serialize_str("[promise]"),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::parser::{Stmt, Expr, Literal, Parser, ClassDef, FunctionDef, BinaryOp, UnaryOp, InterpPart, CastType};
 use crate::lexer::Lexer;
 use crate::resolver::ModuleResolver;
-use crate::types::{TypeContext, Type, TypeChecker};
+use crate::types::{TypeContext, Type};
 use sparkler::vm::{Class, Value, Function, Method};
 use sparkler::opcodes::Opcode;
 
@@ -166,10 +166,6 @@ fn adjust_string_indices(bytecode: &mut Vec<u8>, offset: usize) {
             // TryStart: catch_pc, catch_reg (4 bytes)
             0x80 => {
                 i += 4;
-            }
-            // Await: Rd, Rs (3 bytes)
-            0x47 => {
-                i += 3;
             }
             _ => {
                 i += 1;
@@ -410,9 +406,6 @@ fn analyze_expr_liveness(expr: &crate::parser::Expr, liveness: &mut LivenessMap,
                     analyze_expr_liveness(e, liveness, position);
                 }
             }
-        }
-        crate::parser::Expr::Await { expr, .. } => {
-            analyze_expr_liveness(expr, liveness, position);
         }
         crate::parser::Expr::Cast { expr, .. } => {
             analyze_expr_liveness(expr, liveness, position);
@@ -3382,15 +3375,6 @@ impl Compiler {
                 Ok(rd)
             }
 
-            Expr::Await { expr, .. } => {
-                let r = self.compile_expr(expr, bytecode, strings, classes, type_context)?;
-                let rd = self.current_ctx.allocate_reg();
-                bytecode.push(Opcode::Await as u8);
-                bytecode.push(rd as u8);
-                bytecode.push(r as u8);
-                Ok(rd)
-            }
-
             Expr::Array { elements, .. } => {
                 let mut el_regs = Vec::new();
                 for el in elements {
@@ -3531,20 +3515,18 @@ impl Compiler {
                 Ok(rd)
             }
 
-            Expr::Lambda { params: _, return_type: _, body: _, span, is_async } => {
+            Expr::Lambda { params: _, return_type: _, body: _, span } => {
                 // Lambda compilation - this requires closure support in the VM
                 // For now, we provide a helpful error message
                 // Full implementation would require:
                 // 1. Creating a closure object that captures outer scope variables
                 // 2. Generating a function that can be called through the closure
                 // 3. VM support for closure invocation
-                // 4. For async lambdas: Promise handling and await support
 
-                let lambda_kind = if *is_async { "async lambda" } else { "lambda" };
                 return Err(format!(
-                    "{} at line {} is not yet supported at runtime. \
+                    "lambda at line {} is not yet supported at runtime. \
                     Lambda parsing and type checking work, but code generation requires VM closure support.",
-                    lambda_kind, span.line
+                    span.line
                 ));
             }
 
@@ -3674,22 +3656,10 @@ impl Compiler {
                     CastType::Float64 => Type::Float64,
                 }
             }
-            Expr::Lambda { params: _, return_type, body: _, span: _, is_async } => {
+            Expr::Lambda { params: _, return_type, body: _, span: _ } => {
                 if let Some(ret) = return_type {
                     let ty = Type::from_str(ret);
-                    if *is_async {
-                        Type::Promise(Box::new(ty))
-                    } else {
-                        Type::Function(vec![], Box::new(ty))
-                    }
-                } else {
-                    Type::Unknown
-                }
-            }
-            Expr::Await { expr, .. } => {
-                let inner_type = self.infer_expr_type(expr, ctx);
-                if let Type::Promise(inner) = inner_type {
-                    *inner
+                    Type::Function(vec![], Box::new(ty))
                 } else {
                     Type::Unknown
                 }
@@ -3757,7 +3727,6 @@ impl Compiler {
             Expr::Set { span, .. } => span.line,
             Expr::Interpolated { span, .. } => span.line,
             Expr::Range { span, .. } => span.line,
-            Expr::Await { span, .. } => span.line,
             Expr::Cast { span, .. } => span.line,
             Expr::Array { span, .. } => span.line,
             Expr::Index { span, .. } => span.line,
