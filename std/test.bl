@@ -117,7 +117,7 @@ native fn nativeAssertSame(expected: any, actual: any, message: str?) {}
 // ============== Public API ==============
 
 // Register and run a test - GTest style
-// Usage: test("Test name", (): void { assertEquals(1, 1) })
+// Usage: test("Test name", () { assertEquals(1, 1) })
 fn test(name: str, testFn: any) {
     let result = executeTest(name, testFn)
     TESTS = TESTS + [testFn]

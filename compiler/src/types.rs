@@ -57,12 +57,13 @@ impl Type {
             return Type::Optional(Box::new(Type::from_str(inner)));
         }
 
-        // Handle function types: (param_types) -> return_type
+        // Handle function types: (param_types) -> return_type  or  (param_types) for void return
         if s.starts_with('(') {
-            if let Some(arrow_pos) = s.find(") -> ") {
-                let params_str = &s[1..arrow_pos];
-                let return_str = &s[arrow_pos + 4..];
-
+            // First find the closing paren
+            if let Some(paren_end) = s.find(')') {
+                let params_str = &s[1..paren_end];
+                let rest = &s[paren_end + 1..];
+                
                 let param_types: Vec<Type> = if params_str.trim().is_empty() {
                     Vec::new()
                 } else {
@@ -71,8 +72,16 @@ impl Type {
                         .collect()
                 };
 
-                let return_type = Box::new(Type::from_str(return_str.trim()));
-                return Type::Function(param_types, return_type);
+                // Check if there's a return type
+                let rest_trimmed = rest.trim();
+                if rest_trimmed.starts_with("-> ") || rest_trimmed.starts_with("->") {
+                    let return_str = rest_trimmed.trim_start_matches("->").trim();
+                    let return_type = Box::new(Type::from_str(return_str.trim()));
+                    return Type::Function(param_types, return_type);
+                } else {
+                    // No return type - function returns nothing (void)
+                    return Type::Function(param_types, Box::new(Type::Null));
+                }
             }
         }
 
@@ -184,7 +193,12 @@ impl Type {
             }
             Type::Function(params, return_type) => {
                 let params_str: Vec<String> = params.iter().map(|p| p.to_str()).collect();
-                format!("({}) -> {}", params_str.join(", "), return_type.to_str())
+                if matches!(return_type.as_ref(), Type::Null) {
+                    // No return type (void) - just show parameters
+                    format!("({})", params_str.join(", "))
+                } else {
+                    format!("({}) -> {}", params_str.join(", "), return_type.to_str())
+                }
             }
             Type::SelfType => "self".to_string(),
             Type::Any => "any".to_string(),
@@ -231,7 +245,12 @@ impl Type {
             }
             Type::Function(params, return_type) => {
                 let params_str: Vec<String> = params.iter().map(|p| p.to_mangle_str()).collect();
-                format!("({}) -> {}", params_str.join(","), return_type.to_mangle_str())
+                if matches!(return_type.as_ref(), Type::Null) {
+                    // No return type (void) - just show parameters
+                    format!("({})", params_str.join(","))
+                } else {
+                    format!("({}) -> {}", params_str.join(","), return_type.to_mangle_str())
+                }
             }
             Type::SelfType => "self".to_string(),
             Type::Any => "any".to_string(),
@@ -3174,8 +3193,49 @@ impl TypeChecker {
                 } else {
                     ("", span)
                 };
-                
+
                 if !func_name.is_empty() {
+                    // Check if this is a variable with a function type (e.g., lambda variable)
+                    // or a variable of type 'any' (which can be called dynamically)
+                    let var_info_and_type = self.context.get_variable(func_name)
+                        .map(|var_info| (var_info.type_name.clone(), var_info.name.clone()));
+                    
+                    if let Some((var_type, _var_name)) = var_info_and_type {
+                        if let Type::Function(param_types, return_type) = &var_type {
+                            // This is a variable of function type - check the call
+                            let arg_types: Vec<Type> = args.iter()
+                                .map(|arg| self.infer_expr(arg))
+                                .collect();
+
+                            // Check argument count
+                            if param_types.len() != arg_types.len() {
+                                self.context.add_error_with_location(
+                                    format!("Function expects {} argument(s), got {}", param_types.len(), arg_types.len()),
+                                    span.line, span.column, None, None
+                                );
+                            } else {
+                                // Check argument types
+                                for (i, (param_type, arg_type)) in param_types.iter().zip(arg_types.iter()).enumerate() {
+                                    if !arg_type.is_assignable_to(param_type) && *param_type != Type::Unknown && *arg_type != Type::Unknown {
+                                        self.context.add_error_with_location(
+                                            format!("Argument {}: expected {}, got {}", i + 1, param_type.to_str(), arg_type.to_str()),
+                                            span.line, span.column, None, None
+                                        );
+                                    }
+                                }
+                            }
+
+                            return return_type.as_ref().clone();
+                        } else if var_type == Type::Any {
+                            // Variable of type 'any' can be called dynamically (no type checking)
+                            // Infer argument types but don't check them
+                            for arg in args {
+                                self.infer_expr(arg);
+                            }
+                            return Type::Any;
+                        }
+                    }
+
                     // Check if this is a generic function call like identity<T>(args)
                     let (base_func_name, type_args_str) = Self::parse_generic_function_name(func_name);
 
