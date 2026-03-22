@@ -2,6 +2,7 @@ use sparkler::{Value, NativeResult};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::runtime::Handle;
 
 pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
@@ -9,9 +10,33 @@ pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     }
     let url = args[0].to_string();
 
-    match http_get(&url) {
-        Ok(response) => NativeResult::Ready(Value::String(response)),
-        Err(e) => NativeResult::Ready(Value::String(e)),
+    // Use the global tokio runtime to spawn the async task
+    match Handle::try_current() {
+        Ok(handle) => {
+            // We're in a tokio runtime, spawn the task
+            let (tx, rx) = std::sync::mpsc::channel();
+            
+            handle.spawn(async move {
+                let result = http_get_async(&url).await;
+                let _ = tx.send(result);
+            });
+            
+            // Block waiting for result - this is the simple approach
+            // For true async, we'd return Pending and use callbacks
+            match rx.recv() {
+                Ok(Ok(response)) => NativeResult::Ready(Value::String(response)),
+                Ok(Err(e)) => NativeResult::Ready(Value::String(e)),
+                Err(_) => NativeResult::Ready(Value::String("Channel error".to_string())),
+            }
+        }
+        Err(_) => {
+            // No runtime available, create a new one
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(http_get_async(&url)) {
+                Ok(response) => NativeResult::Ready(Value::String(response)),
+                Err(e) => NativeResult::Ready(Value::String(e)),
+            }
+        }
     }
 }
 
@@ -24,9 +49,28 @@ pub fn native_http_post(args: &mut Vec<Value>) -> NativeResult {
     let url = args[0].to_string();
     let body = args[1].to_string();
 
-    match http_post(&url, &body) {
-        Ok(response) => NativeResult::Ready(Value::String(response)),
-        Err(e) => NativeResult::Ready(Value::String(e)),
+    match Handle::try_current() {
+        Ok(handle) => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            
+            handle.spawn(async move {
+                let result = http_post_async(&url, &body).await;
+                let _ = tx.send(result);
+            });
+            
+            match rx.recv() {
+                Ok(Ok(response)) => NativeResult::Ready(Value::String(response)),
+                Ok(Err(e)) => NativeResult::Ready(Value::String(e)),
+                Err(_) => NativeResult::Ready(Value::String("Channel error".to_string())),
+            }
+        }
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(http_post_async(&url, &body)) {
+                Ok(response) => NativeResult::Ready(Value::String(response)),
+                Err(e) => NativeResult::Ready(Value::String(e)),
+            }
+        }
     }
 }
 

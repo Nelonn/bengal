@@ -2,6 +2,7 @@ use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult};
 use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use std::sync::{Arc, RwLock};
+use std::sync::mpsc::{self, Sender, Receiver};
 
 pub use crate::vm::VTable;
 
@@ -17,13 +18,19 @@ pub struct Executor {
     pub vm: VM,
     /// Optional runtime linker for dynamic linking and hot-swap
     pub linker: Option<RuntimeLinker>,
+    /// Channel for receiving async native callbacks
+    callback_rx: Option<Receiver<Result<Value, Value>>>,
+    callback_tx: Option<Sender<Result<Value, Value>>>,
 }
 
 impl Executor {
     pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
         Self {
             vm: VM::new(),
             linker: None,
+            callback_rx: Some(rx),
+            callback_tx: Some(tx),
         }
     }
 
@@ -34,9 +41,12 @@ impl Executor {
         let mut vm = VM::new();
         // Share the same registry between VM and linker
         vm.native_registry = (*registry.read().unwrap()).clone();
+        let (tx, rx) = mpsc::channel();
         Self {
             vm,
             linker: Some(linker),
+            callback_rx: Some(rx),
+            callback_tx: Some(tx),
         }
     }
 
@@ -44,9 +54,12 @@ impl Executor {
     pub fn with_registry(registry: Arc<RwLock<NativeFunctionRegistry>>) -> Self {
         let mut vm = VM::new();
         vm.native_registry = (*registry.read().unwrap()).clone();
+        let (tx, rx) = mpsc::channel();
         Self {
             vm,
             linker: Some(RuntimeLinker::with_registry(registry)),
+            callback_rx: Some(rx),
+            callback_tx: Some(tx),
         }
     }
 
@@ -167,6 +180,9 @@ impl Executor {
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
+        // Take the callback receiver
+        let callback_rx = self.callback_rx.take().unwrap();
+
         loop {
             let result = self.vm.run().map_err(|e| e.to_string())?;
 
@@ -180,18 +196,23 @@ impl Executor {
                 }
                 RunResult::Suspended => {
                     // VM is suspended waiting for async native callback
-                    // The native function should have set up a callback that will resume execution
-                    // We need to wait for that callback to fire
-                    // For now, we'll use a simple polling approach - in production, you'd use channels/events
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                        if !self.vm.is_suspended() {
-                            // Callback fired and resumed execution, continue the loop
-                            break;
+                    // Wait for the callback to fire
+                    match callback_rx.recv() {
+                        Ok(result) => {
+                            // Resume VM with the result
+                            match self.vm.resume_with_result(result) {
+                                Ok(RunResult::Finished(val)) => return Ok(val),
+                                Ok(RunResult::Breakpoint) => {
+                                    println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
+                                }
+                                Ok(RunResult::Suspended) => {
+                                    // Still suspended, continue waiting
+                                }
+                                Err(e) => return Err(e.to_string()),
+                            }
                         }
+                        Err(_) => return Err("Callback channel closed".to_string()),
                     }
-                    // Continue running after resume
-                    continue;
                 }
             }
         }

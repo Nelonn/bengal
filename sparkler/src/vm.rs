@@ -412,7 +412,11 @@ impl From<Result<Value, Value>> for NativeResult {
     }
 }
 
+/// Async callback for native functions
+pub type AsyncCallback = Box<dyn FnOnce(Result<Value, Value>) + Send + 'static>;
+
 pub type NativeFn = fn(&mut Vec<Value>) -> NativeResult;
+pub type NativeFnAsync = fn(&mut Vec<Value>, AsyncCallback) -> NativeResult;
 
 pub struct NativeFunctionBuilder {
     name: String,
@@ -708,7 +712,7 @@ pub struct VM {
     /// Native function registry with indexed lookup (optimized)
     pub native_registry: NativeFunctionRegistry,
     /// Fallback native handler
-    pub fallback_native: Option<NativeFn>,
+    pub fallback_native: Option<crate::linker::NativeFnType>,
     /// Pending native methods to be attached to classes
     pending_native_methods: HashMap<String, HashMap<String, NativeFn>>,
     /// Pending class native_create callbacks
@@ -830,7 +834,7 @@ impl VM {
     }
 
     pub fn register_fallback(&mut self, f: NativeFn) {
-        self.fallback_native = Some(f);
+        self.fallback_native = Some(crate::linker::NativeFnType::Sync(f));
         self.native_registry.set_fallback(f);
     }
 
@@ -1264,12 +1268,17 @@ impl VM {
                 }
                 // Check if it's a native function using indexed registry lookup
                 else if let Some(idx) = self.native_registry.get_index(&func_name) {
-                    if let Some(native_f) = self.native_registry.get_by_index(idx) {
+                    if let Some(func_type) = self.native_registry.get_by_index(idx) {
                         let mut args = Vec::new();
                         for i in 0..arg_count {
                             args.push(self.get_reg(arg_start + i).clone());
                         }
-                        let result = native_f(&mut args);
+                        let result = match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(f) => {
+                                NativeResult::Pending
+                            }
+                        };
                         match result {
                             NativeResult::Ready(val) => self.set_reg(rd, val),
                             NativeResult::Pending => {
@@ -1389,17 +1398,32 @@ impl VM {
 
                 // Try indexed lookup first, fall back to fallback handler
                 let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
-                    Some(f) => f(&mut args),
+                    Some(func_type) => {
+                        match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(_f) => {
+                                // For async functions, return Pending to suspend VM
+                                NativeResult::Pending
+                            }
+                        }
+                    }
                     None => {
-                        match &self.fallback_native {
-                            Some(f) => f(&mut args),
+                        match self.fallback_native.clone() {
+                            Some(func_type) => {
+                                match func_type {
+                                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                                    crate::linker::NativeFnType::Async(_f) => {
+                                        NativeResult::Pending
+                                    }
+                                }
+                            }
                             None => {
                                 return Err(Value::String(format!("Native function not found: {}", name)));
                             }
                         }
                     }
                 };
-                
+
                 match result {
                     NativeResult::Ready(val) => {
                         self.set_reg(rd, val);
@@ -1437,17 +1461,31 @@ impl VM {
 
                 // Direct indexed lookup - O(1)
                 let result = match self.native_registry.get_by_index(func_index) {
-                    Some(f) => f(&mut args),
+                    Some(func_type) => {
+                        match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(f) => {
+                                NativeResult::Pending
+                            }
+                        }
+                    }
                     None => {
-                        match &self.fallback_native {
-                            Some(f) => f(&mut args),
+                        match self.fallback_native.clone() {
+                            Some(func_type) => {
+                                match func_type {
+                                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                                    crate::linker::NativeFnType::Async(_f) => {
+                                        NativeResult::Pending
+                                    }
+                                }
+                            }
                             None => {
                                 return Err(Value::String(format!("Native function not found at index: {}", func_index)));
                             }
                         }
                     }
                 };
-                
+
                 match result {
                     NativeResult::Ready(val) => {
                         self.set_reg(rd, val);
