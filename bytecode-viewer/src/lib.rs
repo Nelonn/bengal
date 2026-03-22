@@ -51,6 +51,32 @@ fn display_functions(bytecode: &Bytecode) {
     }
 }
 
+/// Resolve function name from index (for CALL instruction)
+/// The CALL instruction uses a string index, not a function table index
+fn resolve_function_name(bytecode: &Bytecode, func_idx: usize) -> String {
+    bytecode.strings.get(func_idx)
+        .map(|s| s.clone())
+        .unwrap_or_else(|| format!("func_{}", func_idx))
+}
+
+/// Resolve method name from index (for INVOKE instruction)
+/// The INVOKE instruction uses a string index, not a method table index
+fn resolve_method_name(bytecode: &Bytecode, method_idx: usize) -> String {
+    bytecode.strings.get(method_idx)
+        .map(|s| s.clone())
+        .unwrap_or_else(|| format!("method_{}", method_idx))
+}
+
+/// Resolve method name from vtable index (for INVOKE_INTERFACE)
+/// The method_idx is an index into the class's vtable
+fn resolve_vtable_method_name(_bytecode: &Bytecode, vtable_idx: usize, method_idx: usize) -> String {
+    // For INVOKE_INTERFACE, we need to find which class the vtable belongs to
+    // and then look up the method name from the vtable
+    // Since we don't have the instance at compile time, we'll show the vtable index
+    // and method index for debugging purposes
+    format!("vtable_{}.method_{}", vtable_idx, method_idx)
+}
+
 /// Display module-level (root) code
 fn display_root_code(bytecode: &Bytecode) {
     if bytecode.data.is_empty() {
@@ -69,7 +95,7 @@ fn display_root_code(bytecode: &Bytecode) {
 
         let address = format!("{:04x}", pc);
 
-        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, &bytecode.strings);
+        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
 
         if operands.is_empty() {
             println!("  {} | {}", address, opcode_name);
@@ -97,7 +123,7 @@ fn display_function(function: &Function, bytecode: &Bytecode) {
 
         let address = format!("{:04x}", pc);
 
-        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, &bytecode.strings);
+        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
 
         if operands.is_empty() {
             println!("  {} | {}", address, opcode_name);
@@ -112,7 +138,8 @@ fn display_function(function: &Function, bytecode: &Bytecode) {
 }
 
 /// Decode instruction and return (name, operands_string, operand_byte_count)
-fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]) -> (String, String, usize) {
+fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecode) -> (String, String, usize) {
+    let strings = &bytecode.strings;
     match opcode {
         Opcode::Nop => ("NOP".to_string(), String::new(), 0),
 
@@ -231,8 +258,9 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
                 let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, func_{}, args=[R{}..R{}]",
-                    data[pc + 1], func_idx, arg_start, arg_end);
+                let func_name = resolve_function_name(bytecode, func_idx);
+                let operands = format!("R{}, {}, args=[R{}..R{}]",
+                    data[pc + 1], func_name, arg_start, arg_end);
                 (format!("CALL"), operands, 4)
             } else {
                 ("CALL".to_string(), String::new(), 0)
@@ -262,8 +290,9 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
                 let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, method_{}, args=[R{}..R{}]",
-                    data[pc + 1], method_idx, arg_start, arg_end);
+                let method_name = resolve_method_name(bytecode, method_idx);
+                let operands = format!("R{}, {}, args=[R{}..R{}]",
+                    data[pc + 1], method_name, arg_start, arg_end);
                 (format!("INVOKE"), operands, 4)
             } else {
                 ("INVOKE".to_string(), String::new(), 0)
@@ -284,8 +313,9 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
                 let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, vtable_{}, args=[R{}..R{}]",
-                    data[pc + 1], vtable_idx, arg_start, arg_end);
+                let method_name = resolve_vtable_method_name(bytecode, vtable_idx, arg_start as usize);
+                let operands = format!("R{}, {}, args=[R{}..R{}]",
+                    data[pc + 1], method_name, arg_start, arg_end);
                 (format!("INVOKE_INTERFACE"), operands, 4)
             } else {
                 ("INVOKE_INTERFACE".to_string(), String::new(), 0)
