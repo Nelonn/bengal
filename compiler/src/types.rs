@@ -2387,6 +2387,32 @@ impl TypeChecker {
         &mut self.context
     }
 
+    /// Get span information from an expression for error reporting
+    fn get_expr_span(expr: &Expr) -> (usize, usize) {
+        match expr {
+            Expr::Literal(lit) => match lit {
+                Literal::String(_, span) => (span.line, span.column),
+                Literal::Int(_, span) => (span.line, span.column),
+                Literal::Float(_, span) => (span.line, span.column),
+                Literal::Bool(_, span) => (span.line, span.column),
+                Literal::Null(span) => (span.line, span.column),
+            },
+            Expr::Variable { span, .. } => (span.line, span.column),
+            Expr::Binary { span, .. } => (span.line, span.column),
+            Expr::Unary { span, .. } => (span.line, span.column),
+            Expr::Call { span, .. } => (span.line, span.column),
+            Expr::Get { span, .. } => (span.line, span.column),
+            Expr::Set { span, .. } => (span.line, span.column),
+            Expr::Interpolated { span, .. } => (span.line, span.column),
+            Expr::Range { span, .. } => (span.line, span.column),
+            Expr::Cast { span, .. } => (span.line, span.column),
+            Expr::Array { span, .. } => (span.line, span.column),
+            Expr::Index { span, .. } => (span.line, span.column),
+            Expr::ObjectLiteral { span, .. } => (span.line, span.column),
+            Expr::Lambda { span, .. } => (span.line, span.column),
+        }
+    }
+
     fn collect_definitions(&mut self, statements: &[Stmt], skip_functions: bool) {
         for stmt in statements {
             match stmt {
@@ -2512,14 +2538,17 @@ impl TypeChecker {
                     let deduced_type = self.infer_expr_with_expected_type(expr, &Some(expected_type.clone()));
 
                     if !deduced_type.is_assignable_to(&expected_type) {
-                        self.context.add_error(
+                        self.context.add_error_with_location(
                             format!(
                                 "Type mismatch: cannot assign {} to variable '{}' of type {}",
                                 deduced_type.to_str(),
                                 name,
                                 expected_type.to_str()
                             ),
-                            0
+                            span.line,
+                            span.column,
+                            None,
+                            None,
                         );
                     }
                 } else if let Some(current_class) = &self.context.current_class {
@@ -2626,26 +2655,32 @@ impl TypeChecker {
                 };
 
                 if !var_type.is_numeric() {
-                    self.context.add_error(
+                    self.context.add_error_with_location(
                         format!(
                             "Cannot use '{}' operator on non-numeric type '{}'",
                             op_name,
                             var_type.to_str()
                         ),
-                        0
+                        span.line,
+                        span.column,
+                        None,
+                        None,
                     );
                 } else if !expr_type.is_numeric() {
-                    self.context.add_error(
+                    self.context.add_error_with_location(
                         format!(
                             "Cannot use '{}' operator with non-numeric type '{}'",
                             op_name,
                             expr_type.to_str()
                         ),
-                        0
+                        span.line,
+                        span.column,
+                        None,
+                        None,
                     );
                 }
             }
-            Stmt::Return { expr, .. } => {
+            Stmt::Return { expr, span } => {
                 let expected_return = self.context.current_method_return.clone();
 
                 // Type check the return expression (even if there's no expected return type)
@@ -2654,13 +2689,17 @@ impl TypeChecker {
                         // Use expected type for type deduction
                         let expr_type = self.infer_expr_with_expected_type(e, &expected_return);
                         if !expr_type.is_assignable_to(expected) {
-                            self.context.add_error(
+                            let (line, column) = Self::get_expr_span(e);
+                            self.context.add_error_with_location(
                                 format!(
                                     "Return type mismatch: expected {}, got {}",
                                     expected.to_str(),
                                     expr_type.to_str()
                                 ),
-                                0
+                                line,
+                                column,
+                                None,
+                                None,
                             );
                         }
                     } else {
@@ -2670,12 +2709,15 @@ impl TypeChecker {
                     }
                 } else if let Some(expected) = &expected_return {
                     if !matches!(expected, Type::Null | Type::Unknown) {
-                        self.context.add_error(
+                        self.context.add_error_with_location(
                             format!(
                                 "Expected return value of type {}, but no value returned",
                                 expected.to_str()
                             ),
-                            0
+                            span.line,
+                            span.column,
+                            None,
+                            None,
                         );
                     }
                 }
@@ -2686,9 +2728,13 @@ impl TypeChecker {
             Stmt::If { condition, then_branch, else_branch, .. } => {
                 let cond_type = self.infer_expr(condition);
                 if cond_type != Type::Bool && cond_type != Type::Unknown {
-                    self.context.add_error(
+                    let (line, column) = Self::get_expr_span(condition);
+                    self.context.add_error_with_location(
                         format!("Expected bool condition, got {}", cond_type.to_str()),
-                        0
+                        line,
+                        column,
+                        None,
+                        None,
                     );
                 }
 
@@ -2714,9 +2760,13 @@ impl TypeChecker {
             Stmt::While { condition, body, .. } => {
                 let cond_type = self.infer_expr(condition);
                 if cond_type != Type::Bool && cond_type != Type::Unknown {
-                    self.context.add_error(
+                    let (line, column) = Self::get_expr_span(condition);
+                    self.context.add_error_with_location(
                         format!("Expected bool condition for while, got {}", cond_type.to_str()),
-                        0
+                        line,
+                        column,
+                        None,
+                        None,
                     );
                 }
                 for stmt in body {
@@ -2758,16 +2808,20 @@ impl TypeChecker {
             if let Some(default_expr) = &field.default {
                 let field_type = Type::from_str(&field.type_name);
                 let expr_type = self.infer_expr_with_expected_type(default_expr, &Some(field_type.clone()));
-                
+
                 if !expr_type.is_assignable_to(&field_type) {
-                    self.context.add_error(
+                    let (line, column) = Self::get_expr_span(default_expr);
+                    self.context.add_error_with_location(
                         format!(
                             "Type mismatch: cannot assign {} to field '{}' of type {}",
                             expr_type.to_str(),
                             field.name,
                             field_type.to_str()
                         ),
-                        0
+                        line,
+                        column,
+                        None,
+                        None,
                     );
                 }
             }
@@ -2978,7 +3032,7 @@ impl TypeChecker {
                     Type::Unknown
                 }
             }
-            Expr::Binary { left, op, right, .. } => {
+            Expr::Binary { left, op, right, span } => {
                 let left_type = self.infer_expr(left);
                 let right_type = self.infer_expr(right);
 
@@ -2989,28 +3043,37 @@ impl TypeChecker {
                         if left_type != right_type &&
                            left_type != Type::Unknown &&
                            right_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!(
                                     "Cannot compare {} with {} using equality operator",
                                     left_type.to_str(),
                                     right_type.to_str()
                                 ),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         Type::Bool
                     }
                     crate::parser::BinaryOp::And | crate::parser::BinaryOp::Or => {
                         if left_type != Type::Bool && left_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected bool for logical operator, got {}", left_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         if right_type != Type::Bool && right_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected bool for logical operator, got {}", right_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         Type::Bool
@@ -3024,15 +3087,21 @@ impl TypeChecker {
 
                         // Arithmetic operations require numeric types
                         if !is_numeric_type(&left_type) && left_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for arithmetic operation, got {}", left_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         if !is_numeric_type(&right_type) && right_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for arithmetic operation, got {}", right_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         // Result type is the more precise type (float > int)
@@ -3052,15 +3121,21 @@ impl TypeChecker {
                     crate::parser::BinaryOp::Pow => {
                         // Power operation requires numeric types and returns float
                         if !is_numeric_type(&left_type) && left_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for power operation, got {}", left_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         if !is_numeric_type(&right_type) && right_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for power operation, got {}", right_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         Type::Float
@@ -3069,15 +3144,21 @@ impl TypeChecker {
                     crate::parser::BinaryOp::GreaterEqual | crate::parser::BinaryOp::LessEqual => {
                         // Comparison operations require numeric types and return bool
                         if !is_numeric_type(&left_type) && left_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for comparison, got {}", left_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         if !is_numeric_type(&right_type) && right_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for comparison, got {}", right_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         Type::Bool
@@ -3087,15 +3168,21 @@ impl TypeChecker {
                     crate::parser::BinaryOp::ShiftRight => {
                         // Bitwise operations require integer types
                         if !is_integer_type(&left_type) && left_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected integer type for bitwise operation, got {}", left_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         if !is_integer_type(&right_type) && right_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected integer type for bitwise operation, got {}", right_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         // For shift operators, the right operand should be an integer (shift amount)
@@ -3126,14 +3213,17 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::Unary { op, expr, .. } => {
+            Expr::Unary { op, expr, span } => {
                 let inner_type = self.infer_expr(expr);
                 match op {
                     crate::parser::UnaryOp::Not => {
                         if inner_type != Type::Bool && inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected bool for ! operator, got {}", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         Type::Bool
@@ -3141,9 +3231,12 @@ impl TypeChecker {
                     crate::parser::UnaryOp::BitNot => {
                         // Bitwise NOT requires integer types
                         if !is_integer_type(&inner_type) && inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected integer type for bitwise NOT, got {}", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         // Result type is the same as operand type
@@ -3157,9 +3250,12 @@ impl TypeChecker {
                     crate::parser::UnaryOp::Negate => {
                         // Negation works on numeric types and returns the same type
                         if inner_type != Type::Int && inner_type != Type::Float && !inner_type.is_numeric() && inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for unary minus, got {}", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         inner_type
@@ -3167,9 +3263,12 @@ impl TypeChecker {
                     crate::parser::UnaryOp::PrefixIncrement | crate::parser::UnaryOp::PostfixIncrement => {
                         // Increment operator works on numeric types and returns the original type
                         if !inner_type.is_numeric() && inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for ++ operator, got {}", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         inner_type
@@ -3177,9 +3276,12 @@ impl TypeChecker {
                     crate::parser::UnaryOp::PrefixDecrement | crate::parser::UnaryOp::PostfixDecrement | crate::parser::UnaryOp::Decrement => {
                         // Decrement operator works on numeric types and returns the original type
                         if !inner_type.is_numeric() && inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Expected numeric type for -- operator, got {}", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                         inner_type
@@ -3292,7 +3394,7 @@ impl TypeChecker {
                                     mangled_name: sig.mangled_name.clone(),
                                 };
 
-                                self.check_function_call(&substituted_sig, args, func_name);
+                                self.check_function_call(&substituted_sig, args, func_name, func_span.line, func_span.column);
 
                                 return substituted_sig.return_type.clone().unwrap_or(Type::Unknown);
                             }
@@ -3310,7 +3412,7 @@ impl TypeChecker {
                     // Use resolve_function_call for proper overload resolution
                     let func_sig = self.context.resolve_function_call(func_name, &arg_types);
                     if let Some(sig) = func_sig.cloned() {
-                        self.check_function_call(&sig, args, func_name);
+                        self.check_function_call(&sig, args, func_name, func_span.line, func_span.column);
                         sig.return_type.clone().unwrap_or(Type::Unknown)
                     } else {
                         // Function not found or no matching overload
@@ -3453,13 +3555,13 @@ impl TypeChecker {
                                                     type_params: sig.type_params.clone(),
                                                     mangled_name: sig.mangled_name.clone(),
                                                 };
-                                                self.check_method_call(&substituted_sig, args, "constructor", &base_class_name);
+                                                self.check_method_call(&substituted_sig, args, "constructor", &base_class_name, span.line, span.column);
                                                 break;
                                             }
                                         }
                                     }
                                 }
-                                
+
                                 if !found_matching_ctor && !args.is_empty() {
                                     self.context.add_error_with_location(
                                         format!("Class '{}' does not accept constructor arguments", base_class_name),
@@ -3471,7 +3573,7 @@ impl TypeChecker {
                             // Non-generic class - use normal resolution
                             let ctor_sig = self.context.resolve_method_call(&base_class_name, "constructor", &arg_types);
                             if let Some(sig) = ctor_sig.cloned() {
-                                self.check_method_call(&sig, args, "constructor", &base_class_name);
+                                self.check_method_call(&sig, args, "constructor", &base_class_name, span.line, span.column);
                             } else if !args.is_empty() {
                                 self.context.add_error_with_location(
                                     format!("Class '{}' does not accept constructor arguments", base_class_name),
@@ -3498,7 +3600,7 @@ impl TypeChecker {
                                     .collect();
                                 let ctor_sig = self.context.resolve_method_call(&nested_class_name, "constructor", &arg_types);
                                 if let Some(sig) = ctor_sig.cloned() {
-                                    self.check_method_call(&sig, args, "constructor", &nested_class_name);
+                                    self.check_method_call(&sig, args, "constructor", &nested_class_name, method_span.line, method_span.column);
                                 } else if !args.is_empty() {
                                     self.context.add_error_with_location(
                                         format!("Class '{}' does not accept constructor arguments", nested_class_name),
@@ -3541,7 +3643,7 @@ impl TypeChecker {
                                 self.context.add_error_with_location(err, method_span.line, method_span.column, None, None);
                             }
 
-                            self.check_method_call(&sig, args, name, &class_name);
+                            self.check_method_call(&sig, args, name, &class_name, method_span.line, method_span.column);
                             return sig.return_type.clone().unwrap_or(Type::Unknown);
                         } else if !matches!(object_type, Type::Class(_)) {
                             // If it's a built-in type and method not found, don't fallback to module lookup
@@ -3552,7 +3654,7 @@ impl TypeChecker {
                             return Type::Unknown;
                         }
                     }
-                    
+
                     if let Expr::Variable { name: module_name, .. } = object.as_ref() {
                         // This is module.function() call - look up qualified name
                         // Try to resolve as a qualified module function
@@ -3561,7 +3663,7 @@ impl TypeChecker {
                             let _arg_types: Vec<Type> = args.iter()
                                 .map(|arg| self.infer_expr(arg))
                                 .collect();
-                            self.check_function_call(&sig, args, &sig.name);
+                            self.check_function_call(&sig, args, &sig.name, method_span.line, method_span.column);
                             return sig.return_type.clone().unwrap_or(Type::Unknown);
                         } else if let Some(qualified_class_name) = self.context.resolve_qualified_class(module_name, name) {
                             // It's a qualified class instantiation
@@ -3570,7 +3672,7 @@ impl TypeChecker {
                                 .collect();
                             let ctor_sig = self.context.resolve_method_call(&qualified_class_name, "constructor", &arg_types);
                             if let Some(sig) = ctor_sig.cloned() {
-                                self.check_method_call(&sig, args, "constructor", &qualified_class_name);
+                                self.check_method_call(&sig, args, "constructor", &qualified_class_name, method_span.line, method_span.column);
                             } else if !args.is_empty() {
                                 self.context.add_error_with_location(
                                     format!("Class '{}' does not accept constructor arguments", qualified_class_name),
@@ -3842,34 +3944,40 @@ impl TypeChecker {
                 }
                 Type::Int
             }
-            Expr::Cast { expr, target_type, .. } => {
+            Expr::Cast { expr, target_type, span } => {
                 // Type check the inner expression
                 let inner_type = self.infer_expr(expr);
-                
+
                 // Validate cast is reasonable (allow most casts, warn about nonsensical ones)
                 match target_type {
-                    CastType::Int | CastType::Int8 | CastType::UInt8 | CastType::Int16 | CastType::UInt16 | 
+                    CastType::Int | CastType::Int8 | CastType::UInt8 | CastType::Int16 | CastType::UInt16 |
                     CastType::Int32 | CastType::UInt32 | CastType::Int64 | CastType::UInt64 => {
                         // int() can accept: float, str, bool, int, and other numeric types
-                        if !inner_type.is_numeric() && 
-                           inner_type != Type::Str && 
-                           inner_type != Type::Bool && 
+                        if !inner_type.is_numeric() &&
+                           inner_type != Type::Str &&
+                           inner_type != Type::Bool &&
                            inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Cannot cast {} to integer type", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                     }
                     CastType::Float | CastType::Float32 | CastType::Float64 => {
                         // float() can accept: int, str, bool, float, and other numeric types
-                        if !inner_type.is_numeric() && 
-                           inner_type != Type::Str && 
+                        if !inner_type.is_numeric() &&
+                           inner_type != Type::Str &&
                            inner_type != Type::Bool &&
                            inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Cannot cast {} to float type", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                     }
@@ -3878,13 +3986,16 @@ impl TypeChecker {
                     }
                     CastType::Bool => {
                         // bool() can accept: int, float, str, bool
-                        if !inner_type.is_numeric() && 
+                        if !inner_type.is_numeric() &&
                            inner_type != Type::Str &&
                            inner_type != Type::Bool &&
                            inner_type != Type::Unknown {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!("Cannot cast {} to bool", inner_type.to_str()),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
                     }
@@ -3921,14 +4032,17 @@ impl TypeChecker {
                 }
                 Type::Array(Box::new(element_type))
             }
-            Expr::Index { object, index, .. } => {
+            Expr::Index { object, index, span } => {
                 let object_type = self.infer_expr(object);
                 let index_type = self.infer_expr(index);
 
                 if index_type != Type::Int && index_type != Type::Unknown {
-                    self.context.add_error(
+                    self.context.add_error_with_location(
                         format!("Array index must be an integer, got {}", index_type.to_str()),
-                        0
+                        span.line,
+                        span.column,
+                        None,
+                        None,
                     );
                 }
 
@@ -3937,9 +4051,12 @@ impl TypeChecker {
                     Type::Str => Type::Str,
                     Type::Unknown => Type::Unknown,
                     _ => {
-                        self.context.add_error(
+                        self.context.add_error_with_location(
                             format!("Type {} does not support indexing", object_type.to_str()),
-                            0
+                            span.line,
+                            span.column,
+                            None,
+                            None,
                         );
                         Type::Unknown
                     }
@@ -4162,20 +4279,27 @@ impl TypeChecker {
                                     let field_value_type = self.infer_expr_with_expected_type(&field.value, &Some(expected_field_type.clone()));
 
                                     if !field_value_type.is_assignable_to(&expected_field_type) {
-                                        self.context.add_error(
+                                        let (line, column) = Self::get_expr_span(&field.value);
+                                        self.context.add_error_with_location(
                                             format!(
                                                 "Field '{}' has wrong type: expected {}, got {}",
                                                 field.name,
                                                 expected_field_type.to_str(),
                                                 field_value_type.to_str()
                                             ),
-                                            0
+                                            line,
+                                            column,
+                                            None,
+                                            None,
                                         );
                                     }
                                 } else {
-                                    self.context.add_error(
+                                    self.context.add_error_with_location(
                                         format!("Unknown field '{}' for class '{}'", field.name, class_name),
-                                        0
+                                        span.line,
+                                        span.column,
+                                        None,
+                                        None,
                                     );
                                 }
                             }
@@ -4192,19 +4316,22 @@ impl TypeChecker {
                 }
                 Type::Unknown
             }
-            Expr::Lambda { params, return_type: _, body, .. } => {
+            Expr::Lambda { params, return_type: _, body, span } => {
                 // Type check lambda with expected function type
                 if let Some(expected) = expected_type {
                     if let Type::Function(expected_params, expected_return) = expected {
                         // Verify parameter count matches
                         if params.len() != expected_params.len() {
-                            self.context.add_error(
+                            self.context.add_error_with_location(
                                 format!(
                                     "Lambda expects {} parameters, but {} were provided",
                                     expected_params.len(),
                                     params.len()
                                 ),
-                                0
+                                span.line,
+                                span.column,
+                                None,
+                                None,
                             );
                         }
 
@@ -4250,17 +4377,20 @@ impl TypeChecker {
         }
     }
 
-    fn check_function_call(&mut self, func_sig: &FunctionSignature, args: &[Expr], func_name: &str) {
+    fn check_function_call(&mut self, func_sig: &FunctionSignature, args: &[Expr], func_name: &str, span_line: usize, span_column: usize) {
         // Check argument count
         if args.len() != func_sig.params.len() {
-            self.context.add_error(
+            self.context.add_error_with_location(
                 format!(
                     "Function '{}' expects {} arguments, got {}",
                     func_name,
                     func_sig.params.len(),
                     args.len()
                 ),
-                0
+                span_line,
+                span_column,
+                None,
+                None,
             );
             return;
         }
@@ -4271,7 +4401,8 @@ impl TypeChecker {
 
             if let Some(expected_type) = &param.type_name {
                 if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
-                    self.context.add_error(
+                    let (line, column) = Self::get_expr_span(arg);
+                    self.context.add_error_with_location(
                         format!(
                             "Argument {} of function '{}' has wrong type: expected {}, got {}",
                             i + 1,
@@ -4279,17 +4410,20 @@ impl TypeChecker {
                             expected_type.to_str(),
                             arg_type.to_str()
                         ),
-                        0
+                        line,
+                        column,
+                        None,
+                        None,
                     );
                 }
             }
         }
     }
 
-    fn check_method_call(&mut self, method_sig: &MethodSignature, args: &[Expr], method_name: &str, class_name: &str) {
+    fn check_method_call(&mut self, method_sig: &MethodSignature, args: &[Expr], method_name: &str, class_name: &str, span_line: usize, span_column: usize) {
         // Check argument count (excluding self)
         if args.len() != method_sig.params.len() {
-            self.context.add_error(
+            self.context.add_error_with_location(
                 format!(
                     "Method '{}' on class '{}' expects {} arguments, got {}",
                     method_name,
@@ -4297,7 +4431,10 @@ impl TypeChecker {
                     method_sig.params.len(),
                     args.len()
                 ),
-                0
+                span_line,
+                span_column,
+                None,
+                None,
             );
             return;
         }
@@ -4308,7 +4445,8 @@ impl TypeChecker {
 
             if let Some(expected_type) = &param.type_name {
                 if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
-                    self.context.add_error(
+                    let (line, column) = Self::get_expr_span(arg);
+                    self.context.add_error_with_location(
                         format!(
                             "Argument {} of method '{}' has wrong type: expected {}, got {}",
                             i + 1,
@@ -4316,7 +4454,10 @@ impl TypeChecker {
                             expected_type.to_str(),
                             arg_type.to_str()
                         ),
-                        0
+                        line,
+                        column,
+                        None,
+                        None,
                     );
                 }
             }

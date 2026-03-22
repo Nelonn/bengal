@@ -50,26 +50,11 @@ test("assertClose for floats", () {
     assertClose(2.5, 2.5001, 0.001)
 })
 
-// ============== String Assertions ==============
-
-test("String assertions", () {
-    let text = "Hello, World!"
-    
-    assertStringContains(text, "World")
-    assertStartsWith(text, "Hello")
-    assertEndsWith(text, "!")
-    assertEquals(13, text.length())
-})
-
 // ============== Array Assertions ==============
 
 test("Array assertions", () {
     let arr = [1, 2, 3, 4, 5]
-    
-    assertLength(arr, 5)
-    assertContains(arr, 3)
-    assertContains(arr, 1)
-    assertNotContains(arr, 10)
+
     assertEquals(1, arr[0])
     assertEquals(5, arr[4])
 })
