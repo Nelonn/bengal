@@ -1,7 +1,6 @@
-use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, PromiseState};
+use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult};
 use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
-use crate::async_runtime;
 use std::sync::{Arc, RwLock};
 
 pub use crate::vm::VTable;
@@ -146,6 +145,10 @@ impl Executor {
                 println!("Breakpoint hit at line {}", self.vm.get_line());
                 Ok(None)
             }
+            RunResult::Suspended => {
+                // VM suspended for async native - should be handled by run_to_completion
+                Ok(None)
+            }
         }
     }
 
@@ -169,30 +172,25 @@ impl Executor {
 
             match result {
                 RunResult::Finished(val) => {
-                    // Check if the result is a Promise that needs to be polled
-                    if let Some(Value::Promise(promise)) = val {
-                        // Poll the promise until it resolves or rejects
-                        loop {
-                            async_runtime::sleep(std::time::Duration::from_millis(10)).await;
-                            let state = promise.lock().await;
-                            match &*state {
-                                PromiseState::Pending => {
-                                    drop(state);
-                                    continue;
-                                }
-                                PromiseState::Resolved(val) => {
-                                    return Ok(Some(val.clone()));
-                                }
-                                PromiseState::Rejected(val) => {
-                                    return Err(format!("Promise rejected: {}", val.to_string()));
-                                }
-                            }
-                        }
-                    }
                     return Ok(val);
                 }
                 RunResult::Breakpoint => {
                     println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
+                    continue;
+                }
+                RunResult::Suspended => {
+                    // VM is suspended waiting for async native callback
+                    // The native function should have set up a callback that will resume execution
+                    // We need to wait for that callback to fire
+                    // For now, we'll use a simple polling approach - in production, you'd use channels/events
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        if !self.vm.is_suspended() {
+                            // Callback fired and resumed execution, continue the loop
+                            break;
+                        }
+                    }
+                    // Continue running after resume
                     continue;
                 }
             }

@@ -1,16 +1,16 @@
-use sparkler::Value;
+use sparkler::{Value, NativeResult};
 
-pub fn native_print(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_print(args: &mut Vec<Value>) -> NativeResult {
     for arg in args {
         print!("{}", arg.to_string());
     }
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_println(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_println(args: &mut Vec<Value>) -> NativeResult {
     for arg in args {
         print!("{}", arg.to_string());
     }
     println!();
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }

@@ -389,7 +389,30 @@ pub struct Function {
     pub source_file: Option<String>,
 }
 
-pub type NativeFn = fn(&mut Vec<Value>) -> Result<Value, Value>;
+/// Result from a native function call
+pub enum NativeResult {
+    /// Function completed immediately with a value
+    Ready(Value),
+    /// Function is pending, will callback with result later
+    Pending,
+}
+
+impl From<Value> for NativeResult {
+    fn from(val: Value) -> Self {
+        NativeResult::Ready(val)
+    }
+}
+
+impl From<Result<Value, Value>> for NativeResult {
+    fn from(result: Result<Value, Value>) -> Self {
+        match result {
+            Ok(val) => NativeResult::Ready(val),
+            Err(val) => NativeResult::Ready(val),
+        }
+    }
+}
+
+pub type NativeFn = fn(&mut Vec<Value>) -> NativeResult;
 
 pub struct NativeFunctionBuilder {
     name: String,
@@ -706,6 +729,10 @@ pub struct VM {
     pub is_debugging: bool,
     /// Vtables for interface method dispatch (indexed by vtable_idx)
     vtables: Vec<VTable>,
+    /// Pending native result register (for async native callbacks)
+    pending_native_result: Option<u8>,
+    /// Callback for pending native operation
+    pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
 }
 
 /// VTable entry for interface method dispatch
@@ -755,6 +782,8 @@ impl VM {
             breakpoints: std::collections::HashSet::new(),
             is_debugging: false,
             vtables: Vec::new(),
+            pending_native_result: None,
+            pending_native_callback: None,
         }
     }
 
@@ -961,11 +990,41 @@ impl VM {
                 ExecutionResult::Breakpoint => {
                     return Ok(RunResult::Breakpoint);
                 }
+                ExecutionResult::Suspended => {
+                    // VM suspended waiting for async native callback
+                    return Ok(RunResult::Suspended);
+                }
                 ExecutionResult::Continue => {}
             }
         }
 
         Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
+    }
+
+    /// Set the callback for a pending native operation
+    pub fn set_pending_callback<F>(&mut self, callback: F)
+    where
+        F: FnOnce(Result<Value, Value>) + Send + 'static,
+    {
+        self.pending_native_callback = Some(Box::new(callback));
+    }
+
+    /// Resume execution after a native callback with the result
+    pub fn resume_with_result(&mut self, result: Result<Value, Value>) -> Result<RunResult, Value> {
+        if let Some(reg) = self.pending_native_result.take() {
+            match result {
+                Ok(val) => self.set_reg(reg, val),
+                Err(val) => self.set_reg(reg, val),
+            }
+            self.set_pc(self.pc() + 1);
+        }
+        // Continue execution
+        self.run()
+    }
+
+    /// Check if VM is suspended
+    pub fn is_suspended(&self) -> bool {
+        self.pending_native_result.is_some()
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -1200,7 +1259,7 @@ impl VM {
                     // Call native_create if it exists
                     if let Some(native_create) = class.native_create {
                         let mut args = vec![instance];
-                        native_create(&mut args)?;
+                        let _ = native_create(&mut args);
                     }
                 }
                 // Check if it's a native function using indexed registry lookup
@@ -1210,8 +1269,14 @@ impl VM {
                         for i in 0..arg_count {
                             args.push(self.get_reg(arg_start + i).clone());
                         }
-                        let result = native_f(&mut args)?;
-                        self.set_reg(rd, result);
+                        let result = native_f(&mut args);
+                        match result {
+                            NativeResult::Ready(val) => self.set_reg(rd, val),
+                            NativeResult::Pending => {
+                                // For now, treat pending as error in sync context
+                                return Err(Value::String("Async native not supported in this context".to_string()));
+                            }
+                        }
                     } else {
                         return Err(Value::String(format!("Native function not found: {}", func_name)));
                     }
@@ -1293,6 +1358,7 @@ impl VM {
                     match result {
                         Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
                         Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                        Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -1323,18 +1389,28 @@ impl VM {
 
                 // Try indexed lookup first, fall back to fallback handler
                 let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
-                    Some(f) => f(&mut args)?,
+                    Some(f) => f(&mut args),
                     None => {
                         match &self.fallback_native {
-                            Some(f) => f(&mut args)?,
+                            Some(f) => f(&mut args),
                             None => {
                                 return Err(Value::String(format!("Native function not found: {}", name)));
                             }
                         }
                     }
                 };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
+                
+                match result {
+                    NativeResult::Ready(val) => {
+                        self.set_reg(rd, val);
+                        self.set_pc(self.pc() + 1);
+                    }
+                    NativeResult::Pending => {
+                        // VM should suspend - save state for callback
+                        self.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                }
             }
 
             // Call native function by index (optimized - O(1) lookup)
@@ -1361,18 +1437,28 @@ impl VM {
 
                 // Direct indexed lookup - O(1)
                 let result = match self.native_registry.get_by_index(func_index) {
-                    Some(f) => f(&mut args)?,
+                    Some(f) => f(&mut args),
                     None => {
                         match &self.fallback_native {
-                            Some(f) => f(&mut args)?,
+                            Some(f) => f(&mut args),
                             None => {
                                 return Err(Value::String(format!("Native function not found at index: {}", func_index)));
                             }
                         }
                     }
                 };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
+                
+                match result {
+                    NativeResult::Ready(val) => {
+                        self.set_reg(rd, val);
+                        self.set_pc(self.pc() + 1);
+                    }
+                    NativeResult::Pending => {
+                        // VM should suspend - save state for callback
+                        self.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                }
             }
 
             // Invoke method on instance
@@ -1588,12 +1674,19 @@ impl VM {
                         // Exact match lookup for native methods
                         if let Some(native_method) = class.native_methods.get(&name) {
                             let mut method_args = args.clone();
-                            let result = native_method(&mut method_args)?;
-                            // For constructors, return the instance (self) instead of the method's return value
-                            if name == "constructor" {
-                                self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
-                            } else {
-                                self.set_reg(rd, result);
+                            let result = native_method(&mut method_args);
+                            match result {
+                                NativeResult::Ready(val) => {
+                                    // For constructors, return the instance (self) instead of the method's return value
+                                    if name == "constructor" {
+                                        self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                                    } else {
+                                        self.set_reg(rd, val);
+                                    }
+                                }
+                                NativeResult::Pending => {
+                                    return Err(Value::String("Async native not supported in this context".to_string()));
+                                }
                             }
                         } else {
                             // For bytecode methods, try exact match first, then generic type parameter matching
@@ -1697,6 +1790,7 @@ impl VM {
                                         }
                                     },
                                     Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                    Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                                     Err(e) => return Err(e),
                                 }
                             } else {
@@ -1862,6 +1956,7 @@ impl VM {
                                 }
                             },
                             Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                            Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                             Err(e) => return Err(e),
                         }
                     } else {
@@ -1947,6 +2042,7 @@ impl VM {
                             match result {
                                 Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
                                 Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
+                                Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
                                 Err(e) => return Err(e),
                             }
                         } else {
@@ -2678,12 +2774,14 @@ pub enum PromiseState {
 pub enum RunResult {
     Finished(Option<Value>),
     Breakpoint,
+    Suspended,
 }
 
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     Continue,
     Breakpoint,
+    Suspended,
 }
 
 impl Serialize for Value {

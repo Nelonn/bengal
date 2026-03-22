@@ -1,23 +1,23 @@
-use sparkler::Value;
+use sparkler::{Value, NativeResult};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
-        return Err(Value::String("http_get requires URL argument".to_string()));
+        return NativeResult::Ready(Value::String("http_get requires URL argument".to_string()));
     }
     let url = args[0].to_string();
 
     match http_get(&url) {
-        Ok(response) => Ok(Value::String(response)),
-        Err(e) => Err(Value::String(e)),
+        Ok(response) => NativeResult::Ready(Value::String(response)),
+        Err(e) => NativeResult::Ready(Value::String(e)),
     }
 }
 
-pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_post(args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "http_post requires URL and body arguments".to_string(),
         ));
     }
@@ -25,8 +25,8 @@ pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     let body = args[1].to_string();
 
     match http_post(&url, &body) {
-        Ok(response) => Ok(Value::String(response)),
-        Err(e) => Err(Value::String(e)),
+        Ok(response) => NativeResult::Ready(Value::String(response)),
+        Err(e) => NativeResult::Ready(Value::String(e)),
     }
 }
 
@@ -327,9 +327,9 @@ impl From<HttpClientState> for HttpClientConfig {
     }
 }
 
-pub fn native_http_client_constructor(_args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_constructor(_args: &mut Vec<Value>) -> NativeResult {
     // Constructor is called after native_create, state is already initialized
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
 /// Helper function to get or create HttpClientState from instance's native_data
@@ -374,10 +374,13 @@ fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientSt
     Err(Value::String("Expected HttpClient instance".to_string()))
 }
 
-pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 2 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "set_timeout requires timeout argument".to_string(),
         ));
     }
@@ -385,18 +388,21 @@ pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> Result<Value, Va
     let timeout = match &args[1] {
         Value::Int64(n) => *n as u64,
         Value::UInt64(n) => *n as u64,
-        _ => return Err(Value::String("timeout must be an integer".to_string())),
+        _ => return NativeResult::Ready(Value::String("timeout must be an integer".to_string())),
     };
 
     let mut state = state.lock().unwrap();
     state.timeout = timeout;
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 2 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "set_base_url requires url argument".to_string(),
         ));
     }
@@ -404,13 +410,16 @@ pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> Result<Value, V
     let url = args[1].to_string();
     let mut state = state.lock().unwrap();
     state.base_url = Some(url);
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_add_header(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_add_header(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 3 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "add_header requires key and value arguments".to_string(),
         ));
     }
@@ -420,28 +429,34 @@ pub fn native_http_client_add_header(args: &mut Vec<Value>) -> Result<Value, Val
 
     let mut state = state.lock().unwrap();
     state.headers.insert(key, value);
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_get(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 2 {
-        return Err(Value::String("get requires URL argument".to_string()));
+        return NativeResult::Ready(Value::String("get requires URL argument".to_string()));
     }
 
     let url = args[1].to_string();
     let state_clone = state.lock().unwrap().clone();
 
     match http_client_request(&state_clone.into(), "GET", &url, "", None) {
-        Ok(response) => Ok(Value::String(response.body)),
-        Err(e) => Err(Value::String(e)),
+        Ok(response) => NativeResult::Ready(Value::String(response.body)),
+        Err(e) => NativeResult::Ready(Value::String(e)),
     }
 }
 
-pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 3 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "post requires URL and body arguments".to_string(),
         ));
     }
@@ -451,37 +466,40 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     let state_clone = state.lock().unwrap().clone();
 
     match http_client_request(&state_clone.into(), "POST", &url, "", Some(&body)) {
-        Ok(response) => Ok(Value::String(response.body)),
-        Err(e) => Err(Value::String(e)),
+        Ok(response) => NativeResult::Ready(Value::String(response.body)),
+        Err(e) => NativeResult::Ready(Value::String(e)),
     }
 }
 
 // CamelCase aliases for Bengal API compatibility
-pub fn native_http_client_set_timeout_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_set_timeout_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_set_timeout(args)
 }
 
-pub fn native_http_client_set_base_url_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_set_base_url_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_set_base_url(args)
 }
 
-pub fn native_http_client_add_header_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_add_header_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_add_header(args)
 }
 
-pub fn native_http_client_get_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_get_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_get(args)
 }
 
-pub fn native_http_client_post_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_post_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_post(args)
 }
 
 // Additional HttpClient methods
-pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 2 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "set_redirect_policy requires policy argument".to_string(),
         ));
     }
@@ -490,7 +508,7 @@ pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> Result<V
         Value::Int64(n) => *n as i32,
         Value::UInt64(n) => *n as i32,
         Value::Int32(n) => *n,
-        _ => return Err(Value::String("policy must be an integer".to_string())),
+        _ => return NativeResult::Ready(Value::String("policy must be an integer".to_string())),
     };
 
     let mut state = state.lock().unwrap();
@@ -500,13 +518,16 @@ pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> Result<V
         2 => "None".to_string(),
         _ => "Follow".to_string(),
     };
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_max_redirects(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_set_max_redirects(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 2 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "set_max_redirects requires max argument".to_string(),
         ));
     }
@@ -516,18 +537,21 @@ pub fn native_http_client_set_max_redirects(args: &mut Vec<Value>) -> Result<Val
         Value::UInt64(n) => *n as u32,
         Value::Int32(n) => *n as u32,
         Value::UInt32(n) => *n,
-        _ => return Err(Value::String("max must be an integer".to_string())),
+        _ => return NativeResult::Ready(Value::String("max must be an integer".to_string())),
     };
 
     let mut state = state.lock().unwrap();
     state.max_redirects = max;
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_proxy(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_set_proxy(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 3 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "set_proxy requires host and port arguments".to_string(),
         ));
     }
@@ -538,55 +562,58 @@ pub fn native_http_client_set_proxy(args: &mut Vec<Value>) -> Result<Value, Valu
         Value::UInt64(n) => *n as u16,
         Value::Int32(n) => *n as u16,
         Value::UInt32(n) => *n as u16,
-        _ => return Err(Value::String("port must be an integer".to_string())),
+        _ => return NativeResult::Ready(Value::String("port must be an integer".to_string())),
     };
 
     let mut state = state.lock().unwrap();
     state.proxy_host = Some(host);
     state.proxy_port = Some(port);
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_verify_ssl(args: &mut Vec<Value>) -> Result<Value, Value> {
-    let state = get_http_client_state(args)?;
+pub fn native_http_client_set_verify_ssl(args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(args) {
+        Ok(val) => val,
+        Err(e) => return NativeResult::Ready(e),
+    };
     if args.len() < 2 {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "set_verify_ssl requires verify argument".to_string(),
         ));
     }
 
     let verify = match &args[1] {
         Value::Bool(b) => *b,
-        _ => return Err(Value::String("verify must be a boolean".to_string())),
+        _ => return NativeResult::Ready(Value::String("verify must be a boolean".to_string())),
     };
 
     let mut state = state.lock().unwrap();
     state.verify_ssl = verify;
-    Ok(Value::Null)
+    NativeResult::Ready(Value::Null)
 }
 
 // CamelCase aliases for additional methods
-pub fn native_http_client_set_redirect_policy_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_set_redirect_policy_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_set_redirect_policy(args)
 }
 
-pub fn native_http_client_set_max_redirects_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_set_max_redirects_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_set_max_redirects(args)
 }
 
-pub fn native_http_client_set_proxy_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_set_proxy_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_set_proxy(args)
 }
 
-pub fn native_http_client_set_verify_ssl_camel(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_set_verify_ssl_camel(args: &mut Vec<Value>) -> NativeResult {
     native_http_client_set_verify_ssl(args)
 }
 
 // HttpClient native_create callback
-pub fn native_http_client_native_create(args: &mut Vec<Value>) -> Result<Value, Value> {
+pub fn native_http_client_native_create(args: &mut Vec<Value>) -> NativeResult {
     // Initialize the HttpClient instance with default state
     if args.is_empty() {
-        return Err(Value::String(
+        return NativeResult::Ready(Value::String(
             "HttpClient constructor requires instance".to_string(),
         ));
     }
@@ -598,8 +625,8 @@ pub fn native_http_client_native_create(args: &mut Vec<Value>) -> Result<Value, 
         *native_data = Some(Box::new(state) as Box<dyn Any + Send + Sync>);
         drop(native_data);
         drop(instance_lock);
-        Ok(Value::Null)
+        NativeResult::Ready(Value::Null)
     } else {
-        Err(Value::String("Expected HttpClient instance".to_string()))
+        NativeResult::Ready(Value::String("Expected HttpClient instance".to_string()))
     }
 }
