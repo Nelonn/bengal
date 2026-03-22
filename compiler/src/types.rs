@@ -193,7 +193,7 @@ impl Type {
 
     /// Convert type to string for mangling purposes (flattens generic arguments)
     /// Format: ClassName<T,B> becomes ClassName(T,B) for use in function mangling
-    /// Type parameters (T, U, etc.) are represented as * for generic functions
+    /// Type parameters (T, U, etc.) and Unknown are represented as * for generic functions
     pub fn to_mangle_str(&self) -> String {
         match self {
             Type::Int => "int".to_string(),
@@ -215,7 +215,7 @@ impl Type {
             Type::Optional(t) => format!("{}?", t.to_mangle_str()),
             Type::Array(t) => format!("{}[]", t.to_mangle_str()),
             Type::Null => "null".to_string(),
-            Type::Unknown => "unknown".to_string(),
+            Type::Unknown => "*".to_string(),  // Unknown type -> *
             Type::TypeParameter(_) => "*".to_string(),  // Generic type parameter -> *
             Type::GenericInstance(name, args) => {
                 let args_str: Vec<String> = args.iter().map(|a| a.to_mangle_str()).collect();
