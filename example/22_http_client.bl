@@ -18,6 +18,7 @@ fn main() {
 
     let result = client.get("https://jsonplaceholder.typicode.com/posts")
     println(str(result))
+    println("After!")
 }
 
 main()

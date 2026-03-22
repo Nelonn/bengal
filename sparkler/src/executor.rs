@@ -1,7 +1,7 @@
-use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult};
+use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, set_async_callback_sender};
 use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
 use std::sync::mpsc::{self, Sender, Receiver};
 
 pub use crate::vm::VTable;
@@ -182,6 +182,13 @@ impl Executor {
 
         // Take the callback receiver
         let callback_rx = self.callback_rx.take().unwrap();
+        let callback_tx = self.callback_tx.take().unwrap();
+        
+        // Set the callback sender in thread local storage for native functions
+        set_async_callback_sender(callback_tx.clone());
+
+        // Wrap receiver in Arc<Mutex<>> for shared access across loop iterations
+        let callback_rx = Arc::new(Mutex::new(callback_rx));
 
         loop {
             let result = self.vm.run().map_err(|e| e.to_string())?;
@@ -196,22 +203,24 @@ impl Executor {
                 }
                 RunResult::Suspended => {
                     // VM is suspended waiting for async native callback
-                    // Wait for the callback to fire
-                    match callback_rx.recv() {
-                        Ok(result) => {
-                            // Resume VM with the result
-                            match self.vm.resume_with_result(result) {
-                                Ok(RunResult::Finished(val)) => return Ok(val),
-                                Ok(RunResult::Breakpoint) => {
-                                    println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
-                                }
-                                Ok(RunResult::Suspended) => {
-                                    // Still suspended, continue waiting
-                                }
-                                Err(e) => return Err(e.to_string()),
-                            }
+                    // Use spawn_blocking to wait for callback without blocking tokio
+                    let rx = Arc::clone(&callback_rx);
+                    let result = tokio::task::spawn_blocking(move || {
+                        rx.lock().unwrap().recv().map_err(|_| "Callback channel closed".to_string())
+                    }).await
+                    .map_err(|_| "Callback task failed".to_string())?
+                    .map_err(|e| e.to_string())?;
+                    
+                    // Resume VM with the result
+                    match self.vm.resume_with_result(result) {
+                        Ok(RunResult::Finished(val)) => return Ok(val),
+                        Ok(RunResult::Breakpoint) => {
+                            println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                         }
-                        Err(_) => return Err("Callback channel closed".to_string()),
+                        Ok(RunResult::Suspended) => {
+                            // Still suspended, continue waiting
+                        }
+                        Err(e) => return Err(e.to_string()),
                     }
                 }
             }

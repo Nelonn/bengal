@@ -1,8 +1,7 @@
-use sparkler::{Value, NativeResult};
+use sparkler::{Value, NativeResult, get_async_callback_sender};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::runtime::Handle;
 
 pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
@@ -10,32 +9,27 @@ pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     }
     let url = args[0].to_string();
 
-    // Use the global tokio runtime to spawn the async task
-    match Handle::try_current() {
-        Ok(handle) => {
-            // We're in a tokio runtime, spawn the task
-            let (tx, rx) = std::sync::mpsc::channel();
-            
-            handle.spawn(async move {
-                let result = http_get_async(&url).await;
-                let _ = tx.send(result);
-            });
-            
-            // Block waiting for result - this is the simple approach
-            // For true async, we'd return Pending and use callbacks
-            match rx.recv() {
-                Ok(Ok(response)) => NativeResult::Ready(Value::String(response)),
-                Ok(Err(e)) => NativeResult::Ready(Value::String(e)),
-                Err(_) => NativeResult::Ready(Value::String("Channel error".to_string())),
-            }
-        }
-        Err(_) => {
-            // No runtime available, create a new one
+    // Get the callback sender from sparkler
+    let callback_tx = get_async_callback_sender();
+    
+    if let Some(tx) = callback_tx {
+        // We're in async context, spawn a thread and return Pending
+        std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(http_get_async(&url)) {
-                Ok(response) => NativeResult::Ready(Value::String(response)),
-                Err(e) => NativeResult::Ready(Value::String(e)),
-            }
+            let result = rt.block_on(http_get_async(&url));
+            let value_result = match result {
+                Ok(response) => Ok(Value::String(response)),
+                Err(e) => Err(Value::String(e)),
+            };
+            let _ = tx.send(value_result);
+        });
+        NativeResult::Pending
+    } else {
+        // No callback sender, use blocking approach
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        match rt.block_on(http_get_async(&url)) {
+            Ok(response) => NativeResult::Ready(Value::String(response)),
+            Err(e) => NativeResult::Ready(Value::String(e)),
         }
     }
 }
@@ -49,27 +43,25 @@ pub fn native_http_post(args: &mut Vec<Value>) -> NativeResult {
     let url = args[0].to_string();
     let body = args[1].to_string();
 
-    match Handle::try_current() {
-        Ok(handle) => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            
-            handle.spawn(async move {
-                let result = http_post_async(&url, &body).await;
-                let _ = tx.send(result);
-            });
-            
-            match rx.recv() {
-                Ok(Ok(response)) => NativeResult::Ready(Value::String(response)),
-                Ok(Err(e)) => NativeResult::Ready(Value::String(e)),
-                Err(_) => NativeResult::Ready(Value::String("Channel error".to_string())),
-            }
-        }
-        Err(_) => {
+    // Get the callback sender from sparkler
+    let callback_tx = get_async_callback_sender();
+    
+    if let Some(tx) = callback_tx {
+        std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(http_post_async(&url, &body)) {
-                Ok(response) => NativeResult::Ready(Value::String(response)),
-                Err(e) => NativeResult::Ready(Value::String(e)),
-            }
+            let result = rt.block_on(http_post_async(&url, &body));
+            let value_result = match result {
+                Ok(response) => Ok(Value::String(response)),
+                Err(e) => Err(Value::String(e)),
+            };
+            let _ = tx.send(value_result);
+        });
+        NativeResult::Pending
+    } else {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        match rt.block_on(http_post_async(&url, &body)) {
+            Ok(response) => NativeResult::Ready(Value::String(response)),
+            Err(e) => NativeResult::Ready(Value::String(e)),
         }
     }
 }
@@ -488,9 +480,25 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
     let url = args[1].to_string();
     let state_clone = state.lock().unwrap().clone();
 
-    match http_client_request(&state_clone.into(), "GET", &url, "", None) {
-        Ok(response) => NativeResult::Ready(Value::String(response.body)),
-        Err(e) => NativeResult::Ready(Value::String(e)),
+    // Get the callback sender from sparkler
+    let callback_tx = get_async_callback_sender();
+    
+    if let Some(tx) = callback_tx {
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url, "", None));
+            match result {
+                Ok(response) => { let _ = tx.send(Ok(Value::String(response.body))); }
+                Err(e) => { let _ = tx.send(Ok(Value::String(e))); }
+            }
+        });
+        NativeResult::Pending
+    } else {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        match rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url, "", None)) {
+            Ok(response) => NativeResult::Ready(Value::String(response.body)),
+            Err(e) => NativeResult::Ready(Value::String(e)),
+        }
     }
 }
 
@@ -509,9 +517,25 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
     let body = args[2].to_string();
     let state_clone = state.lock().unwrap().clone();
 
-    match http_client_request(&state_clone.into(), "POST", &url, "", Some(&body)) {
-        Ok(response) => NativeResult::Ready(Value::String(response.body)),
-        Err(e) => NativeResult::Ready(Value::String(e)),
+    // Get the callback sender from sparkler
+    let callback_tx = get_async_callback_sender();
+    
+    if let Some(tx) = callback_tx {
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body)));
+            match result {
+                Ok(response) => { let _ = tx.send(Ok(Value::String(response.body))); }
+                Err(e) => { let _ = tx.send(Ok(Value::String(e))); }
+            }
+        });
+        NativeResult::Pending
+    } else {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        match rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body))) {
+            Ok(response) => NativeResult::Ready(Value::String(response.body)),
+            Err(e) => NativeResult::Ready(Value::String(e)),
+        }
     }
 }
 

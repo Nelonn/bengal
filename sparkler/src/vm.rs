@@ -9,6 +9,20 @@ use crate::linker::NativeFunctionRegistry;
 use crate::opcodes::Opcode;
 use crate::async_runtime::Mutex as AsyncMutex;
 
+thread_local! {
+    pub static ASYNC_CALLBACK_SENDER: std::cell::RefCell<Option<std::sync::mpsc::Sender<Result<Value, Value>>>> = std::cell::RefCell::new(None);
+}
+
+pub fn set_async_callback_sender(tx: std::sync::mpsc::Sender<Result<Value, Value>>) {
+    ASYNC_CALLBACK_SENDER.with(|s| {
+        *s.borrow_mut() = Some(tx);
+    });
+}
+
+pub fn get_async_callback_sender() -> Option<std::sync::mpsc::Sender<Result<Value, Value>>> {
+    ASYNC_CALLBACK_SENDER.with(|s| s.borrow().clone())
+}
+
 /// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
 fn extract_base_class_name(name: &str) -> &str {
     if let Some(angle_pos) = name.find('<') {
@@ -390,6 +404,7 @@ pub struct Function {
 }
 
 /// Result from a native function call
+#[derive(Debug)]
 pub enum NativeResult {
     /// Function completed immediately with a value
     Ready(Value),
@@ -1020,7 +1035,8 @@ impl VM {
                 Ok(val) => self.set_reg(reg, val),
                 Err(val) => self.set_reg(reg, val),
             }
-            self.set_pc(self.pc() + 1);
+            // PC was already advanced past the Invoke instruction when it was executed
+            // Just continue execution from the current PC
         }
         // Continue execution
         self.run()
@@ -1275,15 +1291,16 @@ impl VM {
                         }
                         let result = match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                            crate::linker::NativeFnType::Async(f) => {
+                            crate::linker::NativeFnType::Async(_f) => {
                                 NativeResult::Pending
                             }
                         };
                         match result {
                             NativeResult::Ready(val) => self.set_reg(rd, val),
                             NativeResult::Pending => {
-                                // For now, treat pending as error in sync context
-                                return Err(Value::String("Async native not supported in this context".to_string()));
+                                // VM should suspend - save state for callback
+                                self.pending_native_result = Some(rd);
+                                return Ok(ExecutionResult::Suspended);
                             }
                         }
                     } else {
@@ -1464,7 +1481,7 @@ impl VM {
                     Some(func_type) => {
                         match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                            crate::linker::NativeFnType::Async(f) => {
+                            crate::linker::NativeFnType::Async(_f) => {
                                 NativeResult::Pending
                             }
                         }
@@ -1723,7 +1740,9 @@ impl VM {
                                     }
                                 }
                                 NativeResult::Pending => {
-                                    return Err(Value::String("Async native not supported in this context".to_string()));
+                                    // VM should suspend - save state for callback
+                                    self.pending_native_result = Some(rd);
+                                    return Ok(ExecutionResult::Suspended);
                                 }
                             }
                         } else {
