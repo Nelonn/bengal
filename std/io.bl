@@ -2,8 +2,8 @@ module std.io
 
 native fn print(text: str) {}
 
-fn println(line: str) {
-  print(line + "\n")
+fn println<T>(line: T) {
+  print(str(line) + "\n")
 }
 
 native fn sleep(ms: int) {}

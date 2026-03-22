@@ -191,6 +191,53 @@ impl Type {
         }
     }
 
+    /// Convert type to string for mangling purposes (flattens generic arguments)
+    /// Format: ClassName<T,B> becomes ClassName(T,B) for use in function mangling
+    /// Type parameters (T, U, etc.) are represented as * for generic functions
+    pub fn to_mangle_str(&self) -> String {
+        match self {
+            Type::Int => "int".to_string(),
+            Type::Float => "float".to_string(),
+            Type::Str => "str".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Int8 => "int8".to_string(),
+            Type::UInt8 => "uint8".to_string(),
+            Type::Int16 => "int16".to_string(),
+            Type::UInt16 => "uint16".to_string(),
+            Type::Int32 => "int32".to_string(),
+            Type::UInt32 => "uint32".to_string(),
+            Type::Int64 => "int64".to_string(),
+            Type::UInt64 => "uint64".to_string(),
+            Type::Float32 => "float32".to_string(),
+            Type::Float64 => "float64".to_string(),
+            Type::Class(name) => name.clone(),
+            Type::Enum(name) => name.clone(),
+            Type::Optional(t) => format!("{}?", t.to_mangle_str()),
+            Type::Array(t) => format!("{}[]", t.to_mangle_str()),
+            Type::Null => "null".to_string(),
+            Type::Unknown => "unknown".to_string(),
+            Type::TypeParameter(_) => "*".to_string(),  // Generic type parameter -> *
+            Type::GenericInstance(name, args) => {
+                let args_str: Vec<String> = args.iter().map(|a| a.to_mangle_str()).collect();
+                format!("{}({})", name, args_str.join(","))
+            }
+            Type::TypeAlias(name, args) => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let args_str: Vec<String> = args.iter().map(|a| a.to_mangle_str()).collect();
+                    format!("{}({})", name, args_str.join(","))
+                }
+            }
+            Type::Function(params, return_type) => {
+                let params_str: Vec<String> = params.iter().map(|p| p.to_mangle_str()).collect();
+                format!("({}) -> {}", params_str.join(","), return_type.to_mangle_str())
+            }
+            Type::SelfType => "self".to_string(),
+            Type::Any => "any".to_string(),
+        }
+    }
+
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         match (self, other) {
             (_, Type::Any) => true,
@@ -286,14 +333,14 @@ pub fn mangle_function_name(name: &str, param_types: &[Type]) -> String {
     let mut mangled = String::new();
     mangled.push_str(name);
     mangled.push('(');
-    
+
     for (i, ty) in param_types.iter().enumerate() {
         if i > 0 {
             mangled.push(',');
         }
-        mangled.push_str(&ty.to_str());
+        mangled.push_str(&ty.to_mangle_str());
     }
-    
+
     mangled.push(')');
     mangled
 }
