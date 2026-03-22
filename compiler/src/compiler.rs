@@ -1047,14 +1047,15 @@ impl Compiler {
 
                 // No string index adjustment needed - we used the global strings table directly
 
-                // Generate mangled name for method overloading support based on argument count
+                // Generate mangled name for method overloading support based on parameter types
                 let mangled_name = if method.params.is_empty() {
                     format!("{}()", method.name)
                 } else {
-                    // Build a mangled name with placeholder types based on param count
+                    // Build a mangled name with actual parameter types
                     let mut params = Vec::new();
-                    for _ in 0..method.params.len() {
-                        params.push("T".to_string());
+                    for param in &method.params {
+                        let param_type = param.type_name.as_ref().map(|t| t.clone()).unwrap_or_else(|| "T".to_string());
+                        params.push(param_type);
                     }
                     format!("{}({})", method.name, params.join(","))
                 };
@@ -2993,16 +2994,19 @@ impl Compiler {
                                 bytecode.push(r as u8);
                             }
 
-                            // Generate mangled constructor name based on argument count
+                            // Generate mangled constructor name based on argument types
                             // For empty constructor: "constructor()"
-                            // For constructor with args: "constructor(T1,T2,...)"
+                            // For constructor with args: "constructor(type1,type2,...)"
                             let mangled_ctor = if args.is_empty() {
                                 "constructor()".to_string()
                             } else {
-                                // Build a mangled name with placeholder types based on arg count
+                                // Build a mangled name with actual argument types
                                 let mut params = Vec::new();
-                                for _ in 0..args.len() {
-                                    params.push("T".to_string());
+                                let default_ctx = TypeContext::new();
+                                let ctx = type_context.as_ref().map_or(&default_ctx, |v| v);
+                                for arg in args {
+                                    let arg_type = self.infer_expr_type(arg, ctx);
+                                    params.push(arg_type.to_str());
                                 }
                                 format!("constructor({})", params.join(","))
                             };
