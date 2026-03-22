@@ -14,6 +14,7 @@ web-sys = { version = "0.3", features = ["Window"], optional = true }
 
 [features]
 default = []
+debug_log = []
 wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

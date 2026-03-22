@@ -1,8 +1,8 @@
 use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, set_async_callback_sender};
-use crate::opcodes::Opcode;
+use crate::{debug_vm, Opcode};
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
-use std::sync::{Arc, RwLock, Mutex};
-use std::sync::mpsc::{self, Sender, Receiver};
+use std::sync::{Arc, RwLock};
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 pub use crate::vm::VTable;
 
@@ -25,7 +25,7 @@ pub struct Executor {
 
 impl Executor {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel();
         Self {
             vm: VM::new(),
             linker: None,
@@ -41,7 +41,7 @@ impl Executor {
         let mut vm = VM::new();
         // Share the same registry between VM and linker
         vm.native_registry = (*registry.read().unwrap()).clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel();
         Self {
             vm,
             linker: Some(linker),
@@ -54,7 +54,7 @@ impl Executor {
     pub fn with_registry(registry: Arc<RwLock<NativeFunctionRegistry>>) -> Self {
         let mut vm = VM::new();
         vm.native_registry = (*registry.read().unwrap()).clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel();
         Self {
             vm,
             linker: Some(RuntimeLinker::with_registry(registry)),
@@ -180,15 +180,14 @@ impl Executor {
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
-        // Take the callback receiver
-        let callback_rx = self.callback_rx.take().unwrap();
+        // Take the callback receiver and keep sender alive
+        let mut callback_rx = Some(self.callback_rx.take().unwrap());
         let callback_tx = self.callback_tx.take().unwrap();
-        
-        // Set the callback sender in thread local storage for native functions
-        set_async_callback_sender(callback_tx.clone());
 
-        // Wrap receiver in Arc<Mutex<>> for shared access across loop iterations
-        let callback_rx = Arc::new(Mutex::new(callback_rx));
+        // Set the callback sender in thread local storage for native functions
+        // Keep a clone alive for the duration of run_to_completion
+        let _tx_guard = callback_tx.clone();
+        set_async_callback_sender(callback_tx.clone());
 
         loop {
             let result = self.vm.run().map_err(|e| e.to_string())?;
@@ -203,24 +202,41 @@ impl Executor {
                 }
                 RunResult::Suspended => {
                     // VM is suspended waiting for async native callback
-                    // Use spawn_blocking to wait for callback without blocking tokio
-                    let rx = Arc::clone(&callback_rx);
-                    let result = tokio::task::spawn_blocking(move || {
-                        rx.lock().unwrap().recv().map_err(|_| "Callback channel closed".to_string())
-                    }).await
-                    .map_err(|_| "Callback task failed".to_string())?
-                    .map_err(|e| e.to_string())?;
-                    
+                    debug_vm!("executor: VM suspended, waiting for callback");
+                    // Use std::thread to wait for callback to avoid tokio state machine corruption
+                    let rx = callback_rx.take().unwrap();
+                    debug_vm!("executor: Waiting for callback in spawned thread");
+                    let result = std::thread::spawn(move || {
+                        rx.recv().map_err(|_| "Callback channel closed".to_string())
+                    }).join().unwrap();
+                    debug_vm!("executor: Thread joined, result = {:?}", result.is_ok());
+                    let result = result?;
+
+                    // result is Result<Result<Value, Value>, String>, need to flatten
+                    let result: Result<Value, Value> = match result {
+                        Ok(val) => {
+                            debug_vm!("executor: Received Ok(val), val = {:?}", match &val { Value::String(s) => format!("String({} chars)", s.len()), Value::Null => "Null".to_string(), _ => "Other".to_string() });
+                            Ok(val)
+                        }
+                        Err(e) => Err(Value::String(e.to_string())),
+                    };
+                    debug_vm!("executor: About to resume VM with result");
+
                     // Resume VM with the result
                     match self.vm.resume_with_result(result) {
-                        Ok(RunResult::Finished(val)) => return Ok(val),
+                        Ok(RunResult::Finished(val)) => {
+                            return Ok(val);
+                        }
                         Ok(RunResult::Breakpoint) => {
                             println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                         }
                         Ok(RunResult::Suspended) => {
-                            // Still suspended, continue waiting
+                            // Still suspended - this shouldn't happen with current implementation
+                            return Err("VM still suspended after callback".to_string());
                         }
-                        Err(e) => return Err(e.to_string()),
+                        Err(e) => {
+                            return Err(e.to_string());
+                        }
                     }
                 }
             }

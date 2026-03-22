@@ -1,4 +1,4 @@
-use sparkler::{Value, NativeResult, get_async_callback_sender};
+use sparkler::{Value, NativeResult, get_async_callback_sender, debug_vm};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,16 +13,18 @@ pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     let callback_tx = get_async_callback_sender();
     
     if let Some(tx) = callback_tx {
+        let url_clone = url.clone();
         // We're in async context, spawn a thread and return Pending
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(http_get_async(&url));
+            let result = rt.block_on(http_get_async(&url_clone));
             let value_result = match result {
                 Ok(response) => Ok(Value::String(response)),
                 Err(e) => Err(Value::String(e)),
             };
             let _ = tx.send(value_result);
         });
+        debug_vm!("http_get: Thread spawned for URL {}", url);
         NativeResult::Pending
     } else {
         // No callback sender, use blocking approach
@@ -484,14 +486,16 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
     let callback_tx = get_async_callback_sender();
     
     if let Some(tx) = callback_tx {
+        let url_clone = url.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url, "", None));
+            let result = rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url_clone, "", None));
             match result {
                 Ok(response) => { let _ = tx.send(Ok(Value::String(response.body))); }
                 Err(e) => { let _ = tx.send(Ok(Value::String(e))); }
             }
         });
+        debug_vm!("http_client_get: Thread spawned for URL {}", url);
         NativeResult::Pending
     } else {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -521,14 +525,16 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
     let callback_tx = get_async_callback_sender();
     
     if let Some(tx) = callback_tx {
+        let url_clone = url.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body)));
+            let result = rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url_clone, "", Some(&body)));
             match result {
                 Ok(response) => { let _ = tx.send(Ok(Value::String(response.body))); }
                 Err(e) => { let _ = tx.send(Ok(Value::String(e))); }
             }
         });
+        debug_vm!("http_client_post: Thread spawned for URL {}", url);
         NativeResult::Pending
     } else {
         let rt = tokio::runtime::Runtime::new().unwrap();

@@ -9,6 +9,15 @@ use crate::linker::NativeFunctionRegistry;
 use crate::opcodes::Opcode;
 use crate::async_runtime::Mutex as AsyncMutex;
 
+#[macro_export]
+macro_rules! debug_vm {
+    ($($arg:tt)*) => {
+        if cfg!(feature = "debug_log") {
+            println!($($arg)*);
+        }
+    };
+}
+
 thread_local! {
     pub static ASYNC_CALLBACK_SENDER: std::cell::RefCell<Option<std::sync::mpsc::Sender<Result<Value, Value>>>> = std::cell::RefCell::new(None);
 }
@@ -20,7 +29,8 @@ pub fn set_async_callback_sender(tx: std::sync::mpsc::Sender<Result<Value, Value
 }
 
 pub fn get_async_callback_sender() -> Option<std::sync::mpsc::Sender<Result<Value, Value>>> {
-    ASYNC_CALLBACK_SENDER.with(|s| s.borrow().clone())
+    let result = ASYNC_CALLBACK_SENDER.with(|s| s.borrow().clone());
+    result
 }
 
 /// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
@@ -752,6 +762,16 @@ pub struct VM {
     pending_native_result: Option<u8>,
     /// Callback for pending native operation
     pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
+    /// Saved bytecode for function call suspension
+    saved_bytecode: Option<Vec<u8>>,
+    /// Saved strings for function call suspension
+    saved_strings: Option<Vec<String>>,
+    /// Saved functions for function call suspension
+    saved_functions: Option<HashMap<String, Function>>,
+    /// Saved native registry for function call suspension
+    saved_native_registry: Option<NativeFunctionRegistry>,
+    /// Saved classes for function call suspension
+    saved_classes: Option<HashMap<String, Class>>,
 }
 
 /// VTable entry for interface method dispatch
@@ -803,6 +823,11 @@ impl VM {
             vtables: Vec::new(),
             pending_native_result: None,
             pending_native_callback: None,
+            saved_bytecode: None,
+            saved_strings: None,
+            saved_functions: None,
+            saved_native_registry: None,
+            saved_classes: None,
         }
     }
 
@@ -1030,7 +1055,9 @@ impl VM {
 
     /// Resume execution after a native callback with the result
     pub fn resume_with_result(&mut self, result: Result<Value, Value>) -> Result<RunResult, Value> {
+        debug_vm!("resume_with_result: PC = {}, bytecode.len() = {}", self.pc(), self.bytecode.len());
         if let Some(reg) = self.pending_native_result.take() {
+            debug_vm!("resume_with_result: Setting reg {} with result", reg);
             match result {
                 Ok(val) => self.set_reg(reg, val),
                 Err(val) => self.set_reg(reg, val),
@@ -1038,7 +1065,17 @@ impl VM {
             // PC was already advanced past the Invoke instruction when it was executed
             // Just continue execution from the current PC
         }
+        // Restore saved state if any
+        if let Some(bytecode) = self.saved_bytecode.take() {
+            self.bytecode = bytecode;
+            self.strings = self.saved_strings.take().unwrap();
+            self.functions = self.saved_functions.take().unwrap();
+            self.native_registry = self.saved_native_registry.take().unwrap();
+            self.classes = self.saved_classes.take().unwrap();
+            debug_vm!("resume_with_result: Restored saved state, bytecode.len() = {}", self.bytecode.len());
+        }
         // Continue execution
+        debug_vm!("resume_with_result: Calling self.run()");
         self.run()
     }
 
@@ -1367,25 +1404,70 @@ impl VM {
                     // Execute function
                     let result = self.run();
 
-                    // Restore state
-                    self.bytecode = old_bytecode;
-                    self.strings = old_strings;
-                    self.functions = old_functions;
-                    self.native_registry = old_native_registry;
-                    self.classes = old_classes;
-
-                    // Pop frame and restore caller
-                    self.call_stack.pop();
-                    if let Some(frame) = self.call_stack.last_mut() {
-                        frame.pc = caller_pc;  // PC already points to next instruction
-                        frame.frame_base = caller_frame_base;
-                    }
-
                     match result {
-                        Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
-                        Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                        Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
-                        Err(e) => return Err(e),
+                        Ok(RunResult::Finished(val)) => {
+                            // Restore state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+
+                            // Pop frame and restore caller
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;  // PC already points to next instruction
+                                frame.frame_base = caller_frame_base;
+                            }
+                            self.set_reg(rd, val.unwrap_or(Value::Null));
+                        }
+                        Ok(RunResult::Breakpoint) => {
+                            // Restore state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+
+                            // Pop frame and restore caller
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;
+                                frame.frame_base = caller_frame_base;
+                            }
+                            return Ok(ExecutionResult::Breakpoint);
+                        }
+                        Ok(RunResult::Suspended) => {
+                            // Save CURRENT state for later restoration (we're suspended inside the function)
+                            self.saved_bytecode = Some(self.bytecode.clone());
+                            self.saved_strings = Some(self.strings.clone());
+                            self.saved_functions = Some(self.functions.clone());
+                            self.saved_native_registry = Some(self.native_registry.clone());
+                            self.saved_classes = Some(self.classes.clone());
+                            // Then restore caller's state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+                            return Ok(ExecutionResult::Suspended);
+                        }
+                        Err(e) => {
+                            // Restore state
+                            self.bytecode = old_bytecode;
+                            self.strings = old_strings;
+                            self.functions = old_functions;
+                            self.native_registry = old_native_registry;
+                            self.classes = old_classes;
+
+                            // Pop frame and restore caller
+                            self.call_stack.pop();
+                            if let Some(frame) = self.call_stack.last_mut() {
+                                frame.pc = caller_pc;
+                                frame.frame_base = caller_frame_base;
+                            }
+                            return Err(e);
+                        }
                     }
                 } else {
                     return Err(Value::String(format!("Function not found: {}", func_name)));
