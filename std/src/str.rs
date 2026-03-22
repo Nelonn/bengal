@@ -45,8 +45,8 @@ pub fn native_str(args: &mut Vec<Value>) -> Result<Value, Value> {
                     Value::Null => "null".to_string(),
                     Value::Instance(_) => "[instance]".to_string(),
                     Value::Array(_) => "[array]".to_string(),
-                    Value::Promise(_) => "[promise]".to_string(),
                     Value::Exception(e) => format!("[exception: {}]", e.message),
+                    Value::Promise(_) => "[promise]".to_string(),
                 };
                 fields_str.push(format!("\"{}\": {}", key, value_str));
             }
@@ -57,8 +57,8 @@ pub fn native_str(args: &mut Vec<Value>) -> Result<Value, Value> {
             let elements_str: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
             Value::String(format!("[{}]", elements_str.join(", ")))
         }
-        Value::Promise(_) => Value::String("[promise]".to_string()),
         Value::Exception(e) => Value::String(format!("Exception: {}", e.message)),
+        Value::Promise(_) => Value::String("[promise]".to_string()),
     };
     
     Ok(result)

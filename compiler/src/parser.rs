@@ -85,7 +85,6 @@ pub struct FunctionDef {
     pub return_type: Option<String>,
     pub return_optional: bool,
     pub body: Block,
-    pub is_async: bool,
     pub is_native: bool,
     pub private: bool,
     pub type_params: Vec<String>,
@@ -132,7 +131,6 @@ pub struct Method {
     pub return_optional: bool,
     pub body: Block,
     pub private: bool,
-    pub is_async: bool,
     pub is_native: bool,
     pub is_static: bool,
     pub type_params: Vec<String>,
@@ -167,12 +165,11 @@ pub enum Expr {
     Set { object: Box<Expr>, name: String, value: Box<Expr>, span: Span },
     Interpolated { parts: Vec<InterpPart>, span: Span },
     Range { start: Box<Expr>, end: Box<Expr>, span: Span },
-    Await { expr: Box<Expr>, span: Span },
     Cast { expr: Box<Expr>, target_type: CastType, span: Span },
     Array { elements: Vec<Expr>, span: Span },
     Index { object: Box<Expr>, index: Box<Expr>, span: Span },
     ObjectLiteral { fields: Vec<ObjectField>, span: Span, inferred_type: Option<String> },
-    Lambda { params: Vec<LambdaParam>, return_type: Option<String>, body: Block, span: Span, is_async: bool },
+    Lambda { params: Vec<LambdaParam>, return_type: Option<String>, body: Block, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -378,31 +375,14 @@ impl Parser {
         }
 
         let mut is_native = false;
-        let mut is_async = false;
         let mut is_private = false;
 
-        // Only consume async/native/private if followed by fn (for function declarations)
-        // This allows async to be used for lambdas in expressions
-        while self.check(&Token::Native) || self.check(&Token::Async) || self.check(&Token::Private) {
-            let is_current_async = self.match_token(&Token::Async);
-            let is_current_native = if !is_current_async { self.match_token(&Token::Native) } else { false };
-            let is_current_private = if !is_current_async && !is_current_native { self.match_token(&Token::Private) } else { false };
+        // Only consume native/private if followed by fn (for function declarations)
+        while self.check(&Token::Native) || self.check(&Token::Private) {
+            let is_current_native = self.match_token(&Token::Native);
+            let is_current_private = if !is_current_native { self.match_token(&Token::Private) } else { false };
 
-            if is_current_async {
-                // Check if followed by fn (possibly with native in between: async native fn)
-                self.skip_newlines();
-                if self.check(&Token::Fn) {
-                    is_async = true;
-                } else if self.check(&Token::Native) {
-                    // async native fn pattern
-                    is_async = true;
-                    // Continue loop to consume native on next iteration
-                } else {
-                    // Not followed by fn, put async back by not consuming it
-                    self.pos -= 1; // Go back to async token
-                    break;
-                }
-            } else if is_current_native {
+            if is_current_native {
                 is_native = true;
             } else if is_current_private {
                 is_private = true;
@@ -422,7 +402,7 @@ impl Parser {
         } else if self.match_token(&Token::Enum) {
             self.parse_enum(is_private)?
         } else if self.match_token(&Token::Fn) {
-            self.parse_function_ext(is_private, is_async, is_native)?
+            self.parse_function_ext(is_private, is_native)?
         } else if self.match_token(&Token::Type) {
             self.parse_type_alias(is_private)?
         } else if self.match_token(&Token::Let) {
@@ -709,11 +689,10 @@ impl Parser {
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             let mut is_private = false;
             let mut is_native_method = false;
-            let mut is_async = false;
             let mut is_static = false;
 
             self.skip_newlines();
-            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Async) || self.check(&Token::Static) {
+            while self.check(&Token::Private) || self.check(&Token::Native) || self.check(&Token::Static) {
                 if self.match_token(&Token::Private) { is_private = true; }
                 else if self.match_token(&Token::Native) {
                     if !is_native_class {
@@ -721,19 +700,18 @@ impl Parser {
                     }
                     is_native_method = true;
                 }
-                else if self.match_token(&Token::Async) { is_async = true; }
                 else if self.match_token(&Token::Static) { is_static = true; }
                 self.skip_newlines();
             }
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_method(is_private, is_async, is_native_method || is_native_class, is_static)?;
+                let method = self.parse_method(is_private, is_native_method || is_native_class, is_static)?;
                 methods.push(method);
             } else if self.match_token(&Token::Constructor) {
                 if is_static {
                     return self.error_generic("Constructor cannot be static");
                 }
-                let method = self.parse_method_named("constructor", is_private, false, is_native_class, is_static)?;
+                let method = self.parse_method_named("constructor", is_private, is_native_class, is_static)?;
                 if is_native_class && !method.body.is_empty() {
                     return self.error_generic("Constructor in native classes cannot have implementation.");
                 }
@@ -780,7 +758,6 @@ impl Parser {
                 return_optional: false,
                 body: vec![],
                 private: false,
-                is_async: false,
                 is_native: false,
                 is_static: false,
                 type_params: Vec::new(),
@@ -799,7 +776,6 @@ impl Parser {
                     return_optional: false,
                     body: vec![],
                     private: false,
-                    is_async: false,
                     is_native: false,
                     is_static: false,
                     type_params: Vec::new(),
@@ -863,17 +839,15 @@ impl Parser {
         self.skip_newlines();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             let mut is_private = false;
-            let mut is_async = false;
 
             self.skip_newlines();
-            while self.check(&Token::Private) || self.check(&Token::Async) {
+            while self.check(&Token::Private) {
                 if self.match_token(&Token::Private) { is_private = true; }
-                else if self.match_token(&Token::Async) { is_async = true; }
                 self.skip_newlines();
             }
 
             if self.match_token(&Token::Fn) {
-                let method = self.parse_interface_method(is_private, is_async)?;
+                let method = self.parse_interface_method(is_private)?;
                 methods.push(method);
             } else if self.check(&Token::Class) {
                 self.advance(); // consume 'class' token
@@ -904,7 +878,7 @@ impl Parser {
         Ok(Stmt::Interface(InterfaceDef { name, type_params, parent_interfaces, methods, nested_classes, nested_interfaces, private: is_private }))
     }
 
-    fn parse_interface_method(&mut self, private: bool, is_async: bool) -> Result<Method, String> {
+    fn parse_interface_method(&mut self, private: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected method name"),
@@ -962,7 +936,7 @@ impl Parser {
             Vec::new()
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native: false, is_static: false, type_params })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_native: false, is_static: false, type_params })
     }
 
     fn parse_enum(&mut self, is_private: bool) -> Result<Stmt, String> {
@@ -1041,7 +1015,7 @@ impl Parser {
         Ok(Stmt::TypeAlias(TypeAliasDef { name, type_params, aliased_type, private: is_private }))
     }
 
-    fn parse_function_ext(&mut self, is_private: bool, is_async: bool, is_native: bool) -> Result<Stmt, String> {
+    fn parse_function_ext(&mut self, is_private: bool, is_native: bool) -> Result<Stmt, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected function name"),
@@ -1119,7 +1093,6 @@ impl Parser {
             return_type,
             return_optional,
             body,
-            is_async,
             is_native,
             private: is_private,
             type_params
@@ -1152,15 +1125,15 @@ impl Parser {
         Ok(Field { name, type_name, default, private, is_static })
     }
 
-    fn parse_method(&mut self, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
+    fn parse_method(&mut self, private: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected method name"),
         };
-        self.parse_method_named(&name, private, is_async, is_native, is_static)
+        self.parse_method_named(&name, private, is_native, is_static)
     }
 
-    fn parse_method_named(&mut self, name: &str, private: bool, is_async: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
+    fn parse_method_named(&mut self, name: &str, private: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
         // Parse generic type parameters if present: fn name<T>(params)
         let type_params = if self.match_token(&Token::LAngle) {
             let mut params = Vec::new();
@@ -1226,7 +1199,7 @@ impl Parser {
             body
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_async, is_native, is_static, type_params })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_native, is_static, type_params })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -1269,12 +1242,12 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<(String, bool), String> {
         self.skip_newlines();
-        
-        // Check for function type: [async] (params) -> return_type
-        if self.check(&Token::LParen) || self.check(&Token::Async) {
+
+        // Check for function type: (params) -> return_type
+        if self.check(&Token::LParen) {
             return self.parse_function_type();
         }
-        
+
         let token = self.advance();
         let type_name = match &token {
             Token::TypeInt => "int".to_string(),
@@ -1332,56 +1305,47 @@ impl Parser {
     }
 
     fn parse_function_type(&mut self) -> Result<(String, bool), String> {
-        // Check for async function type: async (params) -> return_type
-        let is_async = self.match_token(&Token::Async);
-        if is_async {
-            self.skip_newlines();
-        }
-        
         // Parse function type: (param_types) -> return_type
         let mut type_str = String::from("(");
-        
+
         if !self.match_token(&Token::LParen) {
             return self.error_generic("Expected '(' at start of function type");
         }
         self.skip_newlines();
-        
+
         let mut first = true;
         while !self.check(&Token::RParen) && !self.check(&Token::Eof) {
             if !first {
                 type_str.push_str(", ");
             }
             first = false;
-            
+
             let (param_type, _) = self.parse_type()?;
             type_str.push_str(&param_type);
-            
+
             if !self.match_token(&Token::Comma) {
                 break;
             }
             self.skip_newlines();
         }
-        
+
         if !self.match_token(&Token::RParen) {
             return self.error_generic("Expected ')' after function parameter types");
         }
         type_str.push(')');
-        
+
         // Parse return type
         self.skip_newlines();
         if !self.match_token(&Token::Arrow) {
             return self.error_generic("Expected '->' in function type");
         }
         self.skip_newlines();
-        
+
         let (return_type, optional) = self.parse_type()?;
-        
-        if is_async {
-            type_str.insert_str(0, "async ");
-        }
+
         type_str.push_str(" -> ");
         type_str.push_str(&return_type);
-        
+
         Ok((type_str, optional))
     }
 
@@ -2024,14 +1988,6 @@ impl Parser {
             }
         }
 
-        if self.match_token(&Token::Await) {
-            let span = self.compute_span(self.pos - 1);
-            return Ok(Expr::Await {
-                expr: Box::new(self.parse_unary()?),
-                span,
-            });
-        }
-
         self.parse_call()
     }
 
@@ -2314,7 +2270,7 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_lambda(&mut self, is_async: bool) -> Result<Expr, String> {
+    fn parse_lambda(&mut self) -> Result<Expr, String> {
         let span = self.compute_span(self.pos - 1);
 
         // Parse parameters (already consumed LParen)
@@ -2348,11 +2304,11 @@ impl Parser {
             return self.error_generic("Expected '}' to close lambda body");
         }
 
-        Ok(Expr::Lambda { params, return_type, body, span, is_async })
+        Ok(Expr::Lambda { params, return_type, body, span })
     }
 
     /// Check if the current position (after LParen) looks like a lambda
-    /// Lambda syntax: [async] (params): ReturnType { body }
+    /// Lambda syntax: (params): ReturnType { body }
     fn is_lambda(&mut self) -> bool {
         // Save position
         let saved_pos = self.pos;
@@ -2417,25 +2373,6 @@ impl Parser {
         found_params_end
     }
 
-    /// Check if current position looks like an async lambda (called after 'async' was consumed)
-    /// Async lambda syntax: (params): ReturnType { body }
-    fn is_async_lambda(&mut self) -> bool {
-        // Save position - we're already past 'async'
-        let saved_pos = self.pos;
-        let mut result = false;
-
-        // Must have '(' at current position
-        if self.match_token(&Token::LParen) {
-            // Use is_lambda to check the rest
-            result = self.is_lambda();
-        }
-
-        // Restore position
-        self.pos = saved_pos;
-
-        result
-    }
-
     fn check_type_token(&self) -> bool {
         matches!(self.peek(), Token::TypeInt | Token::TypeFloat | Token::TypeStr | Token::TypeBool |
             Token::TypeInt8 | Token::TypeUInt8 | Token::TypeInt16 | Token::TypeUInt16 |
@@ -2454,7 +2391,7 @@ impl Parser {
                 // Check if this is a lambda: (params): ReturnType { body }
                 // We need to peek ahead to see if this looks like a lambda
                 if self.is_lambda() {
-                    return self.parse_lambda(false);
+                    return self.parse_lambda();
                 }
                 // Otherwise it's a parenthesized expression
                 let expr = self.parse_expression()?;
@@ -2462,18 +2399,6 @@ impl Parser {
                     return self.error_expr("Expected ')' after expression");
                 }
                 Ok(expr)
-            },
-            Token::Async => {
-                // Check if this is an async lambda: async (params): ReturnType { body }
-                // Note: self.advance() already consumed 'async', so we're now at the next token
-                if self.is_async_lambda() {
-                    // We're already past 'async', just need to match '(' and parse lambda
-                    if self.match_token(&Token::LParen) {
-                        return self.parse_lambda(true);
-                    }
-                }
-                // Not an async lambda, treat as identifier
-                Ok(Expr::Variable { name: "async".to_string(), span: self.compute_span(token_pos) })
             },
             Token::Identifier(name) => {
                 let span = self.compute_span(token_pos);
@@ -2653,12 +2578,6 @@ impl Parser {
                     span: Span { line, column: column_offset },
                 }
             }
-            Expr::Await { expr: inner, span: _ } => {
-                Expr::Await {
-                    expr: Box::new(Self::adjust_expr_span(*inner, line, column_offset)),
-                    span: Span { line, column: column_offset },
-                }
-            }
             Expr::Cast { expr: inner, target_type, span: _ } => {
                 Expr::Cast {
                     expr: Box::new(Self::adjust_expr_span(*inner, line, column_offset)),
@@ -2686,13 +2605,12 @@ impl Parser {
                     inferred_type,
                 }
             }
-            Expr::Lambda { params, return_type, body, span: _, is_async } => {
+            Expr::Lambda { params, return_type, body, span: _ } => {
                 Expr::Lambda {
                     params,
                     return_type,
                     body,  // Block contains statements, not expressions
                     span: Span { line, column: column_offset },
-                    is_async,
                 }
             }
         }

@@ -45,9 +45,9 @@ native class HttpClient {
 
   fn addHeader(name: str, value: str)
 
-  async fn get(url: str): Response?
+  fn get(url: str): Response?
 
-  async fn post(url: str, body: str): Response?
+  fn post(url: str, body: str): Response?
 
   // async fn get(req: Request): Response?
 

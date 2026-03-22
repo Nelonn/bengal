@@ -1,4 +1,4 @@
-use crate::vm::{VM, Value, PromiseState, NativeFn, Class, Function, RunResult};
+use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, PromiseState};
 use crate::opcodes::Opcode;
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use crate::async_runtime;
@@ -89,12 +89,12 @@ impl Executor {
         // Build new bytecode vector to avoid in-place corruption
         let mut new_bytecode = Vec::with_capacity(bytecode.len() + bytecode.len() / 10);
         let mut i = 0;
-        
+
         while i < bytecode.len() {
             let opcode_byte = bytecode[i];
 
-            // Check if this is CallNative or CallNativeAsync
-            if opcode_byte == Opcode::CallNative as u8 || opcode_byte == Opcode::CallNativeAsync as u8 {
+            // Check if this is CallNative
+            if opcode_byte == Opcode::CallNative as u8 {
                 // Format: [CallNative, Rd, name_idx, arg_start, arg_count] (5 bytes)
                 if i + 4 < bytecode.len() {
                     let rd = bytecode[i + 1];
@@ -126,27 +126,26 @@ impl Executor {
         *bytecode = new_bytecode;
     }
 
-    pub async fn run(&mut self, bytecode: Bytecode, source_file: Option<&str>) -> Result<Option<Value>, String> {
+    pub fn run(&mut self, bytecode: Bytecode, source_file: Option<&str>) -> Result<Option<Value>, String> {
         if let Some(file) = source_file {
             self.vm.set_source_file(file);
         }
-        
+
         let mut bytecode_data = bytecode.data;
         let strings = bytecode.strings;
-        
+
         // Link bytecode if linker is available
         if self.linker.is_some() {
             Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
-        
+
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
-        match self.vm.run().await.map_err(|e| e.to_string())? {
+        match self.vm.run().map_err(|e| e.to_string())? {
             RunResult::Finished(val) => Ok(val),
             RunResult::Breakpoint => {
                 println!("Breakpoint hit at line {}", self.vm.get_line());
                 Ok(None)
             }
-            RunResult::Awaiting(promise) => Ok(Some(Value::Promise(promise))),
         }
     }
 
@@ -166,27 +165,35 @@ impl Executor {
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
         loop {
-            let result = self.vm.run().await.map_err(|e| e.to_string())?;
+            let result = self.vm.run().map_err(|e| e.to_string())?;
 
             match result {
-                RunResult::Finished(val) => return Ok(val),
+                RunResult::Finished(val) => {
+                    // Check if the result is a Promise that needs to be polled
+                    if let Some(Value::Promise(promise)) = val {
+                        // Poll the promise until it resolves or rejects
+                        loop {
+                            async_runtime::sleep(std::time::Duration::from_millis(10)).await;
+                            let state = promise.lock().await;
+                            match &*state {
+                                PromiseState::Pending => {
+                                    drop(state);
+                                    continue;
+                                }
+                                PromiseState::Resolved(val) => {
+                                    return Ok(Some(val.clone()));
+                                }
+                                PromiseState::Rejected(val) => {
+                                    return Err(format!("Promise rejected: {}", val.to_string()));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(val);
+                }
                 RunResult::Breakpoint => {
                     println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                     continue;
-                }
-                RunResult::Awaiting(promise) => {
-                    let mut state = promise.lock().await;
-                    match &mut *state {
-                        PromiseState::Pending => {
-                            drop(state);
-                            async_runtime::sleep(std::time::Duration::from_millis(10)).await;
-                            continue;
-                        }
-                        PromiseState::Resolved(_) | PromiseState::Rejected(_) => {
-                            drop(state);
-                            continue;
-                        }
-                    }
                 }
             }
         }

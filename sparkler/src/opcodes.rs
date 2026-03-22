@@ -31,17 +31,10 @@ pub enum Opcode {
     CallNative = 0x41,   // Rd, name_idx, arg_start, arg_count
     Invoke = 0x42,       // Rd, method_idx, arg_start, arg_count
     Return = 0x43,       // Rs
-    CallAsync = 0x44,
-    CallNativeAsync = 0x45,
-    InvokeAsync = 0x46,
-    Await = 0x47,
-    Spawn = 0x48,
-    InvokeInterface = 0x49,  // Rd, method_idx, arg_start, arg_count
-    InvokeInterfaceAsync = 0x4A,  // Rd, method_idx, arg_start, arg_count
+    InvokeInterface = 0x44,  // Rd, method_idx, arg_start, arg_count
 
     // Indexed native calls (optimized - uses function index instead of string lookup)
-    CallNativeIndexed = 0x4B,  // Rd, func_idx (u16), arg_start, arg_count
-    CallNativeIndexedAsync = 0x4C,  // Rd, func_idx (u16), arg_start, arg_count
+    CallNativeIndexed = 0x45,  // Rd, func_idx (u16), arg_start, arg_count
 
     // Control flow
     Jump = 0x50,         // target (2 bytes)
@@ -118,15 +111,8 @@ impl Opcode {
             Opcode::CallNative => 5,
             Opcode::Invoke => 5,
             Opcode::Return => 2,
-            Opcode::CallAsync => 5,
-            Opcode::CallNativeAsync => 5,
-            Opcode::InvokeAsync => 5,
-            Opcode::Await => 3,
-            Opcode::Spawn => 3,
             Opcode::InvokeInterface => 6,
-            Opcode::InvokeInterfaceAsync => 6,
             Opcode::CallNativeIndexed => 6,
-            Opcode::CallNativeIndexedAsync => 6,
             Opcode::Jump => 3,
             Opcode::JumpIfTrue => 4,
             Opcode::JumpIfFalse => 4,

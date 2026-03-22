@@ -29,7 +29,6 @@ pub enum Type {
     Class(String),
     Enum(String),
     Optional(Box<Type>),
-    Promise(Box<Type>),
     Array(Box<Type>),
     Null,
     Any,
@@ -58,14 +57,11 @@ impl Type {
             return Type::Optional(Box::new(Type::from_str(inner)));
         }
 
-        // Handle function types: (param_types) -> return_type or async (params) -> return_type
-        let s_trimmed = s.trim_start_matches("async ");
-        let is_async = s.starts_with("async ");
-        
-        if s_trimmed.starts_with('(') {
-            if let Some(arrow_pos) = s_trimmed.find(") -> ") {
-                let params_str = &s_trimmed[1..arrow_pos];
-                let return_str = &s_trimmed[arrow_pos + 4..];
+        // Handle function types: (param_types) -> return_type
+        if s.starts_with('(') {
+            if let Some(arrow_pos) = s.find(") -> ") {
+                let params_str = &s[1..arrow_pos];
+                let return_str = &s[arrow_pos + 4..];
 
                 let param_types: Vec<Type> = if params_str.trim().is_empty() {
                     Vec::new()
@@ -75,12 +71,7 @@ impl Type {
                         .collect()
                 };
 
-                let inner_type = Type::from_str(return_str.trim());
-                let return_type = if is_async {
-                    Box::new(Type::Promise(Box::new(inner_type)))
-                } else {
-                    Box::new(inner_type)
-                };
+                let return_type = Box::new(Type::from_str(return_str.trim()));
                 return Type::Function(param_types, return_type);
             }
         }
@@ -175,7 +166,6 @@ impl Type {
             Type::Class(name) => name.clone(),
             Type::Enum(name) => name.clone(),
             Type::Optional(t) => format!("{}?", t.to_str()),
-            Type::Promise(t) => format!("Promise<{}>", t.to_str()),
             Type::Array(t) => format!("{}[]", t.to_str()),
             Type::Null => "null".to_string(),
             Type::Unknown => "unknown".to_string(),
@@ -206,7 +196,6 @@ impl Type {
             (_, Type::Any) => true,
             (Type::Any, _) => true,
             (Type::Null, Type::Optional(_)) => true,
-            (Type::Null, Type::Promise(_)) => true,
             (inner, Type::Optional(target)) => inner.is_assignable_to(target),
             (Type::Optional(inner), other) => inner.is_assignable_to(other),
             (Type::Array(a), Type::Array(b)) => a.is_assignable_to(b),
@@ -277,7 +266,6 @@ pub struct FunctionSignature {
     pub return_type: Option<Type>,
     pub return_optional: bool,
     pub is_method: bool,
-    pub is_async: bool,
     pub is_native: bool,
     pub private: bool,
     pub type_params: Vec<String>,
@@ -354,7 +342,6 @@ pub struct MethodSignature {
     pub return_type: Option<Type>,
     pub return_optional: bool,
     pub private: bool,
-    pub is_async: bool,
     pub is_native: bool,
     pub is_static: bool,
     pub type_params: Vec<String>,
@@ -420,7 +407,6 @@ pub struct TypeContext {
     pub current_class: Option<String>,
     pub current_module: Option<String>,
     pub current_method_return: Option<Type>,
-    pub current_async_inner_return: Option<Type>,
     pub current_method_params: Vec<String>,
     /// List of imports with their scope information
     pub imports: Vec<ImportEntry>,
@@ -454,7 +440,6 @@ impl TypeContext {
             current_class: None,
             current_module: None,
             current_method_return: None,
-            current_async_inner_return: None,
             current_method_params: Vec::new(),
             imports: Vec::new(),
             import_paths: Vec::new(),
@@ -489,7 +474,6 @@ impl TypeContext {
             return_type: Some(Type::Str),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -506,7 +490,6 @@ impl TypeContext {
             return_type: Some(Type::Unknown),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -526,7 +509,6 @@ impl TypeContext {
             return_type: Some(Type::Str),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -543,7 +525,6 @@ impl TypeContext {
             return_type: Some(Type::Str),
             return_optional: true,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -560,7 +541,6 @@ impl TypeContext {
             return_type: Some(Type::Unknown),
             return_optional: true,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -582,7 +562,6 @@ impl TypeContext {
             return_type: Some(Type::Int),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -594,7 +573,6 @@ impl TypeContext {
             return_type: Some(Type::Str),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -606,7 +584,6 @@ impl TypeContext {
             return_type: Some(Type::Array(Box::new(Type::Str))),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -618,7 +595,6 @@ impl TypeContext {
             return_type: Some(Type::Int),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -630,7 +606,6 @@ impl TypeContext {
             return_type: Some(Type::Float),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -642,7 +617,6 @@ impl TypeContext {
             return_type: Some(Type::Bool),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -654,7 +628,6 @@ impl TypeContext {
             return_type: Some(Type::Bool),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -666,7 +639,6 @@ impl TypeContext {
             return_type: Some(Type::Bool),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -681,7 +653,6 @@ impl TypeContext {
             return_type: Some(Type::Str),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -718,7 +689,6 @@ impl TypeContext {
             return_type: Some(Type::Int),
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -730,7 +700,6 @@ impl TypeContext {
             return_type: None,
             return_optional: false,
             private: false,
-            is_async: false,
             is_native: true,
             is_static: false,
             type_params: Vec::new(),
@@ -762,7 +731,6 @@ impl TypeContext {
             return_type: Some(Type::Str),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -780,7 +748,6 @@ impl TypeContext {
             return_type: Some(Type::Int),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -798,7 +765,6 @@ impl TypeContext {
             return_type: Some(Type::Float),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -816,7 +782,6 @@ impl TypeContext {
             return_type: Some(Type::Bool),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -834,7 +799,6 @@ impl TypeContext {
             return_type: Some(Type::Int8),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -852,7 +816,6 @@ impl TypeContext {
             return_type: Some(Type::UInt8),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -870,7 +833,6 @@ impl TypeContext {
             return_type: Some(Type::Int16),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -888,7 +850,6 @@ impl TypeContext {
             return_type: Some(Type::UInt16),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -906,7 +867,6 @@ impl TypeContext {
             return_type: Some(Type::Int32),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -924,7 +884,6 @@ impl TypeContext {
             return_type: Some(Type::UInt32),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -942,7 +901,6 @@ impl TypeContext {
             return_type: Some(Type::Int64),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -960,7 +918,6 @@ impl TypeContext {
             return_type: Some(Type::UInt64),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -978,7 +935,6 @@ impl TypeContext {
             return_type: Some(Type::Float32),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -996,7 +952,6 @@ impl TypeContext {
             return_type: Some(Type::Float64),
             return_optional: false,
             is_method: false,
-            is_async: false,
             is_native: true,
             private: false,
             type_params: Vec::new(),
@@ -1044,7 +999,6 @@ impl TypeContext {
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
                 return_optional: method.return_optional,
                 private: method.private,
-                is_async: method.is_async,
                 is_native: method.is_native,
                 is_static: method.is_static,
                 type_params: method.type_params.clone(),
@@ -1065,7 +1019,6 @@ impl TypeContext {
                 return_type: None,
                 return_optional: false,
                 private: false,
-                is_async: false,
                 is_native: false,
                 is_static: false,
                 type_params: Vec::new(),
@@ -1090,7 +1043,6 @@ impl TypeContext {
                     return_type: None,
                     return_optional: false,
                     private: false,
-                    is_async: false,
                     is_native: false,
                     is_static: false,
                     type_params: Vec::new(),
@@ -1144,7 +1096,6 @@ impl TypeContext {
                 return_type: method.return_type.as_ref().map(|t| Type::from_str(t)),
                 return_optional: method.return_optional,
                 private: method.private,
-                is_async: method.is_async,
                 is_native: method.is_native,
                 is_static: method.is_static,
                 type_params: method.type_params.clone(),
@@ -1287,9 +1238,6 @@ impl TypeContext {
             }
             Type::Optional(inner) => {
                 Type::Optional(Box::new(self.substitute_type_params(inner, type_args, type_params)))
-            }
-            Type::Promise(inner) => {
-                Type::Promise(Box::new(self.substitute_type_params(inner, type_args, type_params)))
             }
             Type::GenericInstance(name, args) => {
                 let substituted_args: Vec<Type> = args
@@ -2401,7 +2349,6 @@ impl TypeChecker {
                             return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
                             return_optional: func.return_optional,
                             is_method: false,
-                            is_async: func.is_async,
                             is_native: func.is_native,
                             private: func.private,
                             type_params: func.type_params.clone(),
@@ -2633,12 +2580,7 @@ impl TypeChecker {
                 }
             }
             Stmt::Return { expr, .. } => {
-                // For async functions, check against the inner return type
-                let expected_return = if self.context.current_async_inner_return.is_some() {
-                    self.context.current_async_inner_return.clone()
-                } else {
-                    self.context.current_method_return.clone()
-                };
+                let expected_return = self.context.current_method_return.clone();
 
                 // Type check the return expression (even if there's no expected return type)
                 if let Some(e) = expr {
@@ -2774,10 +2716,9 @@ impl TypeChecker {
 
     fn check_function(&mut self, func: &crate::parser::FunctionDef) {
         let old_return = self.context.current_method_return.clone();
-        let old_async_inner = self.context.current_async_inner_return.clone();
 
         // Handle optional return types
-        let mut return_type = func.return_type.as_ref().map(|t| {
+        let return_type = func.return_type.as_ref().map(|t| {
             let ty = Type::from_str(t);
             if func.return_optional {
                 Type::Optional(Box::new(ty))
@@ -2785,13 +2726,6 @@ impl TypeChecker {
                 ty
             }
         });
-
-        // Async functions return Promise<T> but inner return is T
-        if func.is_async {
-            let inner_type = return_type.clone().unwrap_or(Type::Null);
-            self.context.current_async_inner_return = Some(inner_type.clone());
-            return_type = Some(Type::Promise(Box::new(inner_type)));
-        }
 
         self.context.current_method_return = return_type;
 
@@ -2831,15 +2765,13 @@ impl TypeChecker {
         }
 
         self.context.current_method_return = old_return;
-        self.context.current_async_inner_return = old_async_inner;
     }
 
     fn check_method(&mut self, method: &Method, class_name: &str) {
         let old_return = self.context.current_method_return.clone();
-        let old_async_inner = self.context.current_async_inner_return.clone();
 
         // Handle optional return types
-        let mut return_type = method.return_type.as_ref().map(|t| {
+        let return_type = method.return_type.as_ref().map(|t| {
             let mut ty = Type::from_str(t);
             // Resolve 'self' type to the actual class type
             if ty == Type::SelfType {
@@ -2851,13 +2783,6 @@ impl TypeChecker {
                 ty
             }
         });
-
-        // Async methods return Promise<T> but inner return is T
-        if method.is_async {
-            let inner_type = return_type.clone().unwrap_or(Type::Null);
-            self.context.current_async_inner_return = Some(inner_type.clone());
-            return_type = Some(Type::Promise(Box::new(inner_type)));
-        }
 
         self.context.current_method_return = return_type;
 
@@ -2897,7 +2822,6 @@ impl TypeChecker {
         self.context.variables.remove("self");
 
         self.context.current_method_return = old_return;
-        self.context.current_async_inner_return = old_async_inner;
     }
 
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
@@ -3255,7 +3179,6 @@ impl TypeChecker {
                                     return_type: substituted_return,
                                     return_optional: sig.return_optional,
                                     is_method: sig.is_method,
-                                    is_async: sig.is_async,
                                     is_native: sig.is_native,
                                     private: sig.private,
                                     type_params: sig.type_params.clone(),
@@ -3264,15 +3187,7 @@ impl TypeChecker {
 
                                 self.check_function_call(&substituted_sig, args, func_name);
 
-                                let mut return_type = substituted_sig.return_type.clone().unwrap_or(Type::Unknown);
-                                if sig.is_async {
-                                    if let Type::Promise(_) = return_type {
-                                        // Already a Promise type
-                                    } else {
-                                        return_type = Type::Promise(Box::new(return_type));
-                                    }
-                                }
-                                return return_type;
+                                return substituted_sig.return_type.clone().unwrap_or(Type::Unknown);
                             }
                             // Not a generic function, fall through to regular function call
                         }
@@ -3289,16 +3204,7 @@ impl TypeChecker {
                     let func_sig = self.context.resolve_function_call(func_name, &arg_types);
                     if let Some(sig) = func_sig.cloned() {
                         self.check_function_call(&sig, args, func_name);
-                        let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
-                        // If calling an async function, return type is Promise<T>
-                        if sig.is_async {
-                            if let Type::Promise(_) = return_type {
-                                // Already a Promise type
-                            } else {
-                                return_type = Type::Promise(Box::new(return_type));
-                            }
-                        }
-                        return_type
+                        sig.return_type.clone().unwrap_or(Type::Unknown)
                     } else {
                         // Function not found or no matching overload
                         // Check if there are any overloads available for this function name
@@ -3435,7 +3341,6 @@ impl TypeChecker {
                                                     }),
                                                     return_optional: sig.return_optional,
                                                     private: sig.private,
-                                                    is_async: sig.is_async,
                                                     is_native: sig.is_native,
                                                     is_static: sig.is_static,
                                                     type_params: sig.type_params.clone(),
@@ -3530,16 +3435,7 @@ impl TypeChecker {
                             }
 
                             self.check_method_call(&sig, args, name, &class_name);
-                            let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
-                            // If calling an async method, return type is Promise<T>
-                            if sig.is_async {
-                                if let Type::Promise(_) = return_type {
-                                    // Already a Promise type
-                                } else {
-                                    return_type = Type::Promise(Box::new(return_type));
-                                }
-                            }
-                            return return_type;
+                            return sig.return_type.clone().unwrap_or(Type::Unknown);
                         } else if !matches!(object_type, Type::Class(_)) {
                             // If it's a built-in type and method not found, don't fallback to module lookup
                             self.context.add_error_with_location(
@@ -3559,14 +3455,7 @@ impl TypeChecker {
                                 .map(|arg| self.infer_expr(arg))
                                 .collect();
                             self.check_function_call(&sig, args, &sig.name);
-                            let mut return_type = sig.return_type.clone().unwrap_or(Type::Unknown);
-                            if sig.is_async {
-                                if let Type::Promise(_) = return_type {
-                                } else {
-                                    return_type = Type::Promise(Box::new(return_type));
-                                }
-                            }
-                            return_type
+                            return sig.return_type.clone().unwrap_or(Type::Unknown);
                         } else if let Some(qualified_class_name) = self.context.resolve_qualified_class(module_name, name) {
                             // It's a qualified class instantiation
                             let arg_types: Vec<Type> = args.iter()
@@ -3846,21 +3735,6 @@ impl TypeChecker {
                 }
                 Type::Int
             }
-            Expr::Await { expr, span } => {
-                let inner_type = self.infer_expr(expr);
-                // Await unwraps Promise<T> to T
-                match inner_type {
-                    Type::Promise(t) => *t,
-                    Type::Unknown => Type::Unknown,
-                    _ => {
-                        self.context.add_error_with_location(
-                            format!("Can only await Promise values, got {}", inner_type.to_str()),
-                            span.line, span.column, None, None
-                        );
-                        Type::Unknown
-                    }
-                }
-            }
             Expr::Cast { expr, target_type, .. } => {
                 // Type check the inner expression
                 let inner_type = self.infer_expr(expr);
@@ -3972,7 +3846,7 @@ impl TypeChecker {
                 }
                 Type::Unknown
             }
-            Expr::Lambda { params, return_type, body, is_async, .. } => {
+            Expr::Lambda { params, return_type, body, .. } => {
                 // Infer lambda type: (param_types) -> return_type
                 let param_types: Vec<Type> = params.iter()
                     .map(|p| p.type_name.as_ref()
@@ -3983,7 +3857,7 @@ impl TypeChecker {
                 let ret_type = return_type.as_ref()
                     .map(|t| Type::from_str(t))
                     .unwrap_or(Type::Null);
-                
+
                 // Note: 'self' type in lambda return is not resolved here since lambdas
                 // don't have a class context. It would remain as SelfType which would
                 // only match with another SelfType (unlikely to be useful in lambdas).
@@ -4014,14 +3888,7 @@ impl TypeChecker {
                 }
                 self.context.current_method_return = old_return;
 
-                // For async lambdas, wrap return type in Promise
-                let final_ret_type = if *is_async {
-                    Type::Promise(Box::new(ret_type))
-                } else {
-                    ret_type
-                };
-
-                Type::Function(param_types, Box::new(final_ret_type))
+                Type::Function(param_types, Box::new(ret_type))
             }
         }
     }
@@ -4218,7 +4085,7 @@ impl TypeChecker {
                 }
                 Type::Unknown
             }
-            Expr::Lambda { params, return_type: _, body, is_async, .. } => {
+            Expr::Lambda { params, return_type: _, body, .. } => {
                 // Type check lambda with expected function type
                 if let Some(expected) = expected_type {
                     if let Type::Function(expected_params, expected_return) = expected {
@@ -4242,17 +4109,7 @@ impl TypeChecker {
                             })
                             .collect();
 
-                        // For async lambdas, expected return should be Promise<T>
-                        // Extract inner type from Promise if async
-                        let ret_type = if *is_async {
-                            if let Type::Promise(inner) = expected_return.as_ref() {
-                                inner.as_ref().clone()
-                            } else {
-                                expected_return.as_ref().clone()
-                            }
-                        } else {
-                            expected_return.as_ref().clone()
-                        };
+                        let ret_type = expected_return.as_ref().clone();
 
                         // Add parameters as local variables with expected types
                         let mut added_vars = Vec::new();
@@ -4276,14 +4133,7 @@ impl TypeChecker {
                         }
                         self.context.current_method_return = old_return;
 
-                        // Return function type with Promise wrapper for async
-                        let final_ret_type = if *is_async {
-                            Type::Promise(Box::new(ret_type))
-                        } else {
-                            ret_type.clone()
-                        };
-
-                        return Type::Function(param_types, Box::new(final_ret_type));
+                        return Type::Function(param_types, Box::new(ret_type.clone()));
                     }
                 }
                 // Fall back to regular inference

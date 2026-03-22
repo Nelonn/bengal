@@ -278,67 +278,6 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
             }
         }
 
-        Opcode::CallAsync => {
-            if pc + 4 < data.len() {
-                let func_idx = data[pc + 2] as usize;
-                let arg_start = data[pc + 3];
-                let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, func_{}, args=[R{}..R{}]",
-                    data[pc + 1], func_idx, arg_start, arg_end);
-                (format!("CALL_ASYNC"), operands, 4)
-            } else {
-                ("CALL_ASYNC".to_string(), String::new(), 0)
-            }
-        }
-
-        Opcode::CallNativeAsync => {
-            if pc + 4 < data.len() {
-                let name_idx = data[pc + 2] as usize;
-                let name = strings.get(name_idx)
-                    .map(|s| s.clone())
-                    .unwrap_or_else(|| format!("str.{}", name_idx));
-                let arg_start = data[pc + 3];
-                let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, \"{}\", args=[R{}..R{}]",
-                    data[pc + 1], name, arg_start, arg_end);
-                (format!("CALL_NATIVE_ASYNC"), operands, 4)
-            } else {
-                ("CALL_NATIVE_ASYNC".to_string(), String::new(), 0)
-            }
-        }
-
-        Opcode::InvokeAsync => {
-            if pc + 4 < data.len() {
-                let method_idx = data[pc + 2] as usize;
-                let arg_start = data[pc + 3];
-                let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, method_{}, args=[R{}..R{}]",
-                    data[pc + 1], method_idx, arg_start, arg_end);
-                (format!("INVOKE_ASYNC"), operands, 4)
-            } else {
-                ("INVOKE_ASYNC".to_string(), String::new(), 0)
-            }
-        }
-
-        Opcode::Await => {
-            if pc + 2 < data.len() {
-                (format!("AWAIT R{}, R{}", data[pc + 1], data[pc + 2]), String::new(), 2)
-            } else {
-                ("AWAIT".to_string(), String::new(), 0)
-            }
-        }
-
-        Opcode::Spawn => {
-            if pc + 2 < data.len() {
-                (format!("SPAWN R{}", data[pc + 1]), String::new(), 1)
-            } else {
-                ("SPAWN".to_string(), String::new(), 0)
-            }
-        }
-
         Opcode::InvokeInterface => {
             if pc + 4 < data.len() {
                 let vtable_idx = data[pc + 2] as usize;
@@ -353,20 +292,6 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
             }
         }
 
-        Opcode::InvokeInterfaceAsync => {
-            if pc + 4 < data.len() {
-                let vtable_idx = data[pc + 2] as usize;
-                let arg_start = data[pc + 3];
-                let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, vtable_{}, args=[R{}..R{}]",
-                    data[pc + 1], vtable_idx, arg_start, arg_end);
-                (format!("INVOKE_INTERFACE_ASYNC"), operands, 4)
-            } else {
-                ("INVOKE_INTERFACE_ASYNC".to_string(), String::new(), 0)
-            }
-        }
-
         Opcode::CallNativeIndexed => {
             if pc + 5 < data.len() {
                 let func_idx = u16::from_le_bytes([data[pc + 2], data[pc + 3]]) as usize;
@@ -378,20 +303,6 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, strings: &[String]
                 (format!("CALL_NATIVE_INDEXED"), operands, 5)
             } else {
                 ("CALL_NATIVE_INDEXED".to_string(), String::new(), 0)
-            }
-        }
-
-        Opcode::CallNativeIndexedAsync => {
-            if pc + 5 < data.len() {
-                let func_idx = u16::from_le_bytes([data[pc + 2], data[pc + 3]]) as usize;
-                let arg_start = data[pc + 4];
-                let arg_count = data[pc + 5];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, native_{}, args=[R{}..R{}]",
-                    data[pc + 1], func_idx, arg_start, arg_end);
-                (format!("CALL_NATIVE_INDEXED_ASYNC"), operands, 5)
-            } else {
-                ("CALL_NATIVE_INDEXED_ASYNC".to_string(), String::new(), 0)
             }
         }
 
@@ -668,15 +579,8 @@ fn opcode_from_byte(byte: u8) -> Opcode {
         0x41 => Opcode::CallNative,
         0x42 => Opcode::Invoke,
         0x43 => Opcode::Return,
-        0x44 => Opcode::CallAsync,
-        0x45 => Opcode::CallNativeAsync,
-        0x46 => Opcode::InvokeAsync,
-        0x47 => Opcode::Await,
-        0x48 => Opcode::Spawn,
-        0x49 => Opcode::InvokeInterface,
-        0x4A => Opcode::InvokeInterfaceAsync,
-        0x4B => Opcode::CallNativeIndexed,
-        0x4C => Opcode::CallNativeIndexedAsync,
+        0x44 => Opcode::InvokeInterface,
+        0x45 => Opcode::CallNativeIndexed,
         0x50 => Opcode::Jump,
         0x51 => Opcode::JumpIfTrue,
         0x52 => Opcode::JumpIfFalse,

@@ -1,15 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use crate::async_runtime::{self, Mutex as AsyncMutex};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use serde::ser::SerializeMap;
 use serde::de::{MapAccess, Visitor};
 use std::fmt;
-#[cfg(not(target_arch = "wasm32"))]
-use async_recursion::async_recursion;
 use std::any::Any;
 use crate::linker::NativeFunctionRegistry;
 use crate::opcodes::Opcode;
+use crate::async_runtime::Mutex as AsyncMutex;
 
 /// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
 fn extract_base_class_name(name: &str) -> &str {
@@ -112,8 +110,8 @@ pub enum Value {
     Null,
     Instance(Arc<Mutex<Instance>>),
     Array(Arc<Mutex<Vec<Value>>>),
-    Promise(Arc<AsyncMutex<PromiseState>>),
     Exception(Exception),
+    Promise(Arc<AsyncMutex<PromiseState>>),
 }
 
 impl fmt::Debug for Value {
@@ -134,8 +132,8 @@ impl fmt::Debug for Value {
             Value::Null => write!(f, "Null"),
             Value::Instance(_) => write!(f, "Instance(...)"),
             Value::Array(_) => write!(f, "Array(...)"),
-            Value::Promise(_) => write!(f, "Promise(...)"),
             Value::Exception(e) => write!(f, "Exception({})", e.message),
+            Value::Promise(_) => write!(f, "Promise(...)"),
         }
     }
 }
@@ -148,8 +146,8 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Instance(a), Value::Instance(b)) => Arc::ptr_eq(a, b),
             (Value::Array(a), Value::Array(b)) => Arc::ptr_eq(a, b),
-            (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             (Value::Exception(a), Value::Exception(b)) => a.message == b.message,
+            (Value::Promise(a), Value::Promise(b)) => Arc::ptr_eq(a, b),
             (Value::Int64(a), Value::Int64(b)) => a == b,
             (Value::Int64(a), Value::Int8(b)) => *a == *b as i64,
             (Value::Int64(a), Value::Int16(b)) => *a == *b as i64,
@@ -334,8 +332,8 @@ impl Value {
                         Value::Null => "null".to_string(),
                         Value::Instance(_) => "[instance]".to_string(),
                         Value::Array(_) => "[array]".to_string(),
-                        Value::Promise(_) => "[promise]".to_string(),
                         Value::Exception(e) => format!("[exception: {}]", e.message),
+                        Value::Promise(_) => "[promise]".to_string(),
                     };
                     fields_str.push(format!("\"{}\": {}", key, value_str));
                 }
@@ -346,17 +344,10 @@ impl Value {
                 let elements_str: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
                 format!("[{}]", elements_str.join(", "))
             }
-            Value::Promise(_) => "[promise]".to_string(),
             Value::Exception(e) => e.to_string(),
+            Value::Promise(_) => "[promise]".to_string(),
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum PromiseState {
-    Pending,
-    Resolved(Value),
-    Rejected(String),
 }
 
 #[derive(Clone)]
@@ -929,131 +920,52 @@ impl VM {
         self.source_file.clone()
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_recursion)]
-    #[cfg_attr(target_arch = "wasm32", allow(unused))]
-    pub async fn run(&mut self) -> Result<RunResult, Value> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            use std::pin::Pin;
-            use std::future::Future;
-            
-            // On WASM, use Box::pin for recursive calls
-            let mut result: Option<Result<RunResult, Value>> = None;
-            
-            loop {
-                if self.pc() >= self.bytecode.len() {
-                    if let Some(frame) = self.call_stack.last() {
-                        if frame.is_native {
-                            self.call_stack.pop();
-                            if self.call_stack.is_empty() {
-                                break;
-                            }
-                            continue;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                
-                let opcode = self.bytecode[self.pc()];
-                let exec_result = match self.execute(opcode).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        let exception = match &e {
-                            Value::Exception(existing) => existing.clone(),
-                            _ => self.build_exception(&e),
-                        };
-
-                        let mut has_local_handler = false;
-                        if let Some(handler) = self.exception_handlers.last() {
-                            if handler.call_stack_depth == self.call_stack.len() {
-                                has_local_handler = true;
-                            }
-                        }
-
-                        if has_local_handler {
-                            let handler = self.exception_handlers.pop().unwrap();
-                            self.set_pc(handler.catch_pc);
-                            self.set_reg(handler.catch_register as u8, Value::Exception(exception));
-                            continue;
-                        } else {
-                            return Err(Value::Exception(exception));
-                        }
-                    }
-                };
-
-                if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
-                    if !self.call_stack.is_empty() {
-                        self.call_stack.pop();
-                        if self.call_stack.is_empty() {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-
-                match exec_result {
-                    ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
-                    ExecutionResult::Breakpoint => {
-                        return Ok(RunResult::Breakpoint);
-                    }
-                    ExecutionResult::Continue => {}
-                }
+    pub fn run(&mut self) -> Result<RunResult, Value> {
+        loop {
+            if self.pc() >= self.bytecode.len() {
+                break;
             }
 
-            Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
-        }
-        
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            loop {
-                if self.pc() >= self.bytecode.len() {
-                    break;
-                }
-                
-                let opcode = self.bytecode[self.pc()];
-                let result = match self.execute(opcode).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        let exception = match &e {
-                            Value::Exception(existing) => existing.clone(),
-                            _ => self.build_exception(&e),
-                        };
+            let opcode = self.bytecode[self.pc()];
+            let result = match self.execute(opcode) {
+                Ok(res) => res,
+                Err(e) => {
+                    let exception = match &e {
+                        Value::Exception(existing) => existing.clone(),
+                        _ => self.build_exception(&e),
+                    };
 
-                        let mut has_local_handler = false;
-                        if let Some(handler) = self.exception_handlers.last() {
-                            if handler.call_stack_depth == self.call_stack.len() {
-                                has_local_handler = true;
-                            }
-                        }
-
-                        if has_local_handler {
-                            let handler = self.exception_handlers.pop().unwrap();
-                            self.set_pc(handler.catch_pc);
-                            self.set_reg(handler.catch_register as u8, Value::Exception(exception));
-                            continue;
-                        } else {
-                            return Err(Value::Exception(exception));
+                    let mut has_local_handler = false;
+                    if let Some(handler) = self.exception_handlers.last() {
+                        if handler.call_stack_depth == self.call_stack.len() {
+                            has_local_handler = true;
                         }
                     }
-                };
 
-                if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
-                    break;
-                }
-
-                match result {
-                    ExecutionResult::Awaiting(promise) => return Ok(RunResult::Awaiting(promise)),
-                    ExecutionResult::Breakpoint => {
-                        return Ok(RunResult::Breakpoint);
+                    if has_local_handler {
+                        let handler = self.exception_handlers.pop().unwrap();
+                        self.set_pc(handler.catch_pc);
+                        self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                        continue;
+                    } else {
+                        return Err(Value::Exception(exception));
                     }
-                    ExecutionResult::Continue => {}
                 }
+            };
+
+            if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
+                break;
             }
 
-            Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
+            match result {
+                ExecutionResult::Breakpoint => {
+                    return Ok(RunResult::Breakpoint);
+                }
+                ExecutionResult::Continue => {}
+            }
         }
+
+        Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -1074,8 +986,7 @@ impl VM {
         Exception::new(message, stack_trace)
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_recursion)]
-    async fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
+    fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
         match opcode {
             x if x == Opcode::Nop as u8 => {
                 self.set_pc(self.pc() + 1);
@@ -1258,7 +1169,7 @@ impl VM {
             // Call function
             // Format: [Call, Rd, func_idx, arg_start, arg_count]
             // Rd receives the result, args are in registers [arg_start..arg_start+arg_count]
-            x if x == Opcode::Call as u8 || x == Opcode::CallAsync as u8 => {
+            x if x == Opcode::Call as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1322,7 +1233,7 @@ impl VM {
                     // Calculate new frame base - place args in R1..Rn of new frame
                     // R0 of new frame will be the return value
                     let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-                    
+
                     // Check register bounds
                     if new_frame_base + function.register_count as usize > self.registers.len() {
                         return Err(Value::String("Register overflow: too many nested calls".to_string()));
@@ -1363,10 +1274,7 @@ impl VM {
                     let old_classes = std::mem::replace(&mut self.classes, new_classes);
 
                     // Execute function
-                    #[cfg(target_arch = "wasm32")]
-                    let result = Box::pin(self.run()).await;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let result = self.run().await;
+                    let result = self.run();
 
                     // Restore state
                     self.bytecode = old_bytecode;
@@ -1385,7 +1293,6 @@ impl VM {
                     match result {
                         Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
                         Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                        Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                         Err(e) => return Err(e),
                     }
                 } else {
@@ -1395,7 +1302,7 @@ impl VM {
 
             // Call native function
             // Format: [CallNative, Rd, name_idx, arg_start, arg_count]
-            x if x == Opcode::CallNative as u8 || x == Opcode::CallNativeAsync as u8 => {
+            x if x == Opcode::CallNative as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1429,10 +1336,10 @@ impl VM {
                 self.set_reg(rd, result);
                 self.set_pc(self.pc() + 1);
             }
-            
+
             // Call native function by index (optimized - O(1) lookup)
             // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count]
-            x if x == Opcode::CallNativeIndexed as u8 || x == Opcode::CallNativeIndexedAsync as u8 => {
+            x if x == Opcode::CallNativeIndexed as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1442,7 +1349,7 @@ impl VM {
                 let func_idx_hi = self.bytecode[self.pc()] as u16;
                 self.set_pc(self.pc() + 1);
                 let func_index = (func_idx_hi << 8) | func_idx_lo;
-                
+
                 let arg_start = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
                 let arg_count = self.bytecode[self.pc()] as u8;
@@ -1471,7 +1378,7 @@ impl VM {
             // Invoke method on instance
             // Format: [Invoke, Rd, method_idx, arg_start, arg_count]
             // First argument (arg_start) is the receiver (self)
-            x if x == Opcode::Invoke as u8 || x == Opcode::InvokeAsync as u8 => {
+            x if x == Opcode::Invoke as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1767,10 +1674,7 @@ impl VM {
                                 let old_classes = std::mem::replace(&mut self.classes, new_classes);
                                 let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
-                                #[cfg(target_arch = "wasm32")]
-                                let result = Box::pin(self.run()).await;
-                                #[cfg(not(target_arch = "wasm32"))]
-                                let result = self.run().await;
+                                let result = self.run();
 
                                 self.bytecode = old_bytecode;
                                 self.strings = old_strings;
@@ -1793,7 +1697,6 @@ impl VM {
                                         }
                                     },
                                     Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                    Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                                     Err(e) => return Err(e),
                                 }
                             } else {
@@ -1851,7 +1754,7 @@ impl VM {
             // Format: [InvokeInterface, Rd, method_idx, arg_start, arg_count]
             // First argument (arg_start) is the receiver (self)
             // method_idx is the index into the class's vtable
-            x if x == Opcode::InvokeInterface as u8 || x == Opcode::InvokeInterfaceAsync as u8 => {
+            x if x == Opcode::InvokeInterface as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rd = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);
@@ -1936,10 +1839,7 @@ impl VM {
                         let old_classes = std::mem::replace(&mut self.classes, new_classes);
                         let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
-                        #[cfg(target_arch = "wasm32")]
-                        let result = Box::pin(self.run()).await;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let result = self.run().await;
+                        let result = self.run();
 
                         self.bytecode = old_bytecode;
                         self.strings = old_strings;
@@ -1962,7 +1862,6 @@ impl VM {
                                 }
                             },
                             Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                            Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                             Err(e) => return Err(e),
                         }
                     } else {
@@ -2032,10 +1931,7 @@ impl VM {
                             let old_classes = std::mem::replace(&mut self.classes, new_classes);
                             let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
 
-                            #[cfg(target_arch = "wasm32")]
-                            let result = Box::pin(self.run()).await;
-                            #[cfg(not(target_arch = "wasm32"))]
-                            let result = self.run().await;
+                            let result = self.run();
 
                             self.bytecode = old_bytecode;
                             self.strings = old_strings;
@@ -2051,7 +1947,6 @@ impl VM {
                             match result {
                                 Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
                                 Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                Ok(RunResult::Awaiting(promise)) => return Ok(ExecutionResult::Awaiting(promise)),
                                 Err(e) => return Err(e),
                             }
                         } else {
@@ -2061,41 +1956,6 @@ impl VM {
                 } else {
                     return Err(Value::String(format!("Class '{}' not found", class_name)));
                 }
-            }
-
-            // Await a promise
-            // Format: [Await, Rd, Rs]
-            x if x == Opcode::Await as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-
-                let value = self.get_reg(rs).clone();
-                match value {
-                    Value::Promise(promise) => {
-                        loop {
-                            let mut state = promise.lock().await;
-                            match &mut *state {
-                                PromiseState::Pending => {
-                                    drop(state);
-                                    async_runtime::sleep(std::time::Duration::from_millis(10)).await;
-                                }
-                                PromiseState::Resolved(v) => {
-                                    self.set_reg(rd, v.clone());
-                                    break;
-                                }
-                                PromiseState::Rejected(e) => {
-                                    return Err(Value::String(format!("Promise rejected: {}", e)));
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        return Err(Value::String("Can only await Promise values".to_string()));
-                    }
-                }
-                self.set_pc(self.pc() + 1);
             }
 
             // Return from function
@@ -2808,17 +2668,22 @@ impl VM {
 }
 
 #[derive(Debug, Clone)]
+pub enum PromiseState {
+    Pending,
+    Resolved(Value),
+    Rejected(Value),
+}
+
+#[derive(Debug, Clone)]
 pub enum RunResult {
     Finished(Option<Value>),
     Breakpoint,
-    Awaiting(Arc<AsyncMutex<PromiseState>>),
 }
 
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     Continue,
     Breakpoint,
-    Awaiting(Arc<AsyncMutex<PromiseState>>),
 }
 
 impl Serialize for Value {
@@ -2857,9 +2722,8 @@ impl Serialize for Value {
                 }
                 seq.end()
             }
-            Value::Promise(_) => serializer.serialize_none(),
-
             Value::Exception(e) => serializer.serialize_str(&e.message),
+            Value::Promise(_) => serializer.serialize_str("[promise]"),
         }
     }
 }

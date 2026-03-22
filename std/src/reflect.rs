@@ -24,8 +24,8 @@ pub fn native_reflect_typeof(args: &mut Vec<Value>) -> Result<Value, Value> {
         Value::Null => "null",
         Value::Instance(_) => "object",
         Value::Array(_) => "array",
-        Value::Promise(_) => "promise",
         Value::Exception(_) => "exception",
+        Value::Promise(_) => "promise",
     };
 
     Ok(Value::String(type_name.to_string()))

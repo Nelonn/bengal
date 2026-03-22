@@ -1,8 +1,7 @@
 use sparkler::{PromiseState, Value};
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 
 pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
@@ -22,7 +21,7 @@ pub fn native_http_get(args: &mut Vec<Value>) -> Result<Value, Value> {
             }
             Err(e) => {
                 let mut state = p_clone.lock().await;
-                *state = PromiseState::Rejected(e);
+                *state = PromiseState::Rejected(Value::String(e));
             }
         }
     });
@@ -50,7 +49,7 @@ pub fn native_http_post(args: &mut Vec<Value>) -> Result<Value, Value> {
             }
             Err(e) => {
                 let mut state = p_clone.lock().await;
-                *state = PromiseState::Rejected(e);
+                *state = PromiseState::Rejected(Value::String(e));
             }
         }
     });
@@ -433,12 +432,15 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> Result<Value, Value> {
     let p_clone = promise.clone();
 
     tokio::spawn(async move {
-        let result = http_client_request_async(&state_clone.into(), "GET", &url, "", None).await;
-
-        let mut state = p_clone.lock().await;
-        match result {
-            Ok(response) => *state = PromiseState::Resolved(Value::String(response.body)),
-            Err(e) => *state = PromiseState::Rejected(e),
+        match http_client_request_async(&state_clone.into(), "GET", &url, "", None).await {
+            Ok(response) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Resolved(Value::String(response.body));
+            }
+            Err(e) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Rejected(Value::String(e));
+            }
         }
     });
 
@@ -461,13 +463,15 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> Result<Value, Value> {
     let p_clone = promise.clone();
 
     tokio::spawn(async move {
-        let result =
-            http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body)).await;
-
-        let mut state = p_clone.lock().await;
-        match result {
-            Ok(response) => *state = PromiseState::Resolved(Value::String(response.body)),
-            Err(e) => *state = PromiseState::Rejected(e),
+        match http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body)).await {
+            Ok(response) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Resolved(Value::String(response.body));
+            }
+            Err(e) => {
+                let mut state = p_clone.lock().await;
+                *state = PromiseState::Rejected(Value::String(e));
+            }
         }
     });
 
