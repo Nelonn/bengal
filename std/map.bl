@@ -1,0 +1,45 @@
+module std.map
+
+interface Map<K, V> {
+  fn values(): V[]
+
+  fn keys(): K[]
+
+  fn add(key: K, value: V): V
+
+  fn remove(key: K): V?
+
+  fn get(key: K): V?
+
+  operator[key: K](value: V?): V? {
+    add(key, value)
+  }
+
+  operator[key: K](): V? {
+    return get(key)
+  }
+}
+
+native class HashMap<K, V> : Map<K, V> {
+  fn values(): V[]
+
+  fn keys(): K[]
+
+  fn add(key: K, value: V)
+
+  fn remove(key: K): V?
+
+  fn get(key: K): V?
+}
+
+native class TreeMap<K, V> : Map<K, V> {
+  fn values(): V[]
+
+  fn keys(): K[]
+
+  fn add(key: K, value: V)
+
+  fn remove(key: K): V?
+
+  fn get(key: K): V?
+}
