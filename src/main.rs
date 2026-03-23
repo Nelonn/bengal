@@ -1,4 +1,4 @@
-use bengal_compiler::Compiler;
+use bengal_compiler::{HlirCompiler, CompilerOptions, sparkler_to_bytecode};
 use sparkler::Executor;
 use bytecode_viewer;
 use std::fs;
@@ -15,14 +15,25 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
         }
     };
 
-    let mut compiler = Compiler::with_path_and_options(&source, source_file, unsafe_fast);
-    compiler.enable_type_checking = true;
-    let bytecode = match compiler.compile() {
-        Ok(bc) => bc,
+    let options = CompilerOptions {
+        unsafe_fast,
+        enable_type_checking: true,
+        search_paths: vec!["std".to_string()],
+        emit_llvm_ir: false,
+        emit_sparkler_bytecode: true,
+    };
+    
+    let mut compiler = HlirCompiler::with_path_and_options(&source, source_file, options);
+    let result = match compiler.compile() {
+        Ok(r) => r,
         Err(e) => {
             return Err(format!("Compilation error: {}", e).into());
         }
     };
+    
+    let bytecode = sparkler_to_bytecode(
+        result.sparkler_bytecode.ok_or("Bytecode generation failed")?
+    );
 
     let mut executor = Executor::with_linker();
     bengal_std::register_all(&mut executor.vm);
@@ -179,15 +190,26 @@ async fn main() {
             }
         };
 
-        let mut compiler = Compiler::with_path_and_options(&source, &source_file, args.unsafe_fast);
-        compiler.enable_type_checking = false;
-        let bytecode = match compiler.compile() {
-            Ok(bc) => bc,
+        let options = CompilerOptions {
+            unsafe_fast: args.unsafe_fast,
+            enable_type_checking: false,
+            search_paths: vec!["std".to_string()],
+            emit_llvm_ir: false,
+            emit_sparkler_bytecode: true,
+        };
+        
+        let mut compiler = HlirCompiler::with_path_and_options(&source, &source_file, options);
+        let result = match compiler.compile() {
+            Ok(r) => r,
             Err(e) => {
                 eprintln!("Compilation error: {}", e);
                 std::process::exit(1);
             }
         };
+        
+        let bytecode = sparkler_to_bytecode(
+            result.sparkler_bytecode.unwrap()
+        );
 
         bytecode_viewer::display_bytecode(&bytecode);
         return;

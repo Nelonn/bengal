@@ -6,3 +6,6 @@ description = "Bengal language compiler"
 
 [dependencies]
 sparkler = { path = "../sparkler" }
+
+[features]
+llvm = []

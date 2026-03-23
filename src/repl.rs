@@ -1,4 +1,4 @@
-use bengal_compiler::Compiler;
+use bengal_compiler::{HlirCompiler, CompilerOptions, sparkler_to_bytecode};
 use sparkler::{Executor, vm::VmState};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -78,12 +78,23 @@ impl ReplState {
 
     /// Compile and run source code, returning the last expression result if any
     async fn compile_and_run(&mut self, source: &str, is_expr: bool) -> Result<Option<String>, String> {
-        let mut compiler = Compiler::new(source);
-        compiler.enable_type_checking = true;
-        let bytecode = match compiler.compile() {
-            Ok(bc) => bc,
+        let options = CompilerOptions {
+            unsafe_fast: false,
+            enable_type_checking: true,
+            search_paths: vec!["std".to_string()],
+            emit_llvm_ir: false,
+            emit_sparkler_bytecode: true,
+        };
+        
+        let mut compiler = HlirCompiler::with_options(source, options);
+        let result = match compiler.compile() {
+            Ok(r) => r,
             Err(e) => return Err(e),
         };
+        
+        let bytecode = sparkler_to_bytecode(
+            result.sparkler_bytecode.ok_or("Bytecode generation failed")?
+        );
 
         // Run the bytecode
         let result = self.executor.run_to_completion(bytecode, Some("<repl>")).await;
