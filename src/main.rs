@@ -24,7 +24,7 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
         }
     };
 
-    let mut executor = Executor::new();
+    let mut executor = Executor::with_linker();
     bengal_std::register_all(&mut executor.vm);
 
     // Pass arguments to the script as ARGV

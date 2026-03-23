@@ -74,11 +74,29 @@ impl Executor {
     }
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
-        self.vm.register_native(name, f);
+        // Register with linker first if it exists (so it gets an index)
+        if let Some(ref mut linker) = self.linker {
+            linker.register(name, f);
+            // Update VM registry from linker
+            let registry = linker.registry();
+            self.vm.native_registry = (*registry.read().unwrap()).clone();
+        } else {
+            self.vm.register_native(name, f);
+        }
     }
 
     pub fn register_fallback(&mut self, f: NativeFn) {
-        self.vm.register_fallback(f);
+        // Register fallback with linker if it exists
+        if let Some(ref mut linker) = self.linker {
+            let registry = linker.registry();
+            {
+                let mut guard = registry.write().unwrap();
+                guard.set_fallback(f);
+            }
+            self.vm.native_registry = (*registry.read().unwrap()).clone();
+        } else {
+            self.vm.register_fallback(f);
+        }
     }
 
     /// Link bytecode to native functions using indexed calls
@@ -134,7 +152,7 @@ impl Executor {
             new_bytecode.push(opcode_byte);
             i += 1;
         }
-        
+
         *bytecode = new_bytecode;
     }
 

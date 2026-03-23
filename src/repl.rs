@@ -15,7 +15,7 @@ pub struct ReplState {
 
 impl ReplState {
     pub fn new() -> Self {
-        let mut executor = Executor::new();
+        let mut executor = Executor::with_linker();
         bengal_std::register_all(&mut executor.vm);
 
         // Save initial state after native functions are registered

@@ -1216,13 +1216,13 @@ impl TypeContext {
             .collect();
         let mangled = mangle_function_name(name, &param_types);
         signature.mangled_name = Some(mangled.clone());
-        
+
         // Track overload by base name
         self.function_overloads
             .entry(name.to_string())
             .or_insert_with(Vec::new)
             .push(mangled.clone());
-        
+
         // Store by mangled name
         self.functions.insert(mangled, signature);
     }

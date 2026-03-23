@@ -1120,6 +1120,11 @@ impl Compiler {
         // Compile user-defined functions
         let mut vm_functions = Vec::new();
         for f in &functions {
+            // Skip native functions - they have no bytecode, the VM will call native implementations directly
+            if f.is_native {
+                continue;
+            }
+
             let mut func_bytecode = Vec::new();
             // Use the global strings table directly to avoid index adjustment issues
 
