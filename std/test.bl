@@ -11,7 +11,7 @@ class TestResult {
     failures: str[] = []
 }
 
-fn executeTest(name: str, testFn: any): TestResult {
+fn executeTest(name: str, testFn: ()): TestResult {
     let result = TestResult()
     result.name = name
     result.passed = true
@@ -37,7 +37,7 @@ fn executeTest(name: str, testFn: any): TestResult {
     return result
 }
 
-fn assertEqualsMsg(expected: any, actual: any, message: str?) {
+fn assertEqualsMsg<T>(expected: T?, actual: T?, message: str?) {
     if (expected != actual) {
         let msg = orMsg(message, "Expected " + str(expected) + ", got " + str(actual))
         addFailure(msg)
@@ -61,7 +61,7 @@ fn assertFalseMsg(condition: bool, message: str?) {
     }
 }
 
-fn assertNullMsg(value: any, message: str?) {
+fn assertNullMsg<T>(value: T?, message: str?) {
     if (value != null) {
         let msg = orMsg(message, "Expected null, got " + str(value))
         addFailure(msg)
@@ -69,7 +69,7 @@ fn assertNullMsg(value: any, message: str?) {
     }
 }
 
-fn assertNotNullMsg(value: any, message: str?) {
+fn assertNotNullMsg<T>(value: T?, message: str?) {
     if (value == null) {
         let msg = orMsg(message, "Expected non-null value")
         addFailure(msg)
@@ -87,7 +87,7 @@ fn assertCloseMsg(expected: float, actual: float, tolerance: float, message: str
     }
 }
 
-fn assertThrowsMsg(testFn: any, message: str?) {
+fn assertThrowsMsg(testFn: (), message: str?) {
     try {
         testFn()
         let msg = orMsg(message, "Expected exception to be thrown")
@@ -118,13 +118,13 @@ native fn nativeAssertSame(expected: any, actual: any, message: str?) {}
 
 // Register and run a test - GTest style
 // Usage: test("Test name", () { assertEquals(1, 1) })
-fn test(name: str, testFn: any) {
+fn test(name: str, testFn: ()) {
     let result = executeTest(name, testFn)
     TESTS = TESTS + [testFn]
     RESULTS = RESULTS + [result]
 }
 
-fn assertEquals(expected: any, actual: any) {
+fn assertEquals<T>(expected: T?, actual: T?) {
     assertEqualsMsg(expected, actual, null)
 }
 
@@ -136,15 +136,15 @@ fn assertFalse(condition: bool) {
     assertFalseMsg(condition, null)
 }
 
-fn assertNull(value: any) {
+fn assertNull<T>(value: T?) {
     assertNullMsg(value, null)
 }
 
-fn assertNotNull(value: any) {
+fn assertNotNull<T>(value: T?) {
     assertNotNullMsg(value, null)
 }
 
-fn assertSame(expected: any, actual: any) {
+fn assertSame<T>(expected: T?, actual: T?) {
     nativeAssertSame(expected, actual, null)
 }
 
@@ -152,7 +152,7 @@ fn assertClose(expected: float, actual: float, tolerance: float) {
     assertCloseMsg(expected, actual, tolerance, null)
 }
 
-fn assertThrows(testFn: any) {
+fn assertThrows(testFn: ()) {
     assertThrowsMsg(testFn, null)
 }
 
