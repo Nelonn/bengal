@@ -7,6 +7,7 @@
 
 use sparkler::Bytecode;
 use sparkler::Function;
+use sparkler::Method;
 use sparkler::Opcode;
 
 /// Display bytecode in Godbolt-style format
@@ -22,6 +23,9 @@ pub fn display_bytecode(bytecode: &Bytecode) {
 
     // Display functions
     display_functions(bytecode);
+
+    // Display class methods (including constructors)
+    display_class_methods(bytecode);
 }
 
 /// Display the .data section (constant pool)
@@ -49,6 +53,48 @@ fn display_functions(bytecode: &Bytecode) {
     for function in &bytecode.functions {
         display_function(function, bytecode);
     }
+}
+
+/// Display class methods (including constructors)
+fn display_class_methods(bytecode: &Bytecode) {
+    for class in &bytecode.classes {
+        if !class.methods.is_empty() {
+            println!("// Class: {}", class.name);
+            let mut methods: Vec<_> = class.methods.values().collect();
+            methods.sort_by(|a, b| a.name.cmp(&b.name));
+            for method in methods {
+                display_method(&class.name, method, bytecode);
+            }
+        }
+    }
+}
+
+/// Display a single method's bytecode
+fn display_method(class_name: &str, method: &Method, bytecode: &Bytecode) {
+    println!("{}.{}:", class_name, method.name);
+    println!("  # registers: {}", method.register_count);
+
+    let mut pc = 0;
+    let data = &method.bytecode;
+
+    while pc < data.len() {
+        let opcode_byte = data[pc];
+        let opcode = opcode_from_byte(opcode_byte);
+
+        let address = format!("{:04x}", pc);
+
+        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
+
+        if operands.is_empty() {
+            println!("  {} | {}", address, opcode_name);
+        } else {
+            println!("  {} | {:<18} | {}", address, opcode_name, operands);
+        }
+
+        pc += 1 + operand_count;
+    }
+
+    println!();
 }
 
 /// Resolve function name from index (for CALL instruction)
