@@ -343,6 +343,7 @@ pub struct FunctionSignature {
 pub struct ParamSignature {
     pub name: String,
     pub type_name: Option<Type>,
+    pub default: bool,  // true if this parameter has a default value
 }
 
 /// Generate a mangled name for a function based on its parameter types
@@ -536,6 +537,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Str),
             return_optional: false,
@@ -552,6 +554,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "json".to_string(),
                 type_name: Some(Type::Str),
+                default: false,
             }],
             return_type: Some(Type::Unknown),
             return_optional: false,
@@ -571,6 +574,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Str),
             return_optional: false,
@@ -587,6 +591,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Str),
             return_optional: true,
@@ -603,6 +608,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Unknown),
             return_optional: true,
@@ -646,7 +652,7 @@ impl TypeContext {
         });
         str_methods.insert("split(str)".to_string(), MethodSignature {
             name: "split".to_string(),
-            params: vec![ParamSignature { name: "delimiter".to_string(), type_name: Some(Type::Str) }],
+            params: vec![ParamSignature { name: "delimiter".to_string(), type_name: Some(Type::Str), default: false }],
             return_type: Some(Type::Array(Box::new(Type::Str))),
             return_optional: false,
             private: false,
@@ -679,7 +685,7 @@ impl TypeContext {
         });
         str_methods.insert("contains(str)".to_string(), MethodSignature {
             name: "contains".to_string(),
-            params: vec![ParamSignature { name: "substr".to_string(), type_name: Some(Type::Str) }],
+            params: vec![ParamSignature { name: "substr".to_string(), type_name: Some(Type::Str), default: false }],
             return_type: Some(Type::Bool),
             return_optional: false,
             private: false,
@@ -690,7 +696,7 @@ impl TypeContext {
         });
         str_methods.insert("startsWith(str)".to_string(), MethodSignature {
             name: "startsWith".to_string(),
-            params: vec![ParamSignature { name: "prefix".to_string(), type_name: Some(Type::Str) }],
+            params: vec![ParamSignature { name: "prefix".to_string(), type_name: Some(Type::Str), default: false }],
             return_type: Some(Type::Bool),
             return_optional: false,
             private: false,
@@ -701,7 +707,7 @@ impl TypeContext {
         });
         str_methods.insert("endsWith(str)".to_string(), MethodSignature {
             name: "endsWith".to_string(),
-            params: vec![ParamSignature { name: "suffix".to_string(), type_name: Some(Type::Str) }],
+            params: vec![ParamSignature { name: "suffix".to_string(), type_name: Some(Type::Str), default: false }],
             return_type: Some(Type::Bool),
             return_optional: false,
             private: false,
@@ -713,8 +719,8 @@ impl TypeContext {
         str_methods.insert("substring(int,int)".to_string(), MethodSignature {
             name: "substring".to_string(),
             params: vec![
-                ParamSignature { name: "start".to_string(), type_name: Some(Type::Int) },
-                ParamSignature { name: "end".to_string(), type_name: Some(Type::Int) },
+                ParamSignature { name: "start".to_string(), type_name: Some(Type::Int), default: false },
+                ParamSignature { name: "end".to_string(), type_name: Some(Type::Int), default: false },
             ],
             return_type: Some(Type::Str),
             return_optional: false,
@@ -762,7 +768,7 @@ impl TypeContext {
         });
         array_methods.insert("add(Unknown)".to_string(), MethodSignature {
             name: "add".to_string(),
-            params: vec![ParamSignature { name: "element".to_string(), type_name: Some(Type::Unknown) }],
+            params: vec![ParamSignature { name: "element".to_string(), type_name: Some(Type::Unknown), default: false }],
             return_type: None,
             return_optional: false,
             private: false,
@@ -793,6 +799,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Str),
             return_optional: false,
@@ -810,6 +817,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Int),
             return_optional: false,
@@ -827,6 +835,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -844,6 +853,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Bool),
             return_optional: false,
@@ -861,6 +871,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Int8),
             return_optional: false,
@@ -878,6 +889,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::UInt8),
             return_optional: false,
@@ -895,6 +907,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Int16),
             return_optional: false,
@@ -912,6 +925,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::UInt16),
             return_optional: false,
@@ -929,6 +943,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Int32),
             return_optional: false,
@@ -946,6 +961,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::UInt32),
             return_optional: false,
@@ -963,6 +979,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Int64),
             return_optional: false,
@@ -980,6 +997,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::UInt64),
             return_optional: false,
@@ -997,6 +1015,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Float32),
             return_optional: false,
@@ -1014,6 +1033,7 @@ impl TypeContext {
             params: vec![ParamSignature {
                 name: "value".to_string(),
                 type_name: Some(Type::Unknown),
+                default: false,
             }],
             return_type: Some(Type::Float64),
             return_optional: false,
@@ -1048,6 +1068,7 @@ impl TypeContext {
             let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
                 name: p.name.clone(),
                 type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
+                default: false,
             }).collect();
 
             // Generate mangled name for the method
@@ -1096,6 +1117,7 @@ impl TypeContext {
                 let field_params: Vec<ParamSignature> = class.fields.iter().map(|field| ParamSignature {
                     name: field.name.clone(),
                     type_name: Some(Type::from_str(&field.type_name)),
+                    default: false,
                 }).collect();
                 let field_param_types: Vec<Type> = field_params.iter()
                     .filter_map(|p| p.type_name.clone())
@@ -1145,6 +1167,7 @@ impl TypeContext {
             let params: Vec<ParamSignature> = method.params.iter().map(|p| ParamSignature {
                 name: p.name.clone(),
                 type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
+                default: false,
             }).collect();
 
             // Generate mangled name for the method
@@ -1943,8 +1966,15 @@ impl TypeContext {
 
     /// Check if a function signature matches the given argument types
     fn signature_matches(&self, sig: &FunctionSignature, arg_types: &[Type]) -> bool {
-        if sig.params.len() != arg_types.len() {
-            return false;
+        // Allow calling with fewer arguments if remaining params have defaults
+        if arg_types.len() > sig.params.len() {
+            return false; // Too many arguments
+        }
+        
+        // Check if we have enough params (including defaults) for the provided args
+        let min_args = sig.params.iter().position(|p| p.default).unwrap_or(sig.params.len());
+        if arg_types.len() < min_args {
+            return false; // Not enough arguments (before first default)
         }
 
         for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
@@ -2433,6 +2463,7 @@ impl TypeChecker {
                         let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
                             name: p.name.clone(),
                             type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
+                            default: p.default.is_some(),
                         }).collect();
 
                         self.context.add_function(&func.name, FunctionSignature {
@@ -3379,6 +3410,7 @@ impl TypeChecker {
                                         type_name: p.type_name.as_ref().map(|t|
                                             self.context.substitute_type_params(t, &type_args, &sig.type_params)
                                         ),
+                                        default: false,
                                     }
                                 }).collect();
 
@@ -3517,6 +3549,7 @@ impl TypeChecker {
                                                 crate::types::ParamSignature {
                                                     name: p.name.clone(),
                                                     type_name: substituted_type,
+                                                    default: false,
                                                 }
                                             }).collect();
                                             
@@ -4383,13 +4416,29 @@ impl TypeChecker {
     }
 
     fn check_function_call(&mut self, func_sig: &FunctionSignature, args: &[Expr], func_name: &str, span_line: usize, span_column: usize) {
-        // Check argument count
-        if args.len() != func_sig.params.len() {
+        // Check argument count - allow fewer args if remaining params have defaults
+        let min_args = func_sig.params.iter().position(|p| p.default).unwrap_or(func_sig.params.len());
+        if args.len() > func_sig.params.len() {
             self.context.add_error_with_location(
                 format!(
                     "Function '{}' expects {} arguments, got {}",
                     func_name,
                     func_sig.params.len(),
+                    args.len()
+                ),
+                span_line,
+                span_column,
+                None,
+                None,
+            );
+            return;
+        }
+        if args.len() < min_args {
+            self.context.add_error_with_location(
+                format!(
+                    "Function '{}' requires at least {} arguments, got {}",
+                    func_name,
+                    min_args,
                     args.len()
                 ),
                 span_line,
@@ -4426,14 +4475,31 @@ impl TypeChecker {
     }
 
     fn check_method_call(&mut self, method_sig: &MethodSignature, args: &[Expr], method_name: &str, class_name: &str, span_line: usize, span_column: usize) {
-        // Check argument count (excluding self)
-        if args.len() != method_sig.params.len() {
+        // Check argument count - allow fewer args if remaining params have defaults
+        let min_args = method_sig.params.iter().position(|p| p.default).unwrap_or(method_sig.params.len());
+        if args.len() > method_sig.params.len() {
             self.context.add_error_with_location(
                 format!(
                     "Method '{}' on class '{}' expects {} arguments, got {}",
                     method_name,
                     class_name,
                     method_sig.params.len(),
+                    args.len()
+                ),
+                span_line,
+                span_column,
+                None,
+                None,
+            );
+            return;
+        }
+        if args.len() < min_args {
+            self.context.add_error_with_location(
+                format!(
+                    "Method '{}' on class '{}' requires at least {} arguments, got {}",
+                    method_name,
+                    class_name,
+                    min_args,
                     args.len()
                 ),
                 span_line,

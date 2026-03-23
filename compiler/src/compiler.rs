@@ -655,6 +655,8 @@ pub struct Compiler {
     scope_stack: Vec<Vec<String>>,
     /// Store default expressions for constructor parameters by class name
     constructor_defaults: std::collections::HashMap<String, Vec<Option<crate::parser::Expr>>>,
+    /// Store default expressions for function parameters by function name
+    function_defaults: std::collections::HashMap<String, Vec<Option<crate::parser::Expr>>>,
 }
 
 pub struct CompilerOptions {
@@ -688,6 +690,7 @@ impl Default for Compiler {
             search_paths: vec!["std".to_string()],
             scope_stack: Vec::new(),
             constructor_defaults: std::collections::HashMap::new(),
+            function_defaults: std::collections::HashMap::new(),
         }
     }
 }
@@ -707,6 +710,7 @@ impl Compiler {
             search_paths: vec!["std".to_string()],
             scope_stack: Vec::new(),
             constructor_defaults: std::collections::HashMap::new(),
+            function_defaults: std::collections::HashMap::new(),
         }
     }
 
@@ -724,6 +728,7 @@ impl Compiler {
             search_paths: vec!["std".to_string()],
             scope_stack: Vec::new(),
             constructor_defaults: std::collections::HashMap::new(),
+            function_defaults: std::collections::HashMap::new(),
         }
     }
 
@@ -741,6 +746,7 @@ impl Compiler {
             search_paths: vec!["std".to_string()],
             scope_stack: Vec::new(),
             constructor_defaults: std::collections::HashMap::new(),
+            function_defaults: std::collections::HashMap::new(),
         }
     }
 
@@ -758,6 +764,7 @@ impl Compiler {
             search_paths: vec!["std".to_string()],
             scope_stack: Vec::new(),
             constructor_defaults: std::collections::HashMap::new(),
+            function_defaults: std::collections::HashMap::new(),
         }
     }
 
@@ -885,6 +892,13 @@ impl Compiler {
                     classes.push(interface_as_class);
                 }
                 Stmt::Function(func) => {
+                    // Store function default expressions for call site injection
+                    if !func.params.is_empty() {
+                        let defaults: Vec<Option<crate::parser::Expr>> = func.params.iter()
+                            .map(|p| p.default.clone())
+                            .collect();
+                        self.function_defaults.insert(func.name.clone(), defaults);
+                    }
                     functions.push(func.clone());
                 }
                 _ => {}
@@ -3137,13 +3151,38 @@ impl Compiler {
                             bytecode.push((args.len() + 1) as u8);
                         }
                     } else {
-                        // Regular function call
-                        let contiguous_start = self.current_ctx.allocate_regs(args.len());
+                        // Regular function call - handle default parameters
+                        // Get default expressions for this function - try both base name and mangled name
+                        let base_func_name = resolved_name.split('(').next().unwrap_or(&resolved_name);
+                        let function_params = self.function_defaults.get(base_func_name)
+                            .or_else(|| self.function_defaults.get(&resolved_name))
+                            .cloned()
+                            .unwrap_or_default();
+
+                        // Calculate total args needed (provided + defaults)
+                        let total_args = std::cmp::max(args.len(), function_params.len());
+                        
+                        let contiguous_start = self.current_ctx.allocate_regs(total_args);
+                        
+                        // Copy provided arguments
                         for (i, &r) in arg_regs.iter().enumerate() {
                             let r_arg = contiguous_start + i;
                             bytecode.push(Opcode::Move as u8);
                             bytecode.push(r_arg as u8);
                             bytecode.push(r as u8);
+                        }
+
+                        // Compute default values for missing arguments
+                        for i in args.len()..total_args {
+                            if i < function_params.len() {
+                                if let Some(ref default_expr) = function_params[i] {
+                                    let r_arg = contiguous_start + i;
+                                    let r_val = self.compile_expr(default_expr, bytecode, strings, classes, type_context)?;
+                                    bytecode.push(Opcode::Move as u8);
+                                    bytecode.push(r_arg as u8);
+                                    bytecode.push(r_val as u8);
+                                }
+                            }
                         }
 
                         // For native functions, use the resolved name (which includes module prefix for imports)
@@ -3156,13 +3195,13 @@ impl Compiler {
                             bytecode.push(rd as u8);
                             bytecode.push(idx as u8);
                             bytecode.push(contiguous_start as u8);
-                            bytecode.push(args.len() as u8);
+                            bytecode.push(total_args as u8);
                         } else {
                             bytecode.push(Opcode::Call as u8);
                             bytecode.push(rd as u8);
                             bytecode.push(idx as u8);
                             bytecode.push(contiguous_start as u8);
-                            bytecode.push(args.len() as u8);
+                            bytecode.push(total_args as u8);
                         }
                     }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {

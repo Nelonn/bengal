@@ -383,6 +383,9 @@ impl ModuleResolver {
             return Err(format!("{} error(s) in imported modules", total_errors));
         }
 
+        // Register main file's functions before type checking
+        self.register_module_types("", main_statements);
+
         // Type check main statements
         let mut ctx = self.type_context.clone();
         ctx.current_module = None; // Clear module context for main file (global scope)
@@ -473,11 +476,11 @@ impl ModuleResolver {
                     let params: Vec<ParamSignature> = func.params.iter().map(|p| ParamSignature {
                         name: p.name.clone(),
                         type_name: p.type_name.as_ref().map(|t| Type::from_str(t)),
+                        default: p.default.is_some(),
                     }).collect();
 
-                    let full_name = format!("{}.{}", module_name, func.name);
                     let sig = FunctionSignature {
-                        name: full_name.clone(),
+                        name: func.name.clone(),
                         params,
                         return_type: func.return_type.as_ref().map(|t| Type::from_str(t)),
                         return_optional: func.return_optional,
@@ -488,11 +491,20 @@ impl ModuleResolver {
                         mangled_name: None,
                     };
 
-                    self.type_context.add_function(&full_name, sig.clone());
+                    // Register with qualified name if module_name is not empty
+                    if !module_name.is_empty() {
+                        let full_name = format!("{}.{}", module_name, func.name);
+                        let mut sig_with_qual = sig.clone();
+                        sig_with_qual.name = full_name.clone();
+                        self.type_context.add_function(&full_name, sig_with_qual);
+                    } else {
+                        // For main file (empty module name), register without qualification
+                        self.type_context.add_function(&func.name, sig.clone());
+                    }
 
                     // Also add unqualified version for public functions in the current module
                     // (not for imported modules, to avoid name conflicts)
-                    if !func.private {
+                    if !func.private && !module_name.is_empty() {
                         let is_current_module = self.type_context.current_module.as_ref()
                             .map(|m| m == &module_name)
                             .unwrap_or(false);
@@ -522,11 +534,18 @@ impl ModuleResolver {
     }
 
     fn register_class_with_module(&mut self, module_name: &str, class: &crate::parser::ClassDef) {
-        let mut class_with_module = class.clone();
-        class_with_module.name = format!("{}.{}", module_name, class.name);
-        self.type_context.add_class(&class_with_module);
-        // Only add unqualified version for public classes
-        if !class.private {
+        // Only add qualified name if module_name is not empty
+        if !module_name.is_empty() {
+            let mut class_with_module = class.clone();
+            class_with_module.name = format!("{}.{}", module_name, class.name);
+            self.type_context.add_class(&class_with_module);
+        }
+        
+        // Always add unqualified version for classes in main file
+        if module_name.is_empty() {
+            self.type_context.add_class(class);
+        } else if !class.private {
+            // For imported modules, only add unqualified version for public classes
             self.type_context.add_class(class);
         }
 
@@ -650,6 +669,7 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "x".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -664,6 +684,7 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "x".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -678,6 +699,7 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "x".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -692,6 +714,7 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "x".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -706,9 +729,11 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "a".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }, ParamSignature {
                 name: "b".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -723,9 +748,11 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "a".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }, ParamSignature {
                 name: "b".to_string(),
                 type_name: Some(Type::Float),
+                default: false,
             }],
             return_type: Some(Type::Float),
             return_optional: false,
@@ -742,6 +769,7 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "message".to_string(),
                 type_name: Some(Type::Str),
+                default: false,
             }],
             return_type: None,
             return_optional: false,
@@ -767,6 +795,7 @@ impl ModuleResolver {
             params: vec![ParamSignature {
                 name: "name".to_string(),
                 type_name: Some(Type::Str),
+                default: false,
             }],
             return_type: None,
             return_optional: false,
@@ -779,8 +808,8 @@ impl ModuleResolver {
         self.type_context.add_function("std.test.assertSame", FunctionSignature {
             name: "std.test.assertSame".to_string(),
             params: vec![
-                ParamSignature { name: "expected".to_string(), type_name: Some(Type::Any) },
-                ParamSignature { name: "actual".to_string(), type_name: Some(Type::Any) },
+                ParamSignature { name: "expected".to_string(), type_name: Some(Type::Any), default: false },
+                ParamSignature { name: "actual".to_string(), type_name: Some(Type::Any), default: false },
             ],
             return_type: Some(Type::Bool),
             return_optional: false,
