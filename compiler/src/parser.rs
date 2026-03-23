@@ -2066,7 +2066,6 @@ impl Parser {
                 if !self.match_token(&Token::RParen) {
                     return self.error_expr("Expected ')' after arguments");
                 }
-                self.skip_newlines();
 
                 // All type conversion functions (str, int, float, bool, etc.) are handled as native function calls
                 expr = Expr::Call {
@@ -2079,7 +2078,6 @@ impl Parser {
                 if !self.match_token(&Token::RBracket) {
                     return self.error_expr("Expected ']' after array index");
                 }
-                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Index {
                     object: Box::new(expr),
@@ -2090,8 +2088,7 @@ impl Parser {
                 // Class instantiation with {} or object literal
                 let span = self.compute_span(self.pos - 1);
                 let fields = self.parse_object_literal()?;
-                self.skip_newlines();
-                
+
                 // If expr is a Variable (class name), this is class instantiation
                 // Otherwise, it's a standalone object literal (type inferred from context)
                 if let Expr::Variable { name: class_name, .. } = &expr {
@@ -2108,7 +2105,6 @@ impl Parser {
                     Token::Identifier(n) => n,
                     _ => return self.error_expr("Expected identifier after '.'"),
                 };
-                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Get {
                     object: Box::new(expr),

@@ -1,5 +1,7 @@
 // Test the ** power operator
 
+import std.io
+
 println("=== Power Operator Tests ===")
 
 // Basic power operations
