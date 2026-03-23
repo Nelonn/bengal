@@ -1988,17 +1988,19 @@ impl Compiler {
         }
 
         // In unsafe_fast mode, release temporary registers after statement
-        if self.unsafe_fast && self.current_ctx.next_reg > reg_before {
-            // Release all registers that were allocated during this statement
-            // (except those assigned to live variables)
-            for reg in reg_before..self.current_ctx.next_reg {
-                // Check if this register is assigned to any live variable
-                let is_assigned = self.current_ctx.variable_liveness.values().any(|v| v.register == reg && !v.can_reuse);
-                if !is_assigned {
-                    self.current_ctx.reusable_regs.push(reg);
+        if self.current_ctx.next_reg > reg_before {
+            if self.unsafe_fast {
+                // Release all registers that were allocated during this statement
+                // (except those assigned to live variables)
+                for reg in reg_before..self.current_ctx.next_reg {
+                    // Check if this register is assigned to any live variable
+                    let is_assigned = self.current_ctx.variable_liveness.values().any(|v| v.register == reg && !v.can_reuse);
+                    if !is_assigned {
+                        self.current_ctx.reusable_regs.push(reg);
+                    }
                 }
             }
-            // Reset next_reg to allow reuse
+            // Reset next_reg to allow reuse (in both safe and unsafe_fast mode)
             self.current_ctx.next_reg = reg_before;
         }
 
