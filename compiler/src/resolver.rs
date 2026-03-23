@@ -327,6 +327,9 @@ impl ModuleResolver {
         self.register_native_functions();
 
         // Now type check all loaded modules (skip function registration since they're already registered with qualified names)
+        // Track errors from modules separately - don't merge them into the main context
+        let mut module_errors: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
+        
         for (module_name, statements) in &module_statements {
             if self.enable_type_checking {
                 let mut ctx = self.type_context.clone();
@@ -334,16 +337,50 @@ impl ModuleResolver {
                 let mut type_checker = TypeChecker::with_context(ctx);
                 let _ = type_checker.check_with_options(statements, true);
 
-                // Log errors but continue
+                // Collect errors but don't merge them - we'll report them with proper file info
                 if type_checker.get_context().has_errors() {
                     for error in type_checker.get_context().get_errors() {
-                        eprintln!("Type error in module '{}': {}", module_name, error.message);
+                        module_errors
+                            .entry(module_name.clone())
+                            .or_insert_with(Vec::new)
+                            .push((error.message.clone(), error.line, error.column));
                     }
                 }
 
-                // Merge the context back (including errors)
-                self.type_context = type_checker.get_context().clone();
+                // Merge the context back but NOT the errors (errors are reported separately)
+                let mut new_ctx = type_checker.get_context().clone();
+                new_ctx.errors = self.type_context.errors.clone();
+                self.type_context = new_ctx;
             }
+        }
+
+        // Report all module errors with proper file paths
+        for (module_name, errors) in &module_errors {
+            if let Some(module_info) = self.loaded_modules.get(module_name) {
+                let module_path = module_info.path.to_string_lossy().to_string();
+                let source_lines: Vec<&str> = module_info.source.lines().collect();
+                
+                for (message, line, column) in errors {
+                    let source_line = if *line > 0 && *line <= source_lines.len() {
+                        source_lines[*line - 1]
+                    } else {
+                        ""
+                    };
+                    eprintln!("{}:{}:{}: error: {}", module_path, line, column, message);
+                    if !source_line.is_empty() {
+                        eprintln!("  {}", source_line);
+                        let caret_pos = column.saturating_sub(1);
+                        let caret_line: String = " ".repeat(caret_pos) + "^";
+                        eprintln!("  {}", caret_line);
+                    }
+                }
+            }
+        }
+
+        // If there were module errors, fail compilation
+        if !module_errors.is_empty() {
+            let total_errors: usize = module_errors.values().map(|v| v.len()).sum();
+            return Err(format!("{} error(s) in imported modules", total_errors));
         }
 
         // Type check main statements
