@@ -104,7 +104,7 @@ fn failMsg(message: str?) {
     throw(msg)
 }
 
-fn orMsg(message: str, default: str): str {
+fn orMsg(message: str?, default: str): str {
     if (message != null) { return message }
     return default
 }

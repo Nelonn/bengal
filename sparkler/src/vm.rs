@@ -1830,7 +1830,7 @@ impl VM {
                         } else {
                             // For bytecode methods, try exact match first, then generic type parameter matching
                             let method_opt = class.methods.get(&name);
-                            
+
                             // If not found, try to match with generic type parameters (T matches any type)
                             let method_opt = method_opt.or_else(|| {
                                 let (base_name, requested_params) = if let Some(paren_pos) = name.find('(') {
@@ -1839,7 +1839,7 @@ impl VM {
                                 } else {
                                     (&name[..], Vec::new())
                                 };
-                                
+
                                 // Find a method with same base name, same arg count, where each param is either
                                 // an exact match or a generic type parameter (single uppercase letter like T)
                                 class.methods.iter().find(|(k, _)| {
@@ -1847,11 +1847,11 @@ impl VM {
                                         let k_base = &k[..paren_pos];
                                         let k_params_str = &k[paren_pos + 1..k.len() - 1];
                                         let k_params: Vec<&str> = k_params_str.split(',').collect();
-                                        
+
                                         if k_base != base_name || k_params.len() != requested_params.len() {
                                             return false;
                                         }
-                                        
+
                                         // Check each parameter - T matches anything
                                         for (k_param, req_param) in k_params.iter().zip(requested_params.iter()) {
                                             let is_generic = k_param.len() == 1 && k_param.chars().next().unwrap().is_uppercase();
@@ -1865,7 +1865,7 @@ impl VM {
                                     }
                                 }).map(|(_, v)| v)
                             });
-                            
+
                             if let Some(method) = method_opt {
                                 // Set up method call frame
                                 let caller_pc = self.pc();

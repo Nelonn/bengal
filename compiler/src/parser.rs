@@ -140,6 +140,7 @@ pub struct Method {
 pub struct Param {
     pub name: String,
     pub type_name: Option<String>,
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -768,6 +769,7 @@ impl Parser {
                 let field_params: Vec<Param> = fields.iter().map(|field| Param {
                     name: field.name.clone(),
                     type_name: Some(field.type_name.clone()),
+                    default: field.default.clone(),
                 }).collect();
                 final_methods.push(Method {
                     name: "constructor".to_string(),
@@ -1230,7 +1232,13 @@ impl Parser {
                 t_name = t_name + "?";
             }
 
-            params.push(Param { name, type_name: Some(t_name) });
+            let default = if self.match_token(&Token::Equal) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+
+            params.push(Param { name, type_name: Some(t_name), default });
 
             if !self.match_token(&Token::Comma) {
                 break;
