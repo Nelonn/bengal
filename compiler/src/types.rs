@@ -3040,9 +3040,14 @@ impl TypeChecker {
                 match op {
                     crate::parser::BinaryOp::Equal | crate::parser::BinaryOp::NotEqual => {
                         // Equality can be checked between any types, but they should match
-                        if left_type != right_type &&
-                           left_type != Type::Unknown &&
-                           right_type != Type::Unknown {
+                        // Special case: optional types (T?) can be compared with null
+                        let is_valid_comparison = left_type == right_type
+                            || left_type == Type::Unknown
+                            || right_type == Type::Unknown
+                            || matches!(&left_type, Type::Optional(_)) && right_type == Type::Null
+                            || matches!(&right_type, Type::Optional(_)) && left_type == Type::Null;
+                        
+                        if !is_valid_comparison {
                             self.context.add_error_with_location(
                                 format!(
                                     "Cannot compare {} with {} using equality operator",
