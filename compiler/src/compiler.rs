@@ -529,13 +529,6 @@ impl CompileContext {
     }
 
     fn allocate_reg(&mut self) -> usize {
-        // In unsafe_fast mode, try to reuse registers first
-        if self.unsafe_fast {
-            if let Some(reg) = self.reusable_regs.pop() {
-                return reg;
-            }
-        }
-        
         let reg = self.next_reg;
         self.next_reg += 1;
         if reg > self.max_reg {
@@ -546,18 +539,7 @@ impl CompileContext {
 
     fn allocate_regs(&mut self, count: usize) -> usize {
         if count == 0 { return self.next_reg; }
-        
-        // In unsafe_fast mode, try to reuse consecutive registers if available
-        if self.unsafe_fast && self.reusable_regs.len() >= count {
-            // Sort reusable regs to get consecutive ones if possible
-            self.reusable_regs.sort();
-            let start = self.reusable_regs[self.reusable_regs.len() - count];
-            for _ in 0..count {
-                self.reusable_regs.pop();
-            }
-            return start;
-        }
-        
+
         let start = self.next_reg;
         self.next_reg += count;
         if start + count - 1 > self.max_reg {
@@ -1987,20 +1969,9 @@ impl Compiler {
             }
         }
 
-        // In unsafe_fast mode, release temporary registers after statement
+        // Reset next_reg after each statement to prevent register exhaustion.
+        // This allows register reuse across statements.
         if self.current_ctx.next_reg > reg_before {
-            if self.unsafe_fast {
-                // Release all registers that were allocated during this statement
-                // (except those assigned to live variables)
-                for reg in reg_before..self.current_ctx.next_reg {
-                    // Check if this register is assigned to any live variable
-                    let is_assigned = self.current_ctx.variable_liveness.values().any(|v| v.register == reg && !v.can_reuse);
-                    if !is_assigned {
-                        self.current_ctx.reusable_regs.push(reg);
-                    }
-                }
-            }
-            // Reset next_reg to allow reuse (in both safe and unsafe_fast mode)
             self.current_ctx.next_reg = reg_before;
         }
 
