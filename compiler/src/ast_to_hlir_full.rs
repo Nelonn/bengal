@@ -15,6 +15,7 @@ pub struct AstToHlirConverter {
     var_types: std::collections::HashMap<String, HlirType>,
     var_ptrs: std::collections::HashMap<String, HlirValue>,
     string_table: Vec<String>,
+    module_prefix: String,
 }
 
 impl AstToHlirConverter {
@@ -27,6 +28,7 @@ impl AstToHlirConverter {
             var_types: std::collections::HashMap::new(),
             var_ptrs: std::collections::HashMap::new(),
             string_table: Vec::new(),
+            module_prefix: module_name.to_string(),
         }
     }
     
@@ -46,10 +48,15 @@ impl AstToHlirConverter {
         let mut module_level_stmts: Vec<&Stmt> = Vec::new();
         let mut functions: Vec<&parser::FunctionDef> = Vec::new();
         let mut classes: Vec<&parser::ClassDef> = Vec::new();
-        
+
         for stmt in stmts {
             match stmt {
-                Stmt::Function(func) => functions.push(func),
+                Stmt::Function(func) => {
+                    // Skip native functions - they're handled at runtime
+                    if !func.is_native {
+                        functions.push(func);
+                    }
+                }
                 Stmt::Class(class) => classes.push(class),
                 Stmt::Import { .. } | Stmt::Module { .. } => {
                     // Skip imports - they're handled at runtime
@@ -57,36 +64,37 @@ impl AstToHlirConverter {
                 _ => module_level_stmts.push(stmt),
             }
         }
-        
-        // Convert functions
+
+        // Convert functions with module prefix (only non-native functions)
         for func in functions {
-            self.convert_function(func);
+            self.convert_function_with_prefix(func);
         }
-        
+
         // Convert classes
         for class in classes {
             self.convert_class(class);
         }
-        
+
         // Wrap module-level statements in a main function
         if !module_level_stmts.is_empty() {
             self.builder.begin_function("main", vec![], HlirType::Void);
             self.builder.begin_block("entry");
             self.current_return_type = HlirType::Void;
-            
+
             for stmt in module_level_stmts {
                 self.convert_stmt(stmt);
             }
-            
+
             self.builder.ret(None, HlirType::Void);
             self.builder.end_block();
             self.builder.end_function();
         }
-        
+
         self.builder.clone().build()
     }
     
-    /// Convert a function definition
+    /// Convert a function definition with module prefix
+    #[allow(dead_code)] // Kept for potential future use
     fn convert_function(&mut self, func: &parser::FunctionDef) {
         let params: Vec<(String, HlirType)> = func.params.iter()
             .map(|p| {
@@ -130,10 +138,62 @@ impl AstToHlirConverter {
         self.builder.end_block();
         self.builder.end_function();
     }
+
+    /// Convert a function definition with module prefix
+    fn convert_function_with_prefix(&mut self, func: &parser::FunctionDef) {
+        let params: Vec<(String, HlirType)> = func.params.iter()
+            .map(|p| {
+                let ty = p.type_name.as_ref()
+                    .map(|t| self.type_from_str(t))
+                    .unwrap_or(HlirType::Unknown);
+                (p.name.clone(), ty)
+            })
+            .collect();
+
+        let return_ty = func.return_type.as_ref()
+            .map(|t| self.type_from_str(t))
+            .unwrap_or(HlirType::Void);
+
+        self.current_return_type = return_ty.clone();
+        self.var_types.clear();
+        self.var_ptrs.clear();
+
+        // Prefix the function name with the module path
+        let qualified_name = format!("{}.{}", self.module_prefix, func.name);
+        self.builder.begin_function(&qualified_name, params, return_ty.clone());
+        self.builder.begin_block("entry");
+
+        for stmt in &func.body {
+            self.convert_stmt(stmt);
+        }
+
+        if return_ty != HlirType::Void {
+            if !matches!(func.body.last(), Some(Stmt::Return { .. })) {
+                let default = match return_ty {
+                    HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(0.0),
+                    HlirType::Bool => HlirValue::BoolConst(false),
+                    _ => HlirValue::IntConst(0),
+                };
+                self.builder.ret(Some(default), return_ty);
+            }
+        } else {
+            if !matches!(func.body.last(), Some(Stmt::Return { .. })) {
+                self.builder.ret(None, HlirType::Void);
+            }
+        }
+
+        self.builder.end_block();
+        self.builder.end_function();
+    }
     
     /// Convert a class definition
     fn convert_class(&mut self, class: &parser::ClassDef) {
         for method in &class.methods {
+            // Skip native methods - they're handled at runtime
+            if method.is_native {
+                continue;
+            }
+
             let mut params: Vec<(String, HlirType)> = vec![
                 ("self".to_string(), HlirType::Pointer(Box::new(HlirType::Unknown)))
             ];
@@ -143,24 +203,24 @@ impl AstToHlirConverter {
                     .unwrap_or(HlirType::Unknown);
                 (p.name.clone(), ty)
             }));
-            
+
             let return_ty = method.return_type.as_ref()
                 .map(|t| self.type_from_str(t))
                 .unwrap_or(HlirType::Void);
-            
+
             let method_name = format!("{}_{}", class.name, method.name);
-            
+
             self.current_return_type = return_ty.clone();
             self.var_types.clear();
             self.var_ptrs.clear();
-            
+
             self.builder.begin_function(&method_name, params, return_ty.clone());
             self.builder.begin_block("entry");
-            
+
             for stmt in &method.body {
                 self.convert_stmt(stmt);
             }
-            
+
             if return_ty != HlirType::Void {
                 if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
                     self.builder.ret(Some(HlirValue::IntConst(0)), return_ty);
@@ -170,7 +230,7 @@ impl AstToHlirConverter {
                     self.builder.ret(None, HlirType::Void);
                 }
             }
-            
+
             self.builder.end_block();
             self.builder.end_function();
         }
@@ -231,7 +291,7 @@ impl AstToHlirConverter {
                             self.builder.store(result, ptr, ty);
                         }
                     }
-                    parser::AugAssignTarget::Field { object, name } => {
+                    parser::AugAssignTarget::Field { object, name: _ } => {
                         let _ = self.convert_expr(object);
                         let _ = self.convert_expr(expr);
                     }

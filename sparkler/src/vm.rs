@@ -1495,8 +1495,11 @@ impl VM {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
 
-                // Try indexed lookup first, fall back to fallback handler
-                let result = match self.native_registry.get_index(&name).and_then(|idx| self.native_registry.get_by_index(idx)) {
+                // Try indexed lookup first (exact match), then prefix match (for names without signature)
+                // fall back to fallback handler
+                let result = match self.native_registry.get_index(&name)
+                    .or_else(|| self.native_registry.get_index_by_prefix(&name))
+                    .and_then(|idx| self.native_registry.get_by_index(idx)) {
                     Some(func_type) => {
                         match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),

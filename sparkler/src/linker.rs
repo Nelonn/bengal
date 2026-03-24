@@ -211,6 +211,28 @@ impl NativeFunctionRegistry {
         self.name_to_index.get(name).copied()
     }
 
+    /// Get the index for a function name by prefix match (for runtime calls without signature)
+    /// This matches names like "std.io.println" against registered names like "std.io.println(str)"
+    pub fn get_index_by_prefix(&self, name: &str) -> Option<u16> {
+        // First try exact match
+        if let Some(&idx) = self.name_to_index.get(name) {
+            return Some(idx);
+        }
+        
+        // Then try prefix match - look for a registered name that starts with "name."
+        for (registered_name, &idx) in &self.name_to_index {
+            if registered_name.starts_with(name) {
+                // Make sure it's a proper prefix (followed by '(' for signature)
+                let suffix = &registered_name[name.len()..];
+                if suffix.starts_with('(') {
+                    return Some(idx);
+                }
+            }
+        }
+        
+        None
+    }
+
     /// Set the fallback function
     pub fn set_fallback(&mut self, func: NativeFn) {
         self.fallback = Some(NativeFnType::Sync(func));

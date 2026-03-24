@@ -33,7 +33,7 @@ impl Default for CompilerOptions {
 }
 
 /// Compilation result
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct CompilationResult {
     pub hlir: HlirModule,
     pub sparkler_bytecode: Option<CompiledBytecode>,
@@ -417,33 +417,77 @@ impl HlirCompiler {
         let mut lexer = Lexer::new(&self.source, source_path);
         let (tokens, token_positions) = lexer.tokenize()
             .map_err(|e| format!("Lexical error: {}", e))?;
-        
+
         let mut parser = Parser::new(tokens, &self.source, source_path, token_positions);
         let mut statements = parser.parse()
             .map_err(|e| format!("Parse error: {}", e))?;
-        
+
         self.process_imports(&statements)?;
-        
+
         // Rewrite function calls to use fully qualified names
         Self::rewrite_calls(&mut statements, &self.import_map);
-        
+
         let module_name = self.source_path
             .as_ref()
             .and_then(|p| std::path::Path::new(p).file_stem().and_then(|s| s.to_str()))
             .unwrap_or("module")
             .to_string();
-        
+
+        // First, compile the main module (it must come first for the entry point)
         let main_hlir = ast_to_hlir(&module_name, &statements);
-        
-        // Compile main module with register reuse (always enabled)
         let main_compiled = compile_hlir_to_sparkler(&main_hlir);
-        
+
+        let mut all_strings: Vec<String> = Vec::new();
+        let mut all_data: Vec<u8> = Vec::new();
+        let mut all_functions = main_compiled.functions.clone();
+        let mut max_registers: usize = main_compiled.max_registers;
+
+        // Add main module bytecode first
+        for s in &main_compiled.strings {
+            all_strings.push(s.clone());
+        }
+        all_data.extend(main_compiled.data.clone());
+        max_registers = main_compiled.max_registers;
+
+        // Then compile imported modules and append
+        for (imported_module_name, module_info) in &self.loaded_modules {
+            // Don't rewrite calls in imported modules - they should use their internal name resolution
+            // Only the main module's calls are rewritten
+            let imported_stmts = module_info.statements.clone();
+
+            let imported_hlir = ast_to_hlir(imported_module_name, &imported_stmts);
+            let imported_compiled = compile_hlir_to_sparkler(&imported_hlir);
+
+            // Adjust string indices and append to global string table
+            let string_offset = all_strings.len();
+            for s in &imported_compiled.strings {
+                all_strings.push(s.clone());
+            }
+
+            // Adjust string indices in module bytecode
+            let mut imported_data = imported_compiled.data.clone();
+            self.adjust_string_indices(&mut imported_data, string_offset);
+
+            all_data.extend(imported_data);
+            
+            // Add functions from imported module, adjusting their bytecode string indices
+            for mut func in imported_compiled.functions {
+                self.adjust_string_indices(&mut func.bytecode, string_offset);
+                all_functions.push(func);
+            }
+            
+            if imported_compiled.max_registers > max_registers {
+                max_registers = imported_compiled.max_registers;
+            }
+        }
+
         let merged_bytecode = CompiledBytecode {
-            data: main_compiled.data,
-            strings: main_compiled.strings,
-            max_registers: main_compiled.max_registers,
+            data: all_data,
+            strings: all_strings,
+            max_registers,
+            functions: all_functions,
         };
-        
+
         #[cfg(feature = "llvm")]
         let llvm_ir = if self.options.emit_llvm_ir {
             Some(crate::hlir::generate_llvm_ir_from_hlir(&main_hlir))
@@ -451,8 +495,8 @@ impl HlirCompiler {
             None
         };
         #[cfg(not(feature = "llvm"))]
-        let llvm_ir: Option<()> = None;
-        
+        let _llvm_ir: Option<()> = None;
+
         Ok(CompilationResult {
             hlir: main_hlir,
             sparkler_bytecode: Some(merged_bytecode),
@@ -498,7 +542,7 @@ pub fn sparkler_to_bytecode(compiled: CompiledBytecode) -> sparkler::executor::B
         data: compiled.data,
         strings: compiled.strings,
         classes: Vec::new(),
-        functions: Vec::new(),
+        functions: compiled.functions,
         vtables: Vec::new(),
     }
 }
