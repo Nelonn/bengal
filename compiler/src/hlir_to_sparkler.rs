@@ -519,7 +519,15 @@ impl HlirToSparkler {
                 let rhs_reg = self.get_value_reg(rhs);
 
                 let opcode = match op {
-                    HlirBinOp::Add | HlirBinOp::FAdd => Opcode::Add,
+                    HlirBinOp::Add => {
+                        // String concatenation uses Concat opcode
+                        if *ty == HlirType::String {
+                            Opcode::Concat
+                        } else {
+                            Opcode::Add
+                        }
+                    }
+                    HlirBinOp::FAdd => Opcode::Add,
                     HlirBinOp::Sub | HlirBinOp::FSub => Opcode::Subtract,
                     HlirBinOp::Mul | HlirBinOp::FMul => Opcode::Multiply,
                     HlirBinOp::SDiv | HlirBinOp::UDiv | HlirBinOp::FDiv => Opcode::Divide,
@@ -537,9 +545,17 @@ impl HlirToSparkler {
                 };
 
                 self.emit_opcode(opcode);
-                self.emit(dest_reg);
-                self.emit(lhs_reg);
-                self.emit(rhs_reg);
+                if opcode == Opcode::Concat {
+                    // Concat: Rd, rs_start, count
+                    // For binary concat, count is always 2
+                    self.emit(dest_reg);
+                    self.emit(lhs_reg);
+                    self.emit(2u8);
+                } else {
+                    self.emit(dest_reg);
+                    self.emit(lhs_reg);
+                    self.emit(rhs_reg);
+                }
             }
 
             HlirInstr::UnaryOp { op, value, dest, ty } => {

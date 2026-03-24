@@ -303,10 +303,15 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
                 let func_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
                 let func_name = resolve_function_name(bytecode, func_idx);
-                let operands = format!("R{}, {}, args=[R{}..R{}]",
-                    data[pc + 1], func_name, arg_start, arg_end);
+                let args_str = if arg_count == 0 {
+                    "args=[]".to_string()
+                } else {
+                    let arg_end = arg_start + arg_count - 1;
+                    format!("args=[R{}..R{}]", arg_start, arg_end)
+                };
+                let operands = format!("R{}, {}, {}",
+                    data[pc + 1], func_name, args_str);
                 (format!("CALL"), operands, 4)
             } else {
                 ("CALL".to_string(), String::new(), 0)
@@ -321,9 +326,14 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
                     .unwrap_or_else(|| format!("str.{}", name_idx));
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, \"{}\", args=[R{}..R{}]",
-                    data[pc + 1], name, arg_start, arg_end);
+                let args_str = if arg_count == 0 {
+                    "args=[]".to_string()
+                } else {
+                    let arg_end = arg_start + arg_count - 1;
+                    format!("args=[R{}..R{}]", arg_start, arg_end)
+                };
+                let operands = format!("R{}, \"{}\", {}",
+                    data[pc + 1], name, args_str);
                 (format!("CALL_NATIVE"), operands, 4)
             } else {
                 ("CALL_NATIVE".to_string(), String::new(), 0)
@@ -335,10 +345,15 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
                 let method_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let args_str = if arg_count == 0 {
+                    "args=[]".to_string()
+                } else {
+                    let arg_end = arg_start + arg_count - 1;
+                    format!("args=[R{}..R{}]", arg_start, arg_end)
+                };
                 let method_name = resolve_method_name(bytecode, method_idx);
-                let operands = format!("R{}, {}, args=[R{}..R{}]",
-                    data[pc + 1], method_name, arg_start, arg_end);
+                let operands = format!("R{}, {}, {}",
+                    data[pc + 1], method_name, args_str);
                 (format!("INVOKE"), operands, 4)
             } else {
                 ("INVOKE".to_string(), String::new(), 0)
@@ -358,10 +373,15 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
                 let vtable_idx = data[pc + 2] as usize;
                 let arg_start = data[pc + 3];
                 let arg_count = data[pc + 4];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
+                let args_str = if arg_count == 0 {
+                    "args=[]".to_string()
+                } else {
+                    let arg_end = arg_start + arg_count - 1;
+                    format!("args=[R{}..R{}]", arg_start, arg_end)
+                };
                 let method_name = resolve_vtable_method_name(bytecode, vtable_idx, arg_start as usize);
-                let operands = format!("R{}, {}, args=[R{}..R{}]",
-                    data[pc + 1], method_name, arg_start, arg_end);
+                let operands = format!("R{}, {}, {}",
+                    data[pc + 1], method_name, args_str);
                 (format!("INVOKE_INTERFACE"), operands, 4)
             } else {
                 ("INVOKE_INTERFACE".to_string(), String::new(), 0)
@@ -373,9 +393,14 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
                 let func_idx = u16::from_le_bytes([data[pc + 2], data[pc + 3]]) as usize;
                 let arg_start = data[pc + 4];
                 let arg_count = data[pc + 5];
-                let arg_end = arg_start.saturating_add(arg_count.saturating_sub(1));
-                let operands = format!("R{}, native_{}, args=[R{}..R{}]",
-                    data[pc + 1], func_idx, arg_start, arg_end);
+                let args_str = if arg_count == 0 {
+                    "args=[]".to_string()
+                } else {
+                    let arg_end = arg_start + arg_count - 1;
+                    format!("args=[R{}..R{}]", arg_start, arg_end)
+                };
+                let operands = format!("R{}, native_{}, {}",
+                    data[pc + 1], func_idx, args_str);
                 (format!("CALL_NATIVE_INDEXED"), operands, 5)
             } else {
                 ("CALL_NATIVE_INDEXED".to_string(), String::new(), 0)

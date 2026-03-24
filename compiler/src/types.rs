@@ -352,7 +352,7 @@ pub struct ParamSignature {
 /// # Arguments
 /// * `package` - Optional package/module path (e.g., "std.io")
 /// * `class` - Optional class name for methods (e.g., "MyClass")
-/// * `name` - The base function/method name (e.g., "println")
+/// * `name` - The base function/method name (e.g., "println" or "Test_constructor()")
 /// * `args` - Parameter types for mangling (e.g., [Type::Str, Type::Int])
 /// 
 /// # Examples
@@ -360,6 +360,7 @@ pub struct ParamSignature {
 /// - mangle(None, Some("MyClass"), "method", &[Type::Int]) -> "MyClass.method(int)"
 /// - mangle(Some("std"), Some("io"), "print", &[Type::Str]) -> "std.io.print(str)"
 /// - mangle(None, None, "main", &[]) -> "main()"
+/// - mangle(None, None, "Test_constructor()", &[]) -> "Test_constructor()"
 pub fn mangle(package: Option<&str>, class: Option<&str>, name: &str, args: &[Type]) -> String {
     let mut mangled = String::new();
     
@@ -373,6 +374,13 @@ pub fn mangle(package: Option<&str>, class: Option<&str>, name: &str, args: &[Ty
     if let Some(cls) = class {
         mangled.push_str(cls);
         mangled.push('.');
+    }
+    
+    // Check if name already has a signature (ends with ))
+    if name.ends_with(')') {
+        // Name already has signature (e.g., "Test_constructor()" or "method(int)")
+        // Use as-is without additional mangling
+        return format!("{}{}", mangled, name);
     }
     
     // Add base name

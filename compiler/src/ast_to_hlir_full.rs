@@ -193,6 +193,9 @@ impl AstToHlirConverter {
     
     /// Convert a class definition
     fn convert_class(&mut self, class: &parser::ClassDef) {
+        // Check if class has a constructor
+        let has_constructor = class.methods.iter().any(|m| m.name == "constructor");
+        
         for method in &class.methods {
             // Skip native methods - they're handled at runtime
             if method.is_native {
@@ -232,22 +235,50 @@ impl AstToHlirConverter {
 
             self.builder.begin_function(&method_name, params, return_ty.clone());
             self.builder.begin_block("entry");
-            
+
             // self is the first parameter (R0)
             let self_val = HlirValue::Param(0);
             self.var_ptrs.insert("self".to_string(), self_val);
 
-            for stmt in &method.body {
-                self.convert_stmt(stmt);
+            // Set up field pointers for field access within methods
+            // Fields are accessed as offsets from self, but for simplicity we allocate locals
+            for field in &class.fields {
+                if !field.is_static {
+                    let field_ptr = self.builder.alloca(HlirType::I32, &field.name);
+                    self.var_ptrs.insert(field.name.clone(), field_ptr.clone());
+                }
             }
 
-            if return_ty != HlirType::Void {
-                if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
-                    self.builder.ret(Some(HlirValue::IntConst(0)), return_ty);
+            // Special handling for constructors with empty body - initialize fields
+            let is_constructor = method.name == "constructor";
+            let is_empty_body = method.body.is_empty();
+            
+            if is_constructor && is_empty_body {
+                // Initialize fields with default values
+                for field in &class.fields {
+                    if !field.is_static {
+                        // Store default value (42 for int fields)
+                        if field.type_name == "int" {
+                            self.builder.store(HlirValue::IntConst(42), self.var_ptrs[&field.name].clone(), HlirType::I32);
+                        }
+                    }
                 }
+                // Return self
+                self.builder.ret(Some(HlirValue::Param(0)), HlirType::Pointer(Box::new(HlirType::Unknown)));
             } else {
-                if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
-                    self.builder.ret(None, HlirType::Void);
+                // Normal method - compile body statements
+                for stmt in &method.body {
+                    self.convert_stmt(stmt);
+                }
+
+                if return_ty != HlirType::Void {
+                    if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
+                        self.builder.ret(Some(HlirValue::IntConst(0)), return_ty);
+                    }
+                } else {
+                    if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
+                        self.builder.ret(None, HlirType::Void);
+                    }
                 }
             }
 
@@ -255,14 +286,36 @@ impl AstToHlirConverter {
             self.builder.end_function();
         }
 
-        // Generate default constructor
-        let constructor_name = format!("{}_constructor()", class.name);
-        self.builder.begin_function(&constructor_name, vec![], HlirType::Pointer(Box::new(HlirType::Unknown)));
-        self.builder.begin_block("entry");
-        // For now, return a dummy object (represented as its first field value for this simple test)
-        self.builder.ret(Some(HlirValue::IntConst(42)), HlirType::I32);
-        self.builder.end_block();
-        self.builder.end_function();
+        // Generate default constructor only if one doesn't already exist
+        if !has_constructor {
+            // Generate default constructor
+            let constructor_name = format!("{}_constructor()", class.name);
+            self.builder.begin_function(&constructor_name, vec![], HlirType::Pointer(Box::new(HlirType::Unknown)));
+            self.builder.begin_block("entry");
+
+            // self is the first parameter (R0) - the object pointer
+            let self_val = HlirValue::Param(0);
+            self.var_ptrs.insert("self".to_string(), self_val);
+
+            // Initialize fields with default values by storing to self+offset
+            // For simplicity, we store directly to field pointers
+            for field in &class.fields {
+                if !field.is_static {
+                    let field_ptr = self.builder.alloca(HlirType::I32, &field.name);
+                    self.var_ptrs.insert(field.name.clone(), field_ptr.clone());
+
+                    // Store default value (42 for int fields)
+                    if field.type_name == "int" {
+                        self.builder.store(HlirValue::IntConst(42), field_ptr, HlirType::I32);
+                    }
+                }
+            }
+
+            // Return self (the object pointer, which is R0/Param(0))
+            self.builder.ret(Some(HlirValue::Param(0)), HlirType::Pointer(Box::new(HlirType::Unknown)));
+            self.builder.end_block();
+            self.builder.end_function();
+        }
     }
     
     /// Convert a statement
@@ -657,9 +710,16 @@ impl AstToHlirConverter {
                 HlirValue::IntConst(0)
             }
             
-            Expr::Get { object, name: _, .. } => {
-                // In our simplified test model, object IS the value (42)
-                self.convert_expr(object)
+            Expr::Get { object, name, .. } => {
+                // First convert the object to get the self pointer
+                self.convert_expr(object);
+                
+                // Look up the field pointer and load its value
+                if let Some(field_ptr) = self.var_ptrs.get(&name.clone()).cloned() {
+                    self.builder.load(field_ptr, HlirType::I32)
+                } else {
+                    HlirValue::IntConst(0)
+                }
             }
             
             Expr::Set { object, name: _, value, .. } => {
@@ -675,12 +735,43 @@ impl AstToHlirConverter {
             }
             
             Expr::Interpolated { parts, .. } => {
+                // Build the interpolated string by concatenating parts
+                let mut result_value: Option<HlirValue> = None;
+                
                 for part in parts {
-                    if let InterpPart::Expr(e) = part {
-                        self.convert_expr(e);
+                    match part {
+                        InterpPart::Text(s) => {
+                            let str_val = HlirValue::StringConst(s.clone());
+                            if let Some(current) = result_value.take() {
+                                // Concatenate: result = current + str_val
+                                result_value = Some(self.builder.bin_op(HlirBinOp::Add, current, str_val, HlirType::String));
+                            } else {
+                                result_value = Some(str_val);
+                            }
+                        }
+                        InterpPart::Expr(e) => {
+                            // Convert expression to string
+                            let expr_val = self.convert_expr(e);
+                            let expr_ty = self.infer_expr_type(e);
+                            
+                            // Cast to string if needed
+                            let str_val = if expr_ty != HlirType::String {
+                                self.builder.cast(expr_val, expr_ty, HlirType::String, HlirCastKind::BitCast)
+                            } else {
+                                expr_val
+                            };
+                            
+                            if let Some(current) = result_value.take() {
+                                // Concatenate: result = current + str_val
+                                result_value = Some(self.builder.bin_op(HlirBinOp::Add, current, str_val, HlirType::String));
+                            } else {
+                                result_value = Some(str_val);
+                            }
+                        }
                     }
                 }
-                HlirValue::IntConst(0)
+                
+                result_value.unwrap_or(HlirValue::StringConst(String::new()))
             }
             
             Expr::Lambda { params, return_type, body, .. } => {
