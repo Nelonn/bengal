@@ -133,12 +133,16 @@ impl Executor {
                     let arg_count = bytecode[i + 4];
 
                     if let Some(name) = strings.get(name_idx) {
-                        if let Some(func_index) = registry.get_index(name) {
+                        // Try exact match first, then prefix match (for names without signature)
+                        let func_index = registry.get_index(name)
+                            .or_else(|| registry.get_index_by_prefix(name));
+                        
+                        if let Some(idx) = func_index {
                             // Convert to CallNativeIndexed (6 bytes)
                             new_bytecode.push(Opcode::CallNativeIndexed as u8);
                             new_bytecode.push(rd);
-                            new_bytecode.push((func_index & 0xFF) as u8);
-                            new_bytecode.push(((func_index >> 8) & 0xFF) as u8);
+                            new_bytecode.push((idx & 0xFF) as u8);
+                            new_bytecode.push(((idx >> 8) & 0xFF) as u8);
                             new_bytecode.push(arg_start);
                             new_bytecode.push(arg_count);
                             i += 5;

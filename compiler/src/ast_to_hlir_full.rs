@@ -208,7 +208,18 @@ impl AstToHlirConverter {
                 .map(|t| self.type_from_str(t))
                 .unwrap_or(HlirType::Void);
 
-            let method_name = format!("{}_{}", class.name, method.name);
+            // Build mangled method name with parameter types for overloading support
+            let param_types: Vec<String> = method.params.iter().map(|p| {
+                p.type_name.as_ref()
+                    .map(|t| t.clone())
+                    .unwrap_or_else(|| "Unknown".to_string())
+            }).collect();
+            
+            let method_name = if param_types.is_empty() {
+                format!("{}_{}()", class.name, method.name)
+            } else {
+                format!("{}_{}({})", class.name, method.name, param_types.join(","))
+            };
 
             self.current_return_type = return_ty.clone();
             self.var_types.clear();

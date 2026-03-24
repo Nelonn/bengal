@@ -17,7 +17,6 @@ use sparkler::{NativeModule, NativeResult, Value, VM};
 pub fn register_all(vm: &mut VM) {
     NativeModule::new("std.io")
         .function("print(str)", io::native_print)
-        .function("println(str)", io::native_println)
         .register(vm);
 
     NativeModule::new("std.data")

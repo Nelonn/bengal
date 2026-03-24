@@ -41,6 +41,8 @@ pub struct HlirToSparkler {
     current_instr_idx: usize,
     /// Reverse map: register -> set of temps using it (for proper release)
     reg_to_temps: std::collections::HashMap<u8, std::collections::HashSet<usize>>,
+    /// Set of native function names that should use CallNative opcode
+    native_functions: std::collections::HashSet<String>,
 }
 
 impl HlirToSparkler {
@@ -59,6 +61,27 @@ impl HlirToSparkler {
             temp_last_use: std::collections::HashMap::new(),
             current_instr_idx: 0,
             reg_to_temps: std::collections::HashMap::new(),
+            native_functions: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Create a new HlirToSparkler with native function information
+    pub fn with_native_functions(native_functions: Vec<String>) -> Self {
+        Self {
+            bytecode: Vec::new(),
+            strings: Vec::new(),
+            reg_map: std::collections::HashMap::new(),
+            next_sparkler_reg: 1,
+            max_reg: 0,
+            var_map: std::collections::HashMap::new(),
+            block_offsets: std::collections::HashMap::new(),
+            pending_jumps: Vec::new(),
+            const_regs: Vec::new(),
+            reusable_regs: Vec::new(),
+            temp_last_use: std::collections::HashMap::new(),
+            current_instr_idx: 0,
+            reg_to_temps: std::collections::HashMap::new(),
+            native_functions: native_functions.into_iter().collect(),
         }
     }
 
@@ -569,12 +592,23 @@ impl HlirToSparkler {
                         }
                     }
 
-                    // Step 3: emit the call
-                    self.emit_opcode(Opcode::Call);
-                    self.emit(dest_reg);
-                    self.emit(func_idx as u8);
-                    self.emit(arg_start);
-                    self.emit(args.len() as u8);
+                    // Step 3: emit the call - use CallNative for native functions
+                    // Check if this is a native function by name
+                    let is_native = self.native_functions.contains(name.as_str());
+                    
+                    if is_native {
+                        self.emit_opcode(Opcode::CallNative);
+                        self.emit(dest_reg);
+                        self.emit(func_idx as u8);
+                        self.emit(arg_start);
+                        self.emit(args.len() as u8);
+                    } else {
+                        self.emit_opcode(Opcode::Call);
+                        self.emit(dest_reg);
+                        self.emit(func_idx as u8);
+                        self.emit(arg_start);
+                        self.emit(args.len() as u8);
+                    }
 
                     // Step 4: FIX — return every staging register to the freelist.
                     // Without this step each call leaked one register per argument,
@@ -762,6 +796,12 @@ impl Default for HlirToSparkler {
 /// Compile HLIR module to Sparkler bytecode
 pub fn compile_hlir_to_sparkler(hlir: &HlirModule) -> CompiledBytecode {
     let mut compiler = HlirToSparkler::new();
+    compiler.compile_module(hlir)
+}
+
+/// Compile HLIR module to Sparkler bytecode with native function information
+pub fn compile_hlir_to_sparkler_with_natives(hlir: &HlirModule, native_functions: Vec<String>) -> CompiledBytecode {
+    let mut compiler = HlirToSparkler::with_native_functions(native_functions);
     compiler.compile_module(hlir)
 }
 

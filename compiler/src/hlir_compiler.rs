@@ -4,10 +4,10 @@
 //! It supports imports, module resolution, and bytecode merging.
 
 use crate::lexer::Lexer;
-use crate::parser::{Parser, Stmt, ImportKind};
+use crate::parser::{Parser, Stmt, ImportKind, Span};
 use crate::hlir::HlirModule;
 use crate::ast_to_hlir_full::ast_to_hlir;
-use crate::hlir_to_sparkler::{compile_hlir_to_sparkler, CompiledBytecode};
+use crate::hlir_to_sparkler::{compile_hlir_to_sparkler, compile_hlir_to_sparkler_with_natives, CompiledBytecode};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,7 @@ struct ModuleInfo {
     statements: Vec<Stmt>,
     source: String,
     functions: Vec<String>,
+    native_functions: Vec<String>,  // Track which functions are native
     classes: Vec<String>,
 }
 
@@ -60,6 +61,7 @@ pub struct HlirCompiler {
     loaded_modules: HashMap<String, ModuleInfo>,
     search_paths: Vec<PathBuf>,
     import_map: HashMap<String, String>,
+    native_functions: HashMap<String, bool>,  // Map function name -> is_native
 }
 
 impl HlirCompiler {
@@ -71,6 +73,7 @@ impl HlirCompiler {
             loaded_modules: HashMap::new(),
             search_paths: Vec::new(),
             import_map: HashMap::new(),
+            native_functions: HashMap::new(),
         }
     }
     
@@ -186,33 +189,58 @@ impl HlirCompiler {
     
     fn load_module(&mut self, module_path: &[String]) -> Result<String, String> {
         let module_name = module_path.join(".");
-        
+
         if self.loaded_modules.contains_key(&module_name) {
             return Ok(module_name);
         }
-        
+
         let module_file = self.find_module_file(module_path)?;
-        
+
         let source = fs::read_to_string(&module_file)
             .map_err(|e| format!("Failed to read module '{}': {}", module_file.display(), e))?;
-        
+
         let mut lexer = Lexer::new(&source, module_file.to_str().unwrap_or("unknown"));
         let (tokens, token_positions) = lexer.tokenize()
             .map_err(|e| format!("Lexical error in '{}': {}", module_file.display(), e))?;
-        
+
         let mut parser = Parser::new(tokens, &source, module_file.to_str().unwrap_or("unknown"), token_positions);
-        let statements = parser.parse()
+        let mut statements = parser.parse()
             .map_err(|e| format!("Parse error in '{}': {}", module_file.display(), e))?;
-        
+
         let actual_module_path = Self::extract_module_path(&statements, &module_file);
-        
-        let mut functions = Vec::new();
-        let mut classes = Vec::new();
-        
+
+        // Build internal import map for this module - map simple names to qualified names
+        // This ensures internal calls like print() become std.io.print()
+        let mut internal_import_map = HashMap::new();
         for stmt in &statements {
             match stmt {
                 Stmt::Function(func) => {
-                    functions.push(format!("{}.{}", actual_module_path, func.name));
+                    let qualified_name = format!("{}.{}", actual_module_path, func.name);
+                    internal_import_map.insert(func.name.clone(), qualified_name);
+                }
+                Stmt::Class(class) => {
+                    let qualified_name = format!("{}.{}", actual_module_path, class.name);
+                    internal_import_map.insert(class.name.clone(), qualified_name);
+                }
+                _ => {}
+            }
+        }
+
+        // Rewrite calls within the module to use qualified names
+        Self::rewrite_calls(&mut statements, &internal_import_map);
+
+        let mut functions = Vec::new();
+        let mut native_functions = Vec::new();
+        let mut classes = Vec::new();
+
+        for stmt in &statements {
+            match stmt {
+                Stmt::Function(func) => {
+                    let qualified_name = format!("{}.{}", actual_module_path, func.name);
+                    functions.push(qualified_name.clone());
+                    if func.is_native {
+                        native_functions.push(qualified_name);
+                    }
                 }
                 Stmt::Class(class) => {
                     classes.push(format!("{}.{}", actual_module_path, class.name));
@@ -220,13 +248,14 @@ impl HlirCompiler {
                 _ => {}
             }
         }
-        
+
         let module_info = ModuleInfo {
             module_path: actual_module_path.clone(),
             path: module_file,
             statements,
             source,
             functions,
+            native_functions,
             classes,
         };
         
@@ -251,6 +280,10 @@ impl HlirCompiler {
                                     if let Some(simple_name) = func.split('.').last() {
                                         self.import_map.insert(simple_name.to_string(), func.clone());
                                     }
+                                    // Track if this function is native
+                                    if module_info.native_functions.contains(func) {
+                                        self.native_functions.insert(func.clone(), true);
+                                    }
                                 }
                             }
                         }
@@ -267,6 +300,10 @@ impl HlirCompiler {
                                     for func in &module_info.functions {
                                         if func.ends_with(&format!(".{}", member)) {
                                             self.import_map.insert(member.clone(), func.clone());
+                                            // Track if this function is native
+                                            if module_info.native_functions.contains(func) {
+                                                self.native_functions.insert(func.clone(), true);
+                                            }
                                         }
                                     }
                                 }
@@ -279,6 +316,10 @@ impl HlirCompiler {
                                 for func in &module_info.functions {
                                     if let Some(simple_name) = func.split('.').last() {
                                         self.import_map.insert(simple_name.to_string(), func.clone());
+                                        // Track if this function is native
+                                        if module_info.native_functions.contains(func) {
+                                            self.native_functions.insert(func.clone(), true);
+                                        }
                                     }
                                 }
                             }
@@ -289,7 +330,11 @@ impl HlirCompiler {
                             if let Some(module_info) = self.loaded_modules.get(&module_name) {
                                 for func in &module_info.functions {
                                     let aliased_name = format!("{}.{}", alias, func.split('.').last().unwrap_or(""));
-                                    self.import_map.insert(aliased_name, func.clone());
+                                    self.import_map.insert(aliased_name.clone(), func.clone());
+                                    // Track if this function is native
+                                    if module_info.native_functions.contains(func) {
+                                        self.native_functions.insert(aliased_name, true);
+                                    }
                                 }
                             }
                         }
@@ -315,6 +360,10 @@ impl HlirCompiler {
                 if let Some(e) = expr {
                     Self::rewrite_expr_calls(e, import_map);
                 }
+            }
+            Stmt::Function(func) => {
+                // Rewrite function body
+                Self::rewrite_block(&mut func.body, import_map);
             }
             Stmt::If { condition, then_branch, else_branch, .. } => {
                 Self::rewrite_expr_calls(condition, import_map);
@@ -347,18 +396,52 @@ impl HlirCompiler {
             Self::rewrite_stmt_calls(stmt, import_map);
         }
     }
+
+    /// Build a qualified name from a Get expression chain
+    /// E.g., std.io -> "std.io"
+    fn build_qualified_name(expr: &crate::parser::Expr) -> String {
+        use crate::parser::Expr;
+        
+        match expr {
+            Expr::Variable { name, .. } => name.clone(),
+            Expr::Get { object, name, .. } => {
+                let obj_name = Self::build_qualified_name(object);
+                format!("{}.{}", obj_name, name)
+            }
+            _ => String::new(),
+        }
+    }
     
     fn rewrite_expr_calls(expr: &mut crate::parser::Expr, import_map: &HashMap<String, String>) {
         use crate::parser::Expr;
-        
+
         match expr {
             Expr::Call { callee, args, .. } => {
                 if let Expr::Variable { name, .. } = callee.as_mut() {
                     if let Some(qualified_name) = import_map.get(name) {
                         *name = qualified_name.clone();
                     }
+                } else if let Expr::Get { object, name, .. } = callee.as_mut() {
+                    // Handle qualified calls like std.io.println
+                    // Build the full path from the object
+                    let full_path = Self::build_qualified_name(object);
+                    let full_name = format!("{}.{}", full_path, name);
+                    
+                    // Check if the full name is in the import map
+                    if let Some(qualified_name) = import_map.get(&full_name) {
+                        // Replace the Get expression with a Variable using the qualified name
+                        // We need to preserve the span from the original callee
+                        let span_val = match callee.as_ref() {
+                            Expr::Get { span, .. } => *span,
+                            _ => Span::unknown(),
+                        };
+                        *callee = Box::new(Expr::Variable {
+                            name: qualified_name.clone(),
+                            span: span_val,
+                        });
+                    }
                 }
-                
+
                 for arg in args {
                     Self::rewrite_expr_calls(arg, import_map);
                 }
@@ -434,8 +517,12 @@ impl HlirCompiler {
             .to_string();
 
         // First, compile the main module (it must come first for the entry point)
+        // Collect all native function names that are accessible from the main module
+        let main_native_functions: Vec<String> = self.native_functions.keys()
+            .cloned()
+            .collect();
         let main_hlir = ast_to_hlir(&module_name, &statements);
-        let main_compiled = compile_hlir_to_sparkler(&main_hlir);
+        let main_compiled = compile_hlir_to_sparkler_with_natives(&main_hlir, main_native_functions);
 
         let mut all_strings: Vec<String> = Vec::new();
         let mut all_data: Vec<u8> = Vec::new();
@@ -450,13 +537,15 @@ impl HlirCompiler {
         max_registers = main_compiled.max_registers;
 
         // Then compile imported modules and append
-        for (imported_module_name, module_info) in &self.loaded_modules {
-            // Don't rewrite calls in imported modules - they should use their internal name resolution
-            // Only the main module's calls are rewritten
+        for (_imported_module_name, module_info) in &self.loaded_modules {
+            // Imported modules have already had their calls rewritten to use qualified names
             let imported_stmts = module_info.statements.clone();
 
-            let imported_hlir = ast_to_hlir(imported_module_name, &imported_stmts);
-            let imported_compiled = compile_hlir_to_sparkler(&imported_hlir);
+            // Collect native function names for this module
+            let module_native_functions = module_info.native_functions.clone();
+
+            let imported_hlir = ast_to_hlir(&module_info.module_path, &imported_stmts);
+            let imported_compiled = compile_hlir_to_sparkler_with_natives(&imported_hlir, module_native_functions);
 
             // Adjust string indices and append to global string table
             let string_offset = all_strings.len();
@@ -469,13 +558,13 @@ impl HlirCompiler {
             self.adjust_string_indices(&mut imported_data, string_offset);
 
             all_data.extend(imported_data);
-            
+
             // Add functions from imported module, adjusting their bytecode string indices
             for mut func in imported_compiled.functions {
                 self.adjust_string_indices(&mut func.bytecode, string_offset);
                 all_functions.push(func);
             }
-            
+
             if imported_compiled.max_registers > max_registers {
                 max_registers = imported_compiled.max_registers;
             }

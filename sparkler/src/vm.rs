@@ -1320,7 +1320,11 @@ impl VM {
                     }
                 }
                 // Check if it's a native function using indexed registry lookup
-                else if let Some(idx) = self.native_registry.get_index(&func_name) {
+                // Try exact match first, then prefix match (for names without signature)
+                let native_idx = self.native_registry.get_index(&func_name)
+                    .or_else(|| self.native_registry.get_index_by_prefix(&func_name));
+                
+                if let Some(idx) = native_idx {
                     if let Some(func_type) = self.native_registry.get_by_index(idx) {
                         let mut args = Vec::new();
                         for i in 0..arg_count {
