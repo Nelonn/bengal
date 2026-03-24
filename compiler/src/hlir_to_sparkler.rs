@@ -665,10 +665,6 @@ impl HlirToSparkler {
                 self.emit(dest_reg);
                 self.emit(base_reg);
             }
-
-            _ => {
-                self.emit_opcode(Opcode::Nop);
-            }
         }
 
         // Release all constant/scratch registers allocated during this instruction

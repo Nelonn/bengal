@@ -190,12 +190,12 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
         Opcode::Nop => ("NOP".to_string(), String::new(), 0),
 
         Opcode::LoadConst => {
-            if pc + 2 < data.len() {
-                let str_idx = data[pc + 2] as usize;
+            if pc + 3 < data.len() {
+                let str_idx = ((data[pc + 3] as usize) << 8) | (data[pc + 2] as usize);
                 let value = strings.get(str_idx)
                     .map(|s| format!("\"{}\"", escape_string(s)))
                     .unwrap_or_else(|| format!("str.{}", str_idx));
-                (format!("LOAD_CONST R{}", data[pc + 1]), value, 2)
+                (format!("LOAD_CONST R{}", data[pc + 1]), value, 3)
             } else {
                 ("LOAD_CONST".to_string(), String::new(), 0)
             }
