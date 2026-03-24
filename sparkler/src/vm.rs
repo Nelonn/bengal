@@ -2268,6 +2268,18 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
 
+            // Compare inequality
+            // Format: [NotEqual, Rd, Rs1, Rs2]
+            x if x == Opcode::NotEqual as u8 => {
+                self.set_pc(self.pc() + 1);
+                let rd = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs1 = self.bytecode[self.pc()] as u8;
+                self.set_pc(self.pc() + 1);
+                let rs2 = self.bytecode[self.pc()] as u8;
+                self.set_reg(rd, Value::Bool(self.get_reg(rs1) != self.get_reg(rs2)));
+                self.set_pc(self.pc() + 1);
+            }
             // Logical NOT
             // Format: [Not, Rd, Rs]
             x if x == Opcode::Not as u8 => {

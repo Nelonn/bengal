@@ -170,7 +170,7 @@ impl Executor {
 
         // Link bytecode if linker is available
         if self.linker.is_some() {
-            Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
+            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
@@ -197,7 +197,7 @@ impl Executor {
 
         // Link bytecode if linker is available
         if self.linker.is_some() {
-            Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
+            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;

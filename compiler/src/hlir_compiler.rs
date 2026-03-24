@@ -595,22 +595,77 @@ impl HlirCompiler {
     }
     
     fn adjust_string_indices(&self, bytecode: &mut [u8], offset: usize) {
+        if offset == 0 { return; }
         let mut i = 0;
         while i < bytecode.len() {
             let opcode = bytecode[i];
-            match opcode {
-                0x10 | 0x21 | 0x22 | 0x30 | 0x31 | 0x40 | 0x41 | 0x42 | 0x45 | 0x46 | 0x49 | 0x4A => {
+            let size = match opcode {
+                0x00 => 1, // Nop
+                0x10 => { // LoadConst Rd, idx
                     if i + 2 < bytecode.len() {
-                        i += 2;
-                        let idx = bytecode[i] as usize;
-                        bytecode[i] = (idx + offset) as u8;
+                        bytecode[i + 2] = (bytecode[i + 2] as usize + offset) as u8;
                     }
-                    i += 1;
+                    3
                 }
-                _ => {
-                    i += 1;
+                0x11 | 0x12 => 10, // LoadInt, LoadFloat
+                0x13 => 2, // LoadBool
+                0x14 => 2, // LoadNull
+                0x20 => 3, // Move
+                0x21 => { // LoadLocal Rd, idx
+                    if i + 2 < bytecode.len() {
+                        bytecode[i + 2] = (bytecode[i + 2] as usize + offset) as u8;
+                    }
+                    3
                 }
-            }
+                0x22 => { // StoreLocal idx, Rs
+                    if i + 1 < bytecode.len() {
+                        bytecode[i + 1] = (bytecode[i + 1] as usize + offset) as u8;
+                    }
+                    3
+                }
+                0x30 => { // GetProperty Rd, Robj, idx
+                    if i + 3 < bytecode.len() {
+                        bytecode[i + 3] = (bytecode[i + 3] as usize + offset) as u8;
+                    }
+                    4
+                }
+                0x31 => { // SetProperty Robj, idx, Rs
+                    if i + 2 < bytecode.len() {
+                        bytecode[i + 2] = (bytecode[i + 2] as usize + offset) as u8;
+                    }
+                    4
+                }
+                0x40 | 0x41 | 0x42 => { // Call, CallNative, Invoke: Rd, idx, start, count
+                    if i + 2 < bytecode.len() {
+                        bytecode[i + 2] = (bytecode[i + 2] as usize + offset) as u8;
+                    }
+                    5
+                }
+                0x43 => 2, // Return
+                0x44 => { // InvokeInterface: Rd, idx, start, count
+                    if i + 2 < bytecode.len() {
+                        bytecode[i + 2] = (bytecode[i + 2] as usize + offset) as u8;
+                    }
+                    6
+                }
+                0x45 => 6, // CallNativeIndexed
+                0x50 => 3, // Jump
+                0x51 | 0x52 => 4, // JumpIfTrue/False
+                0x60..=0x63 | 0x66..=0x71 | 0x75 | 0x78..=0x7A | 0x7C..=0x7D => 4, // 3-reg ops
+                0x64 | 0x7B => 3, // 2-reg ops (Not, BitNot)
+                0x65 => 4, // Concat
+                0x73 => 3, // Line
+                0x74 => 4, // Convert
+                0x76 => 4, // Array
+                0x77 => 4, // Index
+                0x80 => 4, // TryStart
+                0x81 => 1, // TryEnd
+                0x82 => 2, // Throw
+                0x90 => 1, // Breakpoint
+                0xFF => 1, // Halt
+                _ => 1,
+            };
+            i += size;
         }
     }
     

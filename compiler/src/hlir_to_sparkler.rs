@@ -121,6 +121,24 @@ impl HlirToSparkler {
         reg
     }
 
+    /// Allocate a block of n consecutive registers (for call staging windows)
+    fn alloc_consecutive_regs(&mut self, n: usize) -> u8 {
+        if n == 0 {
+            return 0;
+        }
+        if n == 1 {
+            return self.alloc_reg();
+        }
+
+        // To ensure they are consecutive, we bypass reusable_regs for n > 1
+        let reg = self.next_sparkler_reg as u8;
+        self.next_sparkler_reg += n as u16;
+        if self.next_sparkler_reg as u16 - 1 > self.max_reg {
+            self.max_reg = self.next_sparkler_reg - 1;
+        }
+        reg
+    }
+
     /// Get or create a Sparkler register for an HLIR temp
     fn get_reg_for_temp(&mut self, temp: usize) -> u8 {
         if let Some(&reg) = self.reg_map.get(&temp) {
@@ -579,11 +597,11 @@ impl HlirToSparkler {
                         .collect();
 
                     // Step 2: allocate a consecutive staging window.
-                    let arg_start = self.next_sparkler_reg as u8;
+                    let arg_start = self.alloc_consecutive_regs(args.len());
                     let mut staging_regs: Vec<u8> = Vec::with_capacity(args.len());
 
-                    for &src_reg in &src_regs {
-                        let staging_reg = self.alloc_reg(); // consecutive because freelist is empty here
+                    for (i, &src_reg) in src_regs.iter().enumerate() {
+                        let staging_reg = arg_start + i as u8;
                         staging_regs.push(staging_reg);
                         if staging_reg != src_reg {
                             self.emit_opcode(Opcode::Move);
@@ -593,9 +611,13 @@ impl HlirToSparkler {
                     }
 
                     // Step 3: emit the call - use CallNative for native functions
-                    // Check if this is a native function by name
-                    let is_native = self.native_functions.contains(name.as_str());
-                    
+                    // Check if this is a native function by name (try exact match or prefix match)
+                    let is_native = self.native_functions.contains(name.as_str())
+                        || self.native_functions.iter().any(|nf| {
+                            // Check if name starts with the native function name followed by '('
+                            name.starts_with(nf.as_str()) && name[nf.len()..].starts_with('(')
+                        });
+
                     if is_native {
                         self.emit_opcode(Opcode::CallNative);
                         self.emit(dest_reg);
