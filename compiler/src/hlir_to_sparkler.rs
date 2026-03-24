@@ -316,6 +316,13 @@ impl HlirToSparkler {
                 }
                 temps
             }
+            HlirInstr::StringConcat { values, .. } => {
+                let mut temps = Vec::new();
+                for value in values {
+                    if let HlirValue::Temp(t) = value { temps.push(*t); }
+                }
+                temps
+            }
             _ => vec![],
         };
 
@@ -842,6 +849,41 @@ impl HlirToSparkler {
                 self.emit_opcode(Opcode::Move);
                 self.emit(dest_reg);
                 self.emit(base_reg);
+            }
+
+            HlirInstr::StringConcat { values, dest } => {
+                // Optimized string concatenation: single CONCAT opcode with all parts
+                // CONCAT Rd, rs_start, count
+                // Note: CONCAT requires values in CONTIGUOUS registers starting from rs_start
+                let dest_reg = self.get_reg_for_temp(*dest);
+                
+                // First, evaluate all values and collect their registers
+                let mut value_regs: Vec<u8> = Vec::new();
+                for value in values {
+                    let reg = self.get_value_reg(value);
+                    value_regs.push(reg);
+                }
+                
+                // Allocate contiguous registers for the CONCAT operation
+                let start_reg = self.alloc_consecutive_regs(values.len());
+                
+                // Copy values to contiguous registers
+                for (i, &value_reg) in value_regs.iter().enumerate() {
+                    let target_reg = start_reg + i as u8;
+                    if value_reg != target_reg {
+                        self.emit_opcode(Opcode::Move);
+                        self.emit(target_reg);
+                        self.emit(value_reg);
+                    }
+                    // Mark source register as constant so it gets released
+                    self.const_regs.push(value_reg);
+                }
+                
+                // Emit CONCAT: Rd, rs_start, count
+                self.emit_opcode(Opcode::Concat);
+                self.emit(dest_reg);
+                self.emit(start_reg);  // rs_start - first contiguous register
+                self.emit(values.len() as u8);  // count
             }
         }
 

@@ -735,19 +735,13 @@ impl AstToHlirConverter {
             }
             
             Expr::Interpolated { parts, .. } => {
-                // Build the interpolated string by concatenating parts
-                let mut result_value: Option<HlirValue> = None;
+                // Collect all parts for a single optimized string concatenation
+                let mut values: Vec<HlirValue> = Vec::new();
                 
                 for part in parts {
                     match part {
                         InterpPart::Text(s) => {
-                            let str_val = HlirValue::StringConst(s.clone());
-                            if let Some(current) = result_value.take() {
-                                // Concatenate: result = current + str_val
-                                result_value = Some(self.builder.bin_op(HlirBinOp::Add, current, str_val, HlirType::String));
-                            } else {
-                                result_value = Some(str_val);
-                            }
+                            values.push(HlirValue::StringConst(s.clone()));
                         }
                         InterpPart::Expr(e) => {
                             // Convert expression to string
@@ -760,18 +754,19 @@ impl AstToHlirConverter {
                             } else {
                                 expr_val
                             };
-                            
-                            if let Some(current) = result_value.take() {
-                                // Concatenate: result = current + str_val
-                                result_value = Some(self.builder.bin_op(HlirBinOp::Add, current, str_val, HlirType::String));
-                            } else {
-                                result_value = Some(str_val);
-                            }
+                            values.push(str_val);
                         }
                     }
                 }
                 
-                result_value.unwrap_or(HlirValue::StringConst(String::new()))
+                // Single optimized concatenation of all parts
+                if values.is_empty() {
+                    HlirValue::StringConst(String::new())
+                } else if values.len() == 1 {
+                    values.into_iter().next().unwrap()
+                } else {
+                    self.builder.string_concat(values)
+                }
             }
             
             Expr::Lambda { params, return_type, body, .. } => {

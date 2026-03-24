@@ -132,6 +132,13 @@ pub enum HlirInstr {
         return_ty: HlirType,
         arg_types: Vec<HlirType>,  // Argument types for mangling
     },
+
+    /// String concatenation: dest = concat(values[0], values[1], ...)
+    /// Optimized for interpolated strings with multiple parts
+    StringConcat {
+        values: Vec<HlirValue>,
+        dest: usize,
+    },
     
     /// Return from function
     Return {
@@ -423,6 +430,14 @@ impl HlirBuilder {
         let arg_types: Vec<HlirType> = args.iter().map(|a| self.get_value_type(a)).collect();
         let instr = HlirInstr::Call { func, args, dest: None, return_ty: return_ty.clone(), arg_types };
         self.emit(instr);
+    }
+
+    /// Generate a string concatenation with multiple operands (optimized for interpolated strings)
+    pub fn string_concat(&mut self, values: Vec<HlirValue>) -> HlirValue {
+        let dest = self.new_temp();
+        let instr = HlirInstr::StringConcat { values, dest };
+        self.emit(instr);
+        HlirValue::Temp(dest)
     }
 
     /// Generate a return
