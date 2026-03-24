@@ -130,6 +130,7 @@ pub enum HlirInstr {
         args: Vec<HlirValue>,
         dest: Option<usize>,
         return_ty: HlirType,
+        arg_types: Vec<HlirType>,  // Argument types for mangling
     },
     
     /// Return from function
@@ -355,7 +356,21 @@ impl HlirBuilder {
         self.next_temp += 1;
         temp
     }
-    
+
+    /// Get the type of a value
+    pub fn get_value_type(&self, value: &HlirValue) -> HlirType {
+        match value {
+            HlirValue::IntConst(_) => HlirType::I32,
+            HlirValue::FloatConst(_) => HlirType::F64,
+            HlirValue::BoolConst(_) => HlirType::Bool,
+            HlirValue::StringConst(_) => HlirType::String,
+            HlirValue::Temp(_) => HlirType::Unknown,
+            HlirValue::Local(_) => HlirType::Unknown,
+            HlirValue::Param(_) => HlirType::Unknown,
+            HlirValue::Function(_) => HlirType::Unknown,
+        }
+    }
+
     /// Generate a binary operation
     pub fn bin_op(&mut self, op: HlirBinOp, lhs: HlirValue, rhs: HlirValue, ty: HlirType) -> HlirValue {
         let dest = self.new_temp();
@@ -397,14 +412,16 @@ impl HlirBuilder {
     /// Generate a call
     pub fn call(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) -> HlirValue {
         let dest = self.new_temp();
-        let instr = HlirInstr::Call { func, args, dest: Some(dest), return_ty: return_ty.clone() };
+        let arg_types: Vec<HlirType> = args.iter().map(|a| self.get_value_type(a)).collect();
+        let instr = HlirInstr::Call { func, args, dest: Some(dest), return_ty: return_ty.clone(), arg_types };
         self.emit(instr);
         HlirValue::Temp(dest)
     }
 
     /// Generate a call, discarding the return value
     pub fn call_discard(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) {
-        let instr = HlirInstr::Call { func, args, dest: None, return_ty: return_ty.clone() };
+        let arg_types: Vec<HlirType> = args.iter().map(|a| self.get_value_type(a)).collect();
+        let instr = HlirInstr::Call { func, args, dest: None, return_ty: return_ty.clone(), arg_types };
         self.emit(instr);
     }
 
@@ -643,7 +660,7 @@ fn lower_single_instr_to_llvm(hlir_instr: &HlirInstr) -> Option<crate::llvm::Llv
             let llvm_cond = hlir_to_llvm_value(cond);
             Some(LlvmInstr::CondBr(llvm_cond, then_block.clone(), else_block.clone()))
         }
-        HlirInstr::Call { func, args, dest, return_ty } => {
+        HlirInstr::Call { func, args, dest, return_ty, arg_types: _ } => {
             // Only emit LLVM IR if the return value is used
             if let Some(dest) = dest {
                 let llvm_return_ty = return_ty.to_llvm_type();

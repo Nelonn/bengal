@@ -37,6 +37,14 @@ async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> R
     let mut executor = Executor::with_linker();
     bengal_std::register_all(&mut executor.vm);
 
+    // Sync the linker's registry with the VM's registry
+    // This is needed because register_all registers with the VM directly,
+    // but the linker needs to have the same registry for bytecode linking
+    if let Some(linker) = executor.linker.as_mut() {
+        let registry = linker.registry();
+        *registry.write().unwrap() = executor.vm.native_registry.clone();
+    }
+
     // Pass arguments to the script as ARGV
     use std::sync::{Arc, Mutex};
     executor.vm.set_local("ARGV", sparkler::Value::Array(Arc::new(Mutex::new(

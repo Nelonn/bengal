@@ -212,24 +212,27 @@ impl NativeFunctionRegistry {
     }
 
     /// Get the index for a function name by prefix match (for runtime calls without signature)
-    /// This matches names like "std.io.println" against registered names like "std.io.println(str)"
+    /// This matches names like "std.io.println(*)" or "std.io.println(str)" against registered names like "std.io.println(str)"
     pub fn get_index_by_prefix(&self, name: &str) -> Option<u16> {
         // First try exact match
         if let Some(&idx) = self.name_to_index.get(name) {
             return Some(idx);
         }
-        
-        // Then try prefix match - look for a registered name that starts with "name."
+
+        // Extract base name (without signature) from the given name
+        let base_name = name.split('(').next().unwrap_or(name);
+
+        // Try prefix match - look for a registered name that starts with the base name
         for (registered_name, &idx) in &self.name_to_index {
-            if registered_name.starts_with(name) {
+            if registered_name.starts_with(base_name) {
                 // Make sure it's a proper prefix (followed by '(' for signature)
-                let suffix = &registered_name[name.len()..];
-                if suffix.starts_with('(') {
+                let suffix_start = base_name.len();
+                if suffix_start < registered_name.len() && registered_name[suffix_start..].starts_with('(') {
                     return Some(idx);
                 }
             }
         }
-        
+
         None
     }
 
@@ -393,7 +396,7 @@ impl RuntimeLinker {
         let mut i = 0;
         while i < bytecode.len() {
             let opcode = bytecode[i];
-            
+
             // Handle CallNative opcode
             if opcode == Opcode::CallNative as u8 {
                 // Format: [CallNative, Rd, name_idx, arg_start, arg_count]
@@ -402,7 +405,8 @@ impl RuntimeLinker {
                     let name_idx = bytecode[i + 2] as usize;
 
                     if let Some(name) = strings.get(name_idx) {
-                        if let Some(func_index) = registry.get_index(name) {
+                        // Use get_index_by_prefix to support generic functions like std.io.println(*)
+                        if let Some(func_index) = registry.get_index_by_prefix(name) {
                             // Replace string index with function index
                             // We'll use a new opcode CallNativeIndexed that takes u16 index
                             bytecode[i + 2] = (func_index & 0xFF) as u8;
@@ -417,7 +421,7 @@ impl RuntimeLinker {
                     }
                 }
             }
-            
+
             // Move to next instruction
             i += 1;
         }

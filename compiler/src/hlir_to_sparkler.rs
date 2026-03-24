@@ -2,9 +2,28 @@
 //!
 //! This module compiles HLIR (High-Level IR) to Sparkler bytecode.
 
-use crate::hlir::{HlirModule, HlirFunction, HlirBasicBlock, HlirInstr, HlirValue, HlirBinOp, HlirUnaryOp};
+use crate::hlir::{HlirModule, HlirFunction, HlirBasicBlock, HlirInstr, HlirValue, HlirBinOp, HlirUnaryOp, HlirType};
+use crate::types::{mangle, Type};
 use sparkler::opcodes::Opcode;
 use sparkler::vm::{Function, Class, VTable};
+
+/// Convert HlirType to Type for mangling purposes
+fn hlir_type_to_type(ty: &HlirType) -> Type {
+    match ty {
+        HlirType::Void => Type::Unknown,
+        HlirType::Bool => Type::Bool,
+        HlirType::I8 => Type::Int8,
+        HlirType::I32 => Type::Int,
+        HlirType::I64 => Type::Int64,
+        HlirType::F32 => Type::Float32,
+        HlirType::F64 => Type::Float,
+        HlirType::String => Type::Str,
+        HlirType::Array(inner) => Type::Array(Box::new(hlir_type_to_type(inner))),
+        HlirType::Pointer(_) => Type::Unknown,
+        HlirType::Function(_, _) => Type::Unknown,
+        HlirType::Unknown => Type::Unknown,
+    }
+}
 
 /// Compiled bytecode with metadata
 #[derive(Clone)]
@@ -45,6 +64,8 @@ pub struct HlirToSparkler {
     reg_to_temps: std::collections::HashMap<u8, std::collections::HashSet<usize>>,
     /// Set of native function names that should use CallNative opcode
     native_functions: std::collections::HashSet<String>,
+    /// Set of generic function names that should use * for mangling
+    generic_functions: std::collections::HashSet<String>,
 }
 
 impl HlirToSparkler {
@@ -64,11 +85,12 @@ impl HlirToSparkler {
             current_instr_idx: 0,
             reg_to_temps: std::collections::HashMap::new(),
             native_functions: std::collections::HashSet::new(),
+            generic_functions: std::collections::HashSet::new(),
         }
     }
 
-    /// Create a new HlirToSparkler with native function information
-    pub fn with_native_functions(native_functions: Vec<String>) -> Self {
+    /// Create a new HlirToSparkler with native and generic function information
+    pub fn with_native_and_generic_functions(native_functions: Vec<String>, generic_functions: Vec<String>) -> Self {
         Self {
             bytecode: Vec::new(),
             strings: Vec::new(),
@@ -84,6 +106,7 @@ impl HlirToSparkler {
             current_instr_idx: 0,
             reg_to_temps: std::collections::HashMap::new(),
             native_functions: native_functions.into_iter().collect(),
+            generic_functions: generic_functions.into_iter().collect(),
         }
     }
 
@@ -353,12 +376,23 @@ impl HlirToSparkler {
             let func_start = self.current_offset();
             self.compile_function(func);
             let func_end = self.current_offset();
-            
+
             // Extract function bytecode
             let func_bytecode = self.bytecode[func_start..func_end].to_vec();
-            
+
+            // Mangle function name if it's generic
+            let func_name = if self.generic_functions.iter().any(|gf| {
+                let gf_base = gf.split('(').next().unwrap_or(gf);
+                func.name == gf_base || func.name.ends_with(&format!(".{}", gf_base))
+            }) {
+                // For generic functions, add (*) suffix
+                format!("{}(*)", func.name)
+            } else {
+                func.name.clone()
+            };
+
             functions.push(Function {
-                name: func.name.clone(),
+                name: func_name,
                 bytecode: func_bytecode,
                 param_count: func.params.len() as u8,
                 register_count: self.max_reg as u8 + 1,
@@ -366,8 +400,49 @@ impl HlirToSparkler {
             });
         }
 
+        // Generate root section that calls the main function
+        // Look for a function named "main" or "<module_name>.main"
+        // Prefer the current module's main function over imported ones
+        let main_function_name = hlir.functions.iter()
+            .find(|f| {
+                // Match "main" (for main module) or "<module_name>.main" (for named modules)
+                if f.name == "main" {
+                    true
+                } else if f.name.ends_with(".main") {
+                    // Check if this main function belongs to the current module
+                    let expected_name = format!("{}.main", hlir.name);
+                    f.name == expected_name
+                } else {
+                    false
+                }
+            })
+            .map(|f| f.name.clone());
+
+        let root_bytecode = if let Some(main_name) = main_function_name {
+            // Generate CALL instruction to call main function
+            let mut root = Vec::new();
+            let func_idx = self.add_string(main_name.clone());
+            
+            // CALL instruction format: [CALL, Rd, func_idx, arg_start, arg_count]
+            // Rd = R0 (return value), arg_start = R0, arg_count = 0 (no args)
+            root.push(Opcode::Call as u8);
+            root.push(0);        // Rd = R0 (return value)
+            root.push(func_idx as u8);  // function name string index
+            root.push(0);        // arg_start = R0
+            root.push(0);        // arg_count = 0 (no arguments)
+            
+            // RETURN R0
+            root.push(Opcode::Return as u8);
+            root.push(0);        // Return R0
+            
+            root
+        } else {
+            // No main function - just return Null
+            vec![Opcode::Return as u8, 0]
+        };
+
         CompiledBytecode {
-            data: self.bytecode.clone(),
+            data: root_bytecode,
             strings: self.strings.clone(),
             max_registers: self.max_reg as usize + 1,
             functions,
@@ -579,22 +654,57 @@ impl HlirToSparkler {
                     .push((then_end_placeholder, format!("{}_end", then_block)));
             }
 
-            HlirInstr::Call { func, args, dest, return_ty } => {
+            HlirInstr::Call { func, args, dest, return_ty, arg_types } => {
                 // Only allocate dest register if the return value is used
                 let dest_reg = dest.map(|d| self.get_reg_for_temp(d)).unwrap_or(0);
 
                 if let HlirValue::Function(name) = func {
-                    let func_idx = self.add_string(name.clone());
+                    // Check if this is a generic function - if so, use * for all argument types
+                    // Extract base name (without mangled suffix)
+                    let base_name = name.split('(').next().unwrap_or(name);
+                    
+                    // Check if the base name matches any generic function
+                    let is_generic = self.generic_functions.iter().any(|gf| {
+                        // Extract base name from generic function (without mangled suffix)
+                        let gf_base = gf.split('(').next().unwrap_or(gf);
+                        // Check for exact match or qualified match
+                        base_name == gf_base || base_name.ends_with(&format!(".{}", gf_base))
+                    });
+
+                    // Step 3: emit the call - use CallNative for native functions
+                    // Check if this is a native function by name (try exact match or prefix match)
+                    let is_native = self.native_functions.contains(name.as_str())
+                        || self.native_functions.iter().any(|nf| {
+                            // Check if name starts with the native function name followed by '('
+                            name.starts_with(nf.as_str()) && name[nf.len()..].starts_with('(')
+                        });
+
+                    // Mangle the function name with argument types for proper resolution
+                    let arg_type_list: Vec<Type> = if is_generic {
+                        // For generic functions, use * for all arguments
+                        vec![Type::Unknown; arg_types.len()]
+                    } else if is_native {
+                        // For native functions, try to use concrete types
+                        // If types are Unknown, fall back to * for compatibility
+                        let types: Vec<Type> = arg_types.iter().map(hlir_type_to_type).collect();
+                        if types.iter().all(|t| matches!(t, Type::Unknown)) {
+                            // All types are Unknown, use * for each argument
+                            vec![Type::Unknown; arg_types.len()]
+                        } else {
+                            types
+                        }
+                    } else {
+                        // For Bengal functions, use concrete types if available
+                        arg_types.iter().map(hlir_type_to_type).collect()
+                    };
+                    let mangled_name = mangle(None, None, name, &arg_type_list);
+                    let func_idx = self.add_string(mangled_name);
 
                     // --- FIX: evaluate args into their natural registers first,
                     // then move into a consecutive staging window, and explicitly
                     // free every staging register after the Call is emitted. ---
 
                     // Step 1: resolve each argument to a register.
-                    // get_value_reg pushes constant registers onto const_regs, which
-                    // are drained at the end of compile_instruction — that is fine
-                    // because we read the register *value* here, not the register
-                    // number later.
                     let src_regs: Vec<u8> = args
                         .iter()
                         .map(|arg| self.get_value_reg(arg))
@@ -613,14 +723,6 @@ impl HlirToSparkler {
                             self.emit(src_reg);
                         }
                     }
-
-                    // Step 3: emit the call - use CallNative for native functions
-                    // Check if this is a native function by name (try exact match or prefix match)
-                    let is_native = self.native_functions.contains(name.as_str())
-                        || self.native_functions.iter().any(|nf| {
-                            // Check if name starts with the native function name followed by '('
-                            name.starts_with(nf.as_str()) && name[nf.len()..].starts_with('(')
-                        });
 
                     if is_native {
                         self.emit_opcode(Opcode::CallNative);
@@ -826,8 +928,8 @@ pub fn compile_hlir_to_sparkler(hlir: &HlirModule) -> CompiledBytecode {
 }
 
 /// Compile HLIR module to Sparkler bytecode with native function information
-pub fn compile_hlir_to_sparkler_with_natives(hlir: &HlirModule, native_functions: Vec<String>) -> CompiledBytecode {
-    let mut compiler = HlirToSparkler::with_native_functions(native_functions);
+pub fn compile_hlir_to_sparkler_with_natives(hlir: &HlirModule, native_functions: Vec<String>, generic_functions: Vec<String>) -> CompiledBytecode {
+    let mut compiler = HlirToSparkler::with_native_and_generic_functions(native_functions, generic_functions);
     compiler.compile_module(hlir)
 }
 

@@ -346,23 +346,58 @@ pub struct ParamSignature {
     pub default: bool,  // true if this parameter has a default value
 }
 
-/// Generate a mangled name for a function based on its parameter types
-/// This enables function overloading by creating unique names for each signature
-/// Format: <name>(<type1>,<type2>,...) - simple and readable mangling
-pub fn mangle_function_name(name: &str, param_types: &[Type]) -> String {
+/// Universal mangle function for creating unique identifiers
+/// Format: [package.]class.name(args) or package.name(args) depending on context
+/// 
+/// # Arguments
+/// * `package` - Optional package/module path (e.g., "std.io")
+/// * `class` - Optional class name for methods (e.g., "MyClass")
+/// * `name` - The base function/method name (e.g., "println")
+/// * `args` - Parameter types for mangling (e.g., [Type::Str, Type::Int])
+/// 
+/// # Examples
+/// - mangle(Some("std.io"), None, "println", &[Type::Str]) -> "std.io.println(str)"
+/// - mangle(None, Some("MyClass"), "method", &[Type::Int]) -> "MyClass.method(int)"
+/// - mangle(Some("std"), Some("io"), "print", &[Type::Str]) -> "std.io.print(str)"
+/// - mangle(None, None, "main", &[]) -> "main()"
+pub fn mangle(package: Option<&str>, class: Option<&str>, name: &str, args: &[Type]) -> String {
     let mut mangled = String::new();
+    
+    // Add package prefix if present
+    if let Some(pkg) = package {
+        mangled.push_str(pkg);
+        mangled.push('.');
+    }
+    
+    // Add class prefix if present
+    if let Some(cls) = class {
+        mangled.push_str(cls);
+        mangled.push('.');
+    }
+    
+    // Add base name
     mangled.push_str(name);
+    
+    // Add argument signature
     mangled.push('(');
-
-    for (i, ty) in param_types.iter().enumerate() {
+    for (i, ty) in args.iter().enumerate() {
         if i > 0 {
             mangled.push(',');
         }
         mangled.push_str(&ty.to_mangle_str());
     }
-
     mangled.push(')');
+    
     mangled
+}
+
+/// Generate a mangled name for a function based on its parameter types
+/// This enables function overloading by creating unique names for each signature
+/// Format: <name>(<type1>,<type2>,...) - simple and readable mangling
+/// 
+/// Deprecated: Use the universal `mangle(package, class, name, args)` function instead
+pub fn mangle_function_name(name: &str, param_types: &[Type]) -> String {
+    mangle(None, None, name, param_types)
 }
 
 #[derive(Debug, Clone)]
