@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 pub struct CompilerOptions {
     pub enable_type_checking: bool,
     pub search_paths: Vec<String>,
-    pub unsafe_fast: bool,
     pub emit_llvm_ir: bool,
     pub emit_sparkler_bytecode: bool,
 }
@@ -27,7 +26,6 @@ impl Default for CompilerOptions {
         Self {
             enable_type_checking: true,
             search_paths: vec!["std".to_string()],
-            unsafe_fast: false,
             emit_llvm_ir: false,
             emit_sparkler_bytecode: true,
         }
@@ -437,9 +435,7 @@ impl HlirCompiler {
         
         let main_hlir = ast_to_hlir(&module_name, &statements);
         
-        // Compile main module only
-        // Imported modules are tracked for name resolution but not compiled
-        // Native/external functions will be resolved at runtime
+        // Compile main module with register reuse (always enabled)
         let main_compiled = compile_hlir_to_sparkler(&main_hlir);
         
         let merged_bytecode = CompiledBytecode {

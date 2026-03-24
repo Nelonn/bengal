@@ -249,7 +249,9 @@ impl AstToHlirConverter {
             }
             
             Stmt::Expr(expr) => {
-                self.convert_expr(expr);
+                // For expression statements, we don't need the result temp
+                // Convert the expression but discard the result
+                self.convert_expr_discard(expr);
             }
             
             Stmt::If { condition, then_branch, else_branch, .. } => {
@@ -694,6 +696,84 @@ impl AstToHlirConverter {
     pub fn build(self) -> HlirModule {
         self.builder.build()
     }
+
+    /// Convert an expression, discarding the result (for expression statements)
+    fn convert_expr_discard(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Literal(_) => {}
+            Expr::Variable { .. } => {}
+            Expr::Binary { left, op: _, right, .. } => {
+                self.convert_expr_discard(left);
+                self.convert_expr_discard(right);
+            }
+            Expr::Unary { op, expr, .. } => {
+                let value = self.convert_expr(expr);
+                let ty = self.infer_expr_type(expr);
+                match op {
+                    UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement => {
+                        let one = match ty {
+                            HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                            _ => HlirValue::IntConst(1),
+                        };
+                        self.builder.bin_op(HlirBinOp::Add, value, one, ty);
+                    }
+                    UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement => {
+                        let one = match ty {
+                            HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                            _ => HlirValue::IntConst(1),
+                        };
+                        self.builder.bin_op(HlirBinOp::Sub, value, one, ty);
+                    }
+                    _ => self.convert_expr_discard(expr),
+                }
+            }
+            Expr::Call { callee, args, .. } => {
+                let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(a)).collect();
+                if let Expr::Variable { name, .. } = callee.as_ref() {
+                    let func = HlirValue::Function(name.clone());
+                    let return_ty = self.infer_expr_type(expr);
+                    self.builder.call_discard(func, func_args, return_ty);
+                } else if let Expr::Get { object: _, name, .. } = callee.as_ref() {
+                    let func = HlirValue::Function(name.clone());
+                    let return_ty = self.infer_expr_type(expr);
+                    self.builder.call_discard(func, func_args, return_ty);
+                }
+            }
+            Expr::Get { object, .. } => { self.convert_expr_discard(object); }
+            Expr::Set { object, value, .. } => {
+                let _ = self.convert_expr(object);
+                let _ = self.convert_expr(value);
+            }
+            Expr::Array { elements, .. } => {
+                for elem in elements { self.convert_expr_discard(elem); }
+            }
+            Expr::ObjectLiteral { fields, .. } => {
+                for field in fields { self.convert_expr_discard(&field.value); }
+            }
+            Expr::Cast { expr, .. } => { self.convert_expr_discard(expr); }
+            Expr::Interpolated { parts, .. } => {
+                for part in parts {
+                    if let InterpPart::Expr(expr) = part {
+                        self.convert_expr_discard(expr);
+                    }
+                }
+            }
+            Expr::Range { start, end, .. } => {
+                self.convert_expr_discard(start);
+                self.convert_expr_discard(end);
+            }
+            Expr::Index { object, index, .. } => {
+                self.convert_expr_discard(object);
+                self.convert_expr_discard(index);
+            }
+            Expr::Lambda { body, .. } => {
+                // Lambda body is already Vec<Stmt>
+                for stmt in body {
+                    self.convert_stmt(stmt);
+                }
+            }
+        }
+    }
 }
 
 /// Convert AST to HLIR module
@@ -727,9 +807,86 @@ mod tests {
         assert!(ir.contains("define i32 @add"));
         assert!(ir.contains("add i32"));
     }
-    
+
+    /// Convert an expression, discarding the result (for expression statements)
+    fn convert_expr_discard(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Literal(_) => {}
+            Expr::Variable { .. } => {}
+            Expr::Binary { left, op: _, right, .. } => {
+                self.convert_expr_discard(left);
+                self.convert_expr_discard(right);
+            }
+            Expr::Unary { op, expr, .. } => {
+                let value = self.convert_expr(expr);
+                let ty = self.infer_expr_type(expr);
+                match op {
+                    UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement => {
+                        let one = match ty {
+                            HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                            _ => HlirValue::IntConst(1),
+                        };
+                        self.builder.bin_op(HlirBinOp::Add, value, one, ty);
+                    }
+                    UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement => {
+                        let one = match ty {
+                            HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                            _ => HlirValue::IntConst(1),
+                        };
+                        self.builder.bin_op(HlirBinOp::Sub, value, one, ty);
+                    }
+                    _ => self.convert_expr_discard(expr),
+                }
+            }
+            Expr::Call { callee, args, .. } => {
+                let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(a)).collect();
+                if let Expr::Variable { name, .. } = callee.as_ref() {
+                    let func = HlirValue::Function(name.clone());
+                    let return_ty = self.infer_expr_type(expr);
+                    self.builder.call_discard(func, func_args, return_ty);
+                } else if let Expr::Get { object: _, name, .. } = callee.as_ref() {
+                    let func = HlirValue::Function(name.clone());
+                    let return_ty = self.infer_expr_type(expr);
+                    self.builder.call_discard(func, func_args, return_ty);
+                }
+            }
+            Expr::Get { object, .. } => { self.convert_expr_discard(object); }
+            Expr::Set { object, value, .. } => {
+                let _ = self.convert_expr(object);
+                let _ = self.convert_expr(value);
+            }
+            Expr::Array { elements, .. } => {
+                for elem in elements { self.convert_expr_discard(elem); }
+            }
+            Expr::ObjectLiteral { fields, .. } => {
+                for field in fields { self.convert_expr_discard(&field.value); }
+            }
+            Expr::Cast { expr, .. } => { self.convert_expr_discard(expr); }
+            Expr::Interpolated { parts, .. } => {
+                for part in parts {
+                    if let InterpPart::Expr(e) = part {
+                        self.convert_expr_discard(e);
+                    }
+                }
+            }
+            Expr::Range { start, end, .. } => {
+                self.convert_expr_discard(start);
+                self.convert_expr_discard(end);
+            }
+            Expr::Index { object, index, .. } => {
+                self.convert_expr_discard(object);
+                self.convert_expr_discard(index);
+            }
+            Expr::Lambda { body, .. } => {
+                for stmt in body {
+                    self.convert_stmt(stmt);
+                }
+            }
+        }
+    }
+
     #[test]
-    fn test_variable_conversion() {
+    fn test_function_conversion() {
         let source = r#"fn test(): int {
     let x = 42;
     return x;

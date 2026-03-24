@@ -124,11 +124,11 @@ pub enum HlirInstr {
         name: String,
     },
     
-    /// Function call: dest = call func(args)
+    /// Function call: dest = call func(args) (dest is None if return value is unused)
     Call {
         func: HlirValue,
         args: Vec<HlirValue>,
-        dest: usize,
+        dest: Option<usize>,
         return_ty: HlirType,
     },
     
@@ -397,11 +397,17 @@ impl HlirBuilder {
     /// Generate a call
     pub fn call(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) -> HlirValue {
         let dest = self.new_temp();
-        let instr = HlirInstr::Call { func, args, dest, return_ty: return_ty.clone() };
+        let instr = HlirInstr::Call { func, args, dest: Some(dest), return_ty: return_ty.clone() };
         self.emit(instr);
         HlirValue::Temp(dest)
     }
-    
+
+    /// Generate a call, discarding the return value
+    pub fn call_discard(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) {
+        let instr = HlirInstr::Call { func, args, dest: None, return_ty: return_ty.clone() };
+        self.emit(instr);
+    }
+
     /// Generate a return
     pub fn ret(&mut self, value: Option<HlirValue>, ty: HlirType) {
         let instr = HlirInstr::Return { value, ty: ty.clone() };
@@ -638,15 +644,20 @@ fn lower_single_instr_to_llvm(hlir_instr: &HlirInstr) -> Option<crate::llvm::Llv
             Some(LlvmInstr::CondBr(llvm_cond, then_block.clone(), else_block.clone()))
         }
         HlirInstr::Call { func, args, dest, return_ty } => {
-            let llvm_return_ty = return_ty.to_llvm_type();
-            let llvm_func = hlir_to_llvm_value(func);
-            let llvm_args: Vec<Lv> = args.iter().map(hlir_to_llvm_value).collect();
-            let reg = *dest as u32;
-            
-            if let Lv::Global(name) = llvm_func {
-                Some(LlvmInstr::Call(llvm_return_ty, name, llvm_args, reg))
+            // Only emit LLVM IR if the return value is used
+            if let Some(dest) = dest {
+                let llvm_return_ty = return_ty.to_llvm_type();
+                let llvm_func = hlir_to_llvm_value(func);
+                let llvm_args: Vec<Lv> = args.iter().map(hlir_to_llvm_value).collect();
+                let reg = *dest as u32;
+
+                if let Lv::Global(name) = llvm_func {
+                    Some(LlvmInstr::Call(llvm_return_ty, name, llvm_args, reg))
+                } else {
+                    None
+                }
             } else {
-                None
+                None  // Call without destination - skip LLVM IR generation
             }
         }
         HlirInstr::Cmp { op, lhs, rhs, dest: _, ty } => {

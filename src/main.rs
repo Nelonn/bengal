@@ -7,7 +7,7 @@ use clap::Parser;
 
 mod repl;
 
-async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = match fs::read_to_string(source_file) {
         Ok(content) => content,
         Err(e) => {
@@ -16,13 +16,12 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
     };
 
     let options = CompilerOptions {
-        unsafe_fast,
         enable_type_checking: true,
         search_paths: vec!["std".to_string()],
         emit_llvm_ir: false,
         emit_sparkler_bytecode: true,
     };
-    
+
     let mut compiler = HlirCompiler::with_path_and_options(&source, source_file, options);
     let result = match compiler.compile() {
         Ok(r) => r,
@@ -30,7 +29,7 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
             return Err(format!("Compilation error: {}", e).into());
         }
     };
-    
+
     let bytecode = sparkler_to_bytecode(
         result.sparkler_bytecode.ok_or("Bytecode generation failed")?
     );
@@ -59,7 +58,7 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
     Ok(())
 }
 
-async fn run_tests(test_path: &str, unsafe_fast: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_tests(test_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(test_path);
     let mut files_to_test = Vec::new();
 
@@ -85,7 +84,7 @@ async fn run_tests(test_path: &str, unsafe_fast: bool) -> Result<(), Box<dyn std
         print!("Testing: {}... ", file_name);
         std::io::Write::flush(&mut std::io::stdout())?;
 
-        match run_file(&file_name, false, unsafe_fast, Vec::new()).await {
+        match run_file(&file_name, false, Vec::new()).await {
             Ok(_) => {
                 println!("PASS");
                 passed += 1;
@@ -148,10 +147,6 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
-    /// Disable safety checks (overflow, division by zero) for faster execution
-    #[arg(long)]
-    unsafe_fast: bool,
-
     /// Arguments to pass to the script
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     script_args: Vec<String>,
@@ -162,7 +157,7 @@ async fn main() {
     let args = Args::parse();
 
     if let Some(test_path) = args.test {
-        if let Err(e) = run_tests(&test_path, args.unsafe_fast).await {
+        if let Err(e) = run_tests(&test_path).await {
             eprintln!("Testing error: {}", e);
             std::process::exit(1);
         }
@@ -191,7 +186,6 @@ async fn main() {
         };
 
         let options = CompilerOptions {
-            unsafe_fast: args.unsafe_fast,
             enable_type_checking: false,
             search_paths: vec!["std".to_string()],
             emit_llvm_ir: false,
@@ -215,7 +209,7 @@ async fn main() {
         return;
     }
 
-    if let Err(e) = run_file(&source_file, args.debug, args.unsafe_fast, args.script_args).await {
+    if let Err(e) = run_file(&source_file, args.debug, args.script_args).await {
         eprintln!("{}", e);
         std::process::exit(1);
     }

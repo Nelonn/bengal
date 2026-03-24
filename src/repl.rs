@@ -79,7 +79,6 @@ impl ReplState {
     /// Compile and run source code, returning the last expression result if any
     async fn compile_and_run(&mut self, source: &str, is_expr: bool) -> Result<Option<String>, String> {
         let options = CompilerOptions {
-            unsafe_fast: false,
             enable_type_checking: true,
             search_paths: vec!["std".to_string()],
             emit_llvm_ir: false,
