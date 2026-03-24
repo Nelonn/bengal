@@ -526,43 +526,70 @@ impl HlirCompiler {
 
         let mut all_strings: Vec<String> = Vec::new();
         let mut all_data: Vec<u8> = Vec::new();
-        let mut all_functions = main_compiled.functions.clone();
         let mut max_registers: usize = main_compiled.max_registers;
+        
+        let mut function_map: std::collections::HashMap<String, sparkler::vm::Function> = std::collections::HashMap::new();
+        let mut class_map: std::collections::HashMap<String, sparkler::vm::Class> = std::collections::HashMap::new();
+        let mut vtable_map: std::collections::HashMap<String, sparkler::vm::VTable> = std::collections::HashMap::new();
 
-        // Add main module bytecode first
+        // Add main module strings, bytecode and functions FIRST so they are at index 0
+        let main_string_offset = 0;
         for s in &main_compiled.strings {
             all_strings.push(s.clone());
         }
-        all_data.extend(main_compiled.data.clone());
-        max_registers = main_compiled.max_registers;
+        
+        let mut main_data = main_compiled.data.clone();
+        self.adjust_string_indices(&mut main_data, main_string_offset);
+        all_data.extend(main_data);
+        
+        for mut func in main_compiled.functions {
+            self.adjust_string_indices(&mut func.bytecode, main_string_offset);
+            function_map.insert(func.name.clone(), func);
+        }
+        
+        for class in main_compiled.classes {
+            class_map.insert(class.name.clone(), class);
+        }
+        
+        for vtable in main_compiled.vtables {
+            vtable_map.insert(vtable.class_name.clone(), vtable);
+        }
 
-        // Then compile imported modules and append
+        // Then compile imported modules and append (overriding ONLY IF duplicate names)
         for (_imported_module_name, module_info) in &self.loaded_modules {
-            // Imported modules have already had their calls rewritten to use qualified names
             let imported_stmts = module_info.statements.clone();
-
-            // Collect native function names for this module
             let module_native_functions = module_info.native_functions.clone();
 
             let imported_hlir = ast_to_hlir(&module_info.module_path, &imported_stmts);
             let imported_compiled = compile_hlir_to_sparkler_with_natives(&imported_hlir, module_native_functions);
 
-            // Adjust string indices and append to global string table
             let string_offset = all_strings.len();
             for s in &imported_compiled.strings {
                 all_strings.push(s.clone());
             }
 
-            // Adjust string indices in module bytecode
             let mut imported_data = imported_compiled.data.clone();
             self.adjust_string_indices(&mut imported_data, string_offset);
-
             all_data.extend(imported_data);
 
-            // Add functions from imported module, adjusting their bytecode string indices
             for mut func in imported_compiled.functions {
                 self.adjust_string_indices(&mut func.bytecode, string_offset);
-                all_functions.push(func);
+                // Only insert if not already present, OR if it's not "main"
+                if !function_map.contains_key(&func.name) {
+                    function_map.insert(func.name.clone(), func);
+                }
+            }
+            
+            for class in imported_compiled.classes {
+                if !class_map.contains_key(&class.name) {
+                    class_map.insert(class.name.clone(), class);
+                }
+            }
+            
+            for vtable in imported_compiled.vtables {
+                if !vtable_map.contains_key(&vtable.class_name) {
+                    vtable_map.insert(vtable.class_name.clone(), vtable);
+                }
             }
 
             if imported_compiled.max_registers > max_registers {
@@ -574,7 +601,9 @@ impl HlirCompiler {
             data: all_data,
             strings: all_strings,
             max_registers,
-            functions: all_functions,
+            functions: function_map.into_values().collect(),
+            classes: Vec::new(),
+            vtables: Vec::new(),
         };
 
         #[cfg(feature = "llvm")]
@@ -685,9 +714,9 @@ pub fn sparkler_to_bytecode(compiled: CompiledBytecode) -> sparkler::executor::B
     sparkler::executor::Bytecode {
         data: compiled.data,
         strings: compiled.strings,
-        classes: Vec::new(),
+        classes: compiled.classes,
         functions: compiled.functions,
-        vtables: Vec::new(),
+        vtables: compiled.vtables,
     }
 }
 

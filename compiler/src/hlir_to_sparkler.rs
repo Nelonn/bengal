@@ -4,7 +4,7 @@
 
 use crate::hlir::{HlirModule, HlirFunction, HlirBasicBlock, HlirInstr, HlirValue, HlirBinOp, HlirUnaryOp};
 use sparkler::opcodes::Opcode;
-use sparkler::vm::Function;
+use sparkler::vm::{Function, Class, VTable};
 
 /// Compiled bytecode with metadata
 #[derive(Clone)]
@@ -13,6 +13,8 @@ pub struct CompiledBytecode {
     pub strings: Vec<String>,
     pub max_registers: usize,
     pub functions: Vec<Function>,
+    pub classes: Vec<Class>,
+    pub vtables: Vec<VTable>,
 }
 
 /// HLIR to Sparkler bytecode compiler
@@ -369,6 +371,8 @@ impl HlirToSparkler {
             strings: self.strings.clone(),
             max_registers: self.max_reg as usize + 1,
             functions,
+            classes: Vec::new(),
+            vtables: Vec::new(),
         }
     }
 
