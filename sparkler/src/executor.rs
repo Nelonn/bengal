@@ -165,7 +165,7 @@ impl Executor {
             self.vm.set_source_file(file);
         }
 
-        let mut bytecode_data = bytecode.data;
+        let bytecode_data = bytecode.data;
         let strings = bytecode.strings;
 
         // Link bytecode if linker is available
@@ -174,15 +174,17 @@ impl Executor {
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
-        match self.vm.run().map_err(|e| e.to_string())? {
-            RunResult::Finished(val) => Ok(val),
-            RunResult::Breakpoint => {
-                println!("Breakpoint hit at line {}", self.vm.get_line());
-                Ok(None)
-            }
-            RunResult::Suspended => {
-                // VM suspended for async native - should be handled by run_to_completion
-                Ok(None)
+        loop {
+            match self.vm.run().map_err(|e| e.to_string())? {
+                RunResult::Finished(val) => return Ok(val),
+                RunResult::Breakpoint => {
+                    println!("Breakpoint hit at line {}", self.vm.get_line());
+                    return Ok(None);
+                }
+                RunResult::Suspended => {
+                    // VM suspended for async native - should be handled by run_to_completion
+                    return Ok(None);
+                }
             }
         }
     }
@@ -192,7 +194,7 @@ impl Executor {
             self.vm.set_source_file(file);
         }
 
-        let mut bytecode_data = bytecode.data;
+        let bytecode_data = bytecode.data;
         let strings = bytecode.strings;
 
         // Link bytecode if linker is available

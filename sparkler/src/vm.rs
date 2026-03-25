@@ -389,7 +389,7 @@ pub struct Instance {
     pub native_data: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Class {
     pub name: String,
     pub fields: HashMap<String, Value>,
@@ -404,14 +404,14 @@ pub struct Class {
     pub is_interface: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Method {
     pub name: String,
     pub bytecode: Vec<u8>,
     pub register_count: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Function {
     pub name: String,
     pub bytecode: Vec<u8>,
@@ -686,6 +686,16 @@ pub struct CallFrame {
     pub line_number: usize,
     /// Whether this frame is for a native function call
     pub is_native: bool,
+    /// Bytecode for this frame
+    pub bytecode: Arc<Vec<u8>>,
+    /// Strings for this frame
+    pub strings: Arc<Vec<String>>,
+    /// Functions for this frame
+    pub functions: Arc<HashMap<String, Function>>,
+    /// Classes for this frame
+    pub classes: Arc<HashMap<String, Class>>,
+    /// Return register in the caller's frame (None for module-level)
+    pub return_reg: Option<u8>,
 }
 
 impl CallFrame {
@@ -696,6 +706,11 @@ impl CallFrame {
         register_count: u8,
         function_name: String,
         source_file: Option<String>,
+        bytecode: Arc<Vec<u8>>,
+        strings: Arc<Vec<String>>,
+        functions: Arc<HashMap<String, Function>>,
+        classes: Arc<HashMap<String, Class>>,
+        return_reg: Option<u8>,
     ) -> Self {
         Self {
             pc,
@@ -706,6 +721,11 @@ impl CallFrame {
             source_file,
             line_number: 1,
             is_native: false,
+            bytecode,
+            strings,
+            functions,
+            classes,
+            return_reg,
         }
     }
 
@@ -713,6 +733,11 @@ impl CallFrame {
         frame_base: usize,
         param_count: u8,
         function_name: String,
+        bytecode: Arc<Vec<u8>>,
+        strings: Arc<Vec<String>>,
+        functions: Arc<HashMap<String, Function>>,
+        classes: Arc<HashMap<String, Class>>,
+        return_reg: Option<u8>,
     ) -> Self {
         Self {
             pc: 0,
@@ -723,24 +748,29 @@ impl CallFrame {
             source_file: None,
             line_number: 0,
             is_native: true,
+            bytecode,
+            strings,
+            functions,
+            classes,
+            return_reg,
         }
     }
 }
 
 pub struct VM {
     /// The current bytecode being executed
-    bytecode: Vec<u8>,
+    pub bytecode: Arc<Vec<u8>>,
     /// The register file - fixed size array of values
     /// In a true registry VM, registers are allocated per-frame
     pub registers: Vec<Value>,
     /// String constant pool
-    strings: Vec<String>,
+    pub strings: Arc<Vec<String>>,
     /// Local variables (for module-level code)
     locals: HashMap<String, Value>,
     /// Class definitions
-    classes: HashMap<String, Class>,
+    pub classes: Arc<HashMap<String, Class>>,
     /// Function definitions
-    functions: HashMap<String, Function>,
+    pub functions: Arc<HashMap<String, Function>>,
     /// Native function registry with indexed lookup (optimized)
     pub native_registry: NativeFunctionRegistry,
     /// Fallback native handler
@@ -808,14 +838,14 @@ impl VM {
     /// Each call frame gets a window into this register file.
     pub fn new() -> Self {
         Self {
-            bytecode: Vec::new(),
+            bytecode: Arc::new(Vec::new()),
             // 256 registers - typical for registry-based VMs
             // Each frame gets a window of registers
             registers: vec![Value::Null; 256],
-            strings: Vec::new(),
+            strings: Arc::new(Vec::new()),
             locals: HashMap::new(),
-            classes: HashMap::new(),
-            functions: HashMap::new(),
+            classes: Arc::new(HashMap::new()),
+            functions: Arc::new(HashMap::new()),
             native_registry: NativeFunctionRegistry::new(),
             fallback_native: None,
             pending_native_methods: HashMap::new(),
@@ -887,11 +917,11 @@ impl VM {
 
     /// Load bytecode and initialize the VM
     pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>, vtables: Vec<VTable>) -> Result<(), String> {
-        self.bytecode = bytecode.to_vec();
-        self.strings = strings;
+        self.bytecode = Arc::new(bytecode.to_vec());
+        self.strings = Arc::new(strings);
         self.vtables = vtables;
 
-        self.classes.clear();
+        let mut classes_map = HashMap::new();
         for mut class in classes {
             if let Some(methods) = self.pending_native_methods.get(&class.name) {
                 for (method_name, func) in methods {
@@ -904,13 +934,15 @@ impl VM {
             if let Some(on_destroy) = self.pending_class_native_destroy.get(&class.name) {
                 class.native_destroy = Some(*on_destroy);
             }
-            self.classes.insert(class.name.clone(), class);
+            classes_map.insert(class.name.clone(), class);
         }
+        self.classes = Arc::new(classes_map);
 
-        self.functions.clear();
+        let mut functions_map = HashMap::new();
         for function in functions {
-            self.functions.insert(function.name.clone(), function);
+            functions_map.insert(function.name.clone(), function);
         }
+        self.functions = Arc::new(functions_map);
 
         // Initialize for execution
         self.set_pc(0);
@@ -924,6 +956,11 @@ impl VM {
             16,
             "<main>".to_string(),
             self.source_file.clone(),
+            self.bytecode.clone(),
+            self.strings.clone(),
+            self.functions.clone(),
+            self.classes.clone(),
+            None,
         )];
 
         self.current_line = 1;
@@ -1000,10 +1037,42 @@ impl VM {
         self.source_file.clone()
     }
 
+    fn push_frame(&mut self, frame: CallFrame) {
+        self.bytecode = frame.bytecode.clone();
+        self.strings = frame.strings.clone();
+        self.functions = frame.functions.clone();
+        self.classes = frame.classes.clone();
+        self.call_stack.push(frame);
+    }
+
+    fn pop_frame(&mut self) -> Option<CallFrame> {
+        let frame = self.call_stack.pop();
+        if let Some(top) = self.call_stack.last() {
+            self.bytecode = top.bytecode.clone();
+            self.strings = top.strings.clone();
+            self.functions = top.functions.clone();
+            self.classes = top.classes.clone();
+            self.current_line = top.line_number;
+            self.source_file = top.source_file.clone();
+        }
+        frame
+    }
+
     pub fn run(&mut self) -> Result<RunResult, Value> {
         loop {
+            if self.call_stack.is_empty() {
+                return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
+            }
+
             if self.pc() >= self.bytecode.len() {
-                break;
+                if self.call_stack.len() > 1 {
+                    let frame = self.pop_frame().unwrap();
+                    if let Some(rd) = frame.return_reg {
+                        self.set_reg(rd, Value::Null);
+                    }
+                    continue;
+                }
+                return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
             }
 
             let opcode = self.bytecode[self.pc()];
@@ -1033,23 +1102,16 @@ impl VM {
                 }
             };
 
-            if opcode == Opcode::Halt as u8 || opcode == Opcode::Return as u8 {
-                break;
+            if opcode == Opcode::Halt as u8 {
+                return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
             }
 
             match result {
-                ExecutionResult::Breakpoint => {
-                    return Ok(RunResult::Breakpoint);
-                }
-                ExecutionResult::Suspended => {
-                    // VM suspended waiting for async native callback
-                    return Ok(RunResult::Suspended);
-                }
+                ExecutionResult::Breakpoint => return Ok(RunResult::Breakpoint),
+                ExecutionResult::Suspended => return Ok(RunResult::Suspended),
                 ExecutionResult::Continue => {}
             }
         }
-
-        Ok(RunResult::Finished(Some(self.get_reg(0).clone())))
     }
 
     /// Set the callback for a pending native operation
@@ -1074,11 +1136,11 @@ impl VM {
         }
         // Restore saved state if any
         if let Some(bytecode) = self.saved_bytecode.take() {
-            self.bytecode = bytecode;
-            self.strings = self.saved_strings.take().unwrap();
-            self.functions = self.saved_functions.take().unwrap();
+            self.bytecode = Arc::new(bytecode);
+            self.strings = Arc::new(self.saved_strings.take().unwrap());
+            self.functions = Arc::new(self.saved_functions.take().unwrap());
             self.native_registry = self.saved_native_registry.take().unwrap();
-            self.classes = self.saved_classes.take().unwrap();
+            self.classes = Arc::new(self.saved_classes.take().unwrap());
             debug_vm!("resume_with_result: Restored saved state, bytecode.len() = {}", self.bytecode.len());
         }
         // Continue execution
@@ -1303,16 +1365,70 @@ impl VM {
                 let arg_count = self.bytecode[self.pc()] as u8;
                 self.set_pc(self.pc() + 1);  // Advance PC past all operands
 
-                let func_name = self.strings.get(func_idx)
+                let func_name_raw = self.strings.get(func_idx)
                     .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_idx)))?
                     .clone();
+                
+                // Try to find the function with various name variants (robust lookup)
+                let mut function_opt = self.functions.get(&func_name_raw).cloned();
+                
+                if function_opt.is_none() {
+                    // Try with module prefix if not present
+                    if !func_name_raw.contains('.') {
+                        if let Some(ref source) = self.source_file {
+                            // Try both with and without directory prefix
+                            let file_name = std::path::Path::new(source)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("");
+                            
+                            let qualified = format!("{}.{}", file_name, func_name_raw);
+                            function_opt = self.functions.get(&qualified).cloned();
+                        }
+                    }
+                }
+                
+                if function_opt.is_none() {
+                    // Try by searching for ANY function that ends with .name or is just name
+                    let search_name = if func_name_raw.contains('(') {
+                        func_name_raw.clone()
+                    } else {
+                        func_name_raw.clone()
+                    };
+                    
+                    for (name, func) in self.functions.as_ref() {
+                        if name == &search_name || name.ends_with(&format!(".{}", search_name)) {
+                            function_opt = Some(func.clone());
+                            break;
+                        }
+                    }
+                }
+
+                if function_opt.is_none() {
+                    // Try without signature
+                    if let Some(paren_pos) = func_name_raw.find('(') {
+                        let base_name = &func_name_raw[..paren_pos];
+                        for (name, func) in self.functions.as_ref() {
+                            if name == base_name || name.ends_with(&format!(".{}", base_name)) {
+                                function_opt = Some(func.clone());
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let func_name = if let Some(ref f) = function_opt {
+                    f.name.clone()
+                } else {
+                    func_name_raw.clone()
+                };
 
                 // For generic class instantiations like Array<T>, extract base class name
                 let base_class_name = extract_base_class_name(&func_name);
 
                 // Check if it's a class constructor
-                let is_constructor = func_name.contains("_constructor(");
                 if let Some(class) = self.classes.get(base_class_name).cloned() {
+                    // ...
                     let instance = Value::Instance(Arc::new(Mutex::new(Instance {
                         class: func_name.clone(),
                         fields: class.fields.clone(),
@@ -1345,7 +1461,10 @@ impl VM {
                             }
                         };
                         match result {
-                            NativeResult::Ready(val) => self.set_reg(rd, val),
+                            NativeResult::Ready(val) => {
+                                self.set_reg(rd, val);
+                                return Ok(ExecutionResult::Continue);
+                            }
                             NativeResult::Pending => {
                                 // VM should suspend - save state for callback
                                 self.pending_native_result = Some(rd);
@@ -1357,9 +1476,10 @@ impl VM {
                     }
                 }
                 // Check if it's a bytecode function
-                else if let Some(function) = self.functions.get(&func_name).cloned() {
+                if let Some(function) = function_opt {
                     // Collect arguments
                     let mut args = Vec::new();
+
                     
                     // For constructor calls, prepend 'self' (the instance in rd) as the first argument
                     let is_constructor = func_name.contains("_constructor(");
@@ -1372,11 +1492,7 @@ impl VM {
                         args.push(self.get_reg(arg_start + i).clone());
                     }
 
-                    // Save caller's state
-                    let caller_pc = self.pc();
                     let caller_frame_base = self.frame_base();
-                    let caller_source = self.source_file.clone();
-                    let caller_line = self.current_line;
 
                     // Calculate new frame base - place args in R1..Rn of new frame
                     // R0 of new frame will be the return value
@@ -1388,107 +1504,28 @@ impl VM {
                     }
 
                     // Set up new frame
-                    let mut new_call_stack = self.call_stack.clone();
-                    if let Some(last_frame) = new_call_stack.last_mut() {
-                        last_frame.source_file = caller_source.clone();
-                        last_frame.line_number = caller_line;
-                    }
-                    new_call_stack.push(CallFrame::new(
+                    let new_frame = CallFrame::new(
                         0,
                         new_frame_base,
                         function.param_count,
                         function.register_count,
                         func_name.clone(),
                         function.source_file.clone(),
-                    ));
-                    self.call_stack = new_call_stack;
+                        Arc::new(function.bytecode.clone()),
+                        self.strings.clone(),
+                        self.functions.clone(),
+                        self.classes.clone(),
+                        Some(rd),
+                    );
+
+                    self.push_frame(new_frame);
 
                     // Copy arguments to parameter registers (R1..Rn)
                     for (i, arg) in args.iter().enumerate() {
                         self.set_reg((i + 1) as u8, arg.clone());
                     }
 
-                    // Load function bytecode - clone data first to avoid borrow issues
-                    let new_bytecode = function.bytecode.clone();
-                    let new_strings = self.strings.clone();
-                    let new_functions = self.functions.clone();
-                    let new_native_registry = self.native_registry.clone();
-                    let new_classes = self.classes.clone();
-
-                    let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
-                    let old_strings = std::mem::replace(&mut self.strings, new_strings);
-                    let old_functions = std::mem::replace(&mut self.functions, new_functions);
-                    let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
-                    let old_classes = std::mem::replace(&mut self.classes, new_classes);
-
-                    // Execute function
-                    let result = self.run();
-
-                    match result {
-                        Ok(RunResult::Finished(val)) => {
-                            // Restore state
-                            self.bytecode = old_bytecode;
-                            self.strings = old_strings;
-                            self.functions = old_functions;
-                            self.native_registry = old_native_registry;
-                            self.classes = old_classes;
-
-                            // Pop frame and restore caller
-                            self.call_stack.pop();
-                            if let Some(frame) = self.call_stack.last_mut() {
-                                frame.pc = caller_pc;  // PC already points to next instruction
-                                frame.frame_base = caller_frame_base;
-                            }
-                            self.set_reg(rd, val.unwrap_or(Value::Null));
-                        }
-                        Ok(RunResult::Breakpoint) => {
-                            // Restore state
-                            self.bytecode = old_bytecode;
-                            self.strings = old_strings;
-                            self.functions = old_functions;
-                            self.native_registry = old_native_registry;
-                            self.classes = old_classes;
-
-                            // Pop frame and restore caller
-                            self.call_stack.pop();
-                            if let Some(frame) = self.call_stack.last_mut() {
-                                frame.pc = caller_pc;
-                                frame.frame_base = caller_frame_base;
-                            }
-                            return Ok(ExecutionResult::Breakpoint);
-                        }
-                        Ok(RunResult::Suspended) => {
-                            // Save CURRENT state for later restoration (we're suspended inside the function)
-                            self.saved_bytecode = Some(self.bytecode.clone());
-                            self.saved_strings = Some(self.strings.clone());
-                            self.saved_functions = Some(self.functions.clone());
-                            self.saved_native_registry = Some(self.native_registry.clone());
-                            self.saved_classes = Some(self.classes.clone());
-                            // Then restore caller's state
-                            self.bytecode = old_bytecode;
-                            self.strings = old_strings;
-                            self.functions = old_functions;
-                            self.native_registry = old_native_registry;
-                            self.classes = old_classes;
-                            return Ok(ExecutionResult::Suspended);
-                        }
-                        Err(e) => {
-                            // Restore state
-                            self.bytecode = old_bytecode;
-                            self.strings = old_strings;
-                            self.functions = old_functions;
-                            self.native_registry = old_native_registry;
-                            self.classes = old_classes;
-
-                            // Pop frame and restore caller
-                            self.call_stack.pop();
-                            if let Some(frame) = self.call_stack.last_mut() {
-                                frame.pc = caller_pc;
-                                frame.frame_base = caller_frame_base;
-                            }
-                            return Err(e);
-                        }
-                    }
+                    return Ok(ExecutionResult::Continue);
                 } else {
                     return Err(Value::String(format!("Function not found: {}", func_name)));
                 }
@@ -1615,6 +1652,7 @@ impl VM {
                     }
                     NativeResult::Pending => {
                         // VM should suspend - save state for callback
+                        self.set_pc(self.pc() + 1);
                         self.pending_native_result = Some(rd);
                         return Ok(ExecutionResult::Suspended);
                     }
@@ -1891,7 +1929,6 @@ impl VM {
 
                             if let Some(method) = method_opt {
                                 // Set up method call frame
-                                let caller_pc = self.pc();
                                 let caller_frame_base = self.frame_base();
 
                                 let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
@@ -1900,61 +1937,28 @@ impl VM {
                                     return Err(Value::String("Register overflow in method call".to_string()));
                                 }
 
-                                let mut new_call_stack = self.call_stack.clone();
-                                if let Some(last_frame) = new_call_stack.last_mut() {
-                                    last_frame.line_number = self.current_line;
-                                }
-                                new_call_stack.push(CallFrame::new(
+                                let new_frame = CallFrame::new(
                                     0,
                                     new_frame_base,
                                     arg_count,
                                     method.register_count,
                                     format!("{}.{}", class_name, name),
                                     self.source_file.clone(),
-                                ));
-                                self.call_stack = new_call_stack;
+                                    Arc::new(method.bytecode.clone()),
+                                    self.strings.clone(),
+                                    self.functions.clone(),
+                                    self.classes.clone(),
+                                    Some(rd),
+                                );
+
+                                self.push_frame(new_frame);
 
                                 // Copy arguments (first is self, placed in R1..Rn)
                                 for (i, arg) in args.iter().enumerate() {
                                     self.set_reg((i + 1) as u8, arg.clone());
                                 }
 
-                                let new_bytecode = method.bytecode.clone();
-                                let new_strings = self.strings.clone();
-                                let new_classes = self.classes.clone();
-                                let new_native_registry = self.native_registry.clone();
-
-                                let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
-                                let old_strings = std::mem::replace(&mut self.strings, new_strings);
-                                let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                                let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
-
-                                let result = self.run();
-
-                                self.bytecode = old_bytecode;
-                                self.strings = old_strings;
-                                self.classes = old_classes;
-                                self.native_registry = old_native_registry;
-
-                                self.call_stack.pop();
-                                if let Some(frame) = self.call_stack.last_mut() {
-                                    frame.pc = caller_pc;  // PC already points to next instruction
-                                    frame.frame_base = caller_frame_base;
-                                }
-
-                                match result {
-                                    Ok(RunResult::Finished(val)) => {
-                                        // For constructors, return the instance (self) instead of the method's return value
-                                        if name == "constructor" {
-                                            self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
-                                        } else {
-                                            self.set_reg(rd, val.unwrap_or(Value::Null));
-                                        }
-                                    },
-                                    Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                    Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
-                                    Err(e) => return Err(e),
-                                }
+                                return Ok(ExecutionResult::Continue);
                             } else {
                                 // Method not found - provide helpful error with available methods
                                 let base_name = if let Some(paren_pos) = name.find('(') {
@@ -2058,7 +2062,6 @@ impl VM {
 
                     if let Some(method) = method_opt {
                         // Found the method in the class, invoke it
-                        let caller_pc = self.pc();
                         let caller_frame_base = self.frame_base();
 
                         let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
@@ -2067,60 +2070,27 @@ impl VM {
                             return Err(Value::String("Register overflow in interface method call".to_string()));
                         }
 
-                        let mut new_call_stack = self.call_stack.clone();
-                        if let Some(last_frame) = new_call_stack.last_mut() {
-                            last_frame.line_number = self.current_line;
-                        }
-                        new_call_stack.push(CallFrame::new(
+                        let new_frame = CallFrame::new(
                             0,
                             new_frame_base,
                             arg_count,
                             method.register_count,
                             format!("{}.{}", class_name, method_name),
                             self.source_file.clone(),
-                        ));
-                        self.call_stack = new_call_stack;
+                            Arc::new(method.bytecode.clone()),
+                            self.strings.clone(),
+                            self.functions.clone(),
+                            self.classes.clone(),
+                            Some(rd),
+                        );
+
+                        self.push_frame(new_frame);
 
                         for (i, arg) in args.iter().enumerate() {
                             self.set_reg((i + 1) as u8, arg.clone());
                         }
 
-                        let new_bytecode = method.bytecode.clone();
-                        let new_strings = self.strings.clone();
-                        let new_classes = self.classes.clone();
-                        let new_native_registry = self.native_registry.clone();
-
-                        let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
-                        let old_strings = std::mem::replace(&mut self.strings, new_strings);
-                        let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                        let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
-
-                        let result = self.run();
-
-                        self.bytecode = old_bytecode;
-                        self.strings = old_strings;
-                        self.classes = old_classes;
-                        self.native_registry = old_native_registry;
-
-                        self.call_stack.pop();
-                        if let Some(frame) = self.call_stack.last_mut() {
-                            frame.pc = caller_pc;
-                            frame.frame_base = caller_frame_base;
-                        }
-
-                        match result {
-                            Ok(RunResult::Finished(val)) => {
-                                // For constructors, return the instance (self) instead of the method's return value
-                                if method_name == "constructor" {
-                                    self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
-                                } else {
-                                    self.set_reg(rd, val.unwrap_or(Value::Null));
-                                }
-                            },
-                            Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                            Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
-                            Err(e) => return Err(e),
-                        }
+                        return Ok(ExecutionResult::Continue);
                     } else {
                         // Check parent interfaces for the method (default implementation)
                         let mut found = false;
@@ -2152,7 +2122,6 @@ impl VM {
                             let iface_name = found_iface_name.unwrap();
 
                             // Found in parent interface, use default implementation
-                            let caller_pc = self.pc();
                             let caller_frame_base = self.frame_base();
                             let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
 
@@ -2160,53 +2129,27 @@ impl VM {
                                 return Err(Value::String("Register overflow in interface method call".to_string()));
                             }
 
-                            let mut new_call_stack = self.call_stack.clone();
-                            if let Some(last_frame) = new_call_stack.last_mut() {
-                                last_frame.line_number = self.current_line;
-                            }
-                            new_call_stack.push(CallFrame::new(
+                            let new_frame = CallFrame::new(
                                 0,
                                 new_frame_base,
                                 arg_count,
                                 method.register_count,
                                 format!("{}.{}", iface_name, method_name),
                                 self.source_file.clone(),
-                            ));
-                            self.call_stack = new_call_stack;
+                                Arc::new(method.bytecode.clone()),
+                                self.strings.clone(),
+                                self.functions.clone(),
+                                self.classes.clone(),
+                                Some(rd),
+                            );
+
+                            self.push_frame(new_frame);
 
                             for (i, arg) in args.iter().enumerate() {
                                 self.set_reg((i + 1) as u8, arg.clone());
                             }
 
-                            let new_bytecode = method.bytecode.clone();
-                            let new_strings = self.strings.clone();
-                            let new_classes = self.classes.clone();
-                            let new_native_registry = self.native_registry.clone();
-
-                            let old_bytecode = std::mem::replace(&mut self.bytecode, new_bytecode);
-                            let old_strings = std::mem::replace(&mut self.strings, new_strings);
-                            let old_classes = std::mem::replace(&mut self.classes, new_classes);
-                            let old_native_registry = std::mem::replace(&mut self.native_registry, new_native_registry);
-
-                            let result = self.run();
-
-                            self.bytecode = old_bytecode;
-                            self.strings = old_strings;
-                            self.classes = old_classes;
-                            self.native_registry = old_native_registry;
-
-                            self.call_stack.pop();
-                            if let Some(frame) = self.call_stack.last_mut() {
-                                frame.pc = caller_pc;
-                                frame.frame_base = caller_frame_base;
-                            }
-
-                            match result {
-                                Ok(RunResult::Finished(val)) => self.set_reg(rd, val.unwrap_or(Value::Null)),
-                                Ok(RunResult::Breakpoint) => return Ok(ExecutionResult::Breakpoint),
-                                Ok(RunResult::Suspended) => return Ok(ExecutionResult::Suspended),
-                                Err(e) => return Err(e),
-                            }
+                            return Ok(ExecutionResult::Continue);
                         } else {
                             return Err(Value::String(format!("Interface method '{}' not found in class '{}' or its interfaces", method_name, class_name)));
                         }
@@ -2222,7 +2165,16 @@ impl VM {
             x if x == Opcode::Return as u8 => {
                 self.set_pc(self.pc() + 1);
                 let rs = self.bytecode[self.pc()] as u8;
-                self.set_reg(0, self.get_reg(rs).clone());
+                let return_value = self.get_reg(rs).clone();
+                
+                let frame = self.pop_frame().unwrap();
+                if let Some(rd) = frame.return_reg {
+                    self.set_reg(rd, return_value);
+                } else {
+                    // If no return register (e.g. module-level), put in R0 of caller
+                    self.set_reg(0, return_value);
+                }
+                
                 return Ok(ExecutionResult::Continue);
             }
 
@@ -3101,15 +3053,15 @@ impl VM {
     pub fn snapshot(&self) -> VmState {
         VmState {
             locals: self.locals.clone(),
-            classes: self.classes.clone(),
-            functions: self.functions.clone(),
+            classes: (*self.classes).clone(),
+            functions: (*self.functions).clone(),
         }
     }
 
     /// Restore the VM to a previous state
     pub fn restore(&mut self, state: &VmState) {
         self.locals = state.locals.clone();
-        self.classes = state.classes.clone();
-        self.functions = state.functions.clone();
+        self.classes = Arc::new(state.classes.clone());
+        self.functions = Arc::new(state.functions.clone());
     }
 }

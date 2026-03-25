@@ -111,7 +111,7 @@ impl Opcode {
             Opcode::CallNative => 5,
             Opcode::Invoke => 5,
             Opcode::Return => 2,
-            Opcode::InvokeInterface => 6,
+            Opcode::InvokeInterface => 5,
             Opcode::CallNativeIndexed => 6,
             Opcode::Jump => 3,
             Opcode::JumpIfTrue => 4,

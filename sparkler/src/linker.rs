@@ -452,10 +452,11 @@ impl RuntimeLinker {
 #[cfg(test)]
 mod tests {
     use crate::Value;
+    use crate::vm::NativeResult;
     use super::*;
 
-    fn dummy_native(_args: &mut Vec<Value>) -> Result<Value, Value> {
-        Ok(Value::Null)
+    fn dummy_native(_args: &mut Vec<Value>) -> NativeResult {
+        NativeResult::Ready(Value::Null)
     }
 
     #[test]
@@ -473,8 +474,8 @@ mod tests {
         let mut registry = NativeFunctionRegistry::new();
         registry.register("test.func", dummy_native);
 
-        fn new_native(_args: &mut Vec<Value>) -> Result<Value, Value> {
-            Ok(Value::Int64(42))
+        fn new_native(_args: &mut Vec<Value>) -> NativeResult {
+            NativeResult::Ready(Value::Int64(42))
         }
 
         assert!(registry.hot_swap("test.func", new_native));
