@@ -2,23 +2,7 @@
 
 Statically typed scripting language
 
-## WASM Support
-
-Bengal can be compiled to WebAssembly and run in the browser! See the [wasm-example](wasm-example) directory for a complete example.
-
-### Quick Start with WASM
-
-```bash
-# Add WASM target
-rustup target add wasm32-unknown-unknown
-
-# Install wasm-pack
-cargo install wasm-pack
-
-# Build the WASM example
-cd wasm-example
-wasm-pack build --target web --release
-```
+See [bengal-tools](https://github.com/Nelonn/bengal-tools) for syntax highlighting and other development tools
 
 # Auto installation script
 
