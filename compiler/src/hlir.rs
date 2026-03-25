@@ -199,6 +199,20 @@ pub enum HlirInstr {
         dest: usize,
         ty: HlirType,
     },
+
+    /// Exception handling: start of try block
+    TryStart {
+        catch_block: String,
+        catch_reg: usize,
+    },
+
+    /// Exception handling: end of try block
+    TryEnd,
+
+    /// Throw exception
+    Throw {
+        value: HlirValue,
+    },
 }
 
 /// Cast kinds
@@ -480,6 +494,27 @@ impl HlirBuilder {
         let instr = HlirInstr::Select { cond, then_val, else_val, dest, ty: ty.clone() };
         self.emit(instr);
         HlirValue::Temp(dest)
+    }
+
+    /// Generate a try_start (beginning of try block)
+    pub fn try_start(&mut self, catch_block: &str, catch_reg: usize) {
+        let instr = HlirInstr::TryStart { 
+            catch_block: catch_block.to_string(), 
+            catch_reg 
+        };
+        self.emit(instr);
+    }
+
+    /// Generate a try_end (end of try block)
+    pub fn try_end(&mut self) {
+        let instr = HlirInstr::TryEnd;
+        self.emit(instr);
+    }
+
+    /// Generate a throw
+    pub fn throw(&mut self, value: HlirValue) {
+        let instr = HlirInstr::Throw { value };
+        self.emit(instr);
     }
     
     fn emit(&mut self, instr: HlirInstr) {

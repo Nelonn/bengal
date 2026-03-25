@@ -515,33 +515,38 @@ impl AstToHlirConverter {
             }
             
             Stmt::TryCatch { try_block, catch_var, catch_block, .. } => {
-                let try_label = format!("try_{}", self.builder.new_temp());
                 let catch_label = format!("catch_{}", self.builder.new_temp());
                 let end_label = format!("try_end_{}", self.builder.new_temp());
-                
-                self.builder.br(&try_label);
-                
-                self.builder.begin_block(&try_label);
+
+                // Emit TryStart instruction at the current position (don't create a new block for try)
+                let catch_reg = self.builder.new_temp();
+                self.builder.try_start(&catch_label, catch_reg);
+
                 for stmt in try_block {
                     self.convert_stmt(stmt);
                 }
+                // Emit TryEnd instruction
+                self.builder.try_end();
                 self.builder.br(&end_label);
-                
+
                 self.builder.begin_block(&catch_label);
                 self.var_types.insert(catch_var.clone(), HlirType::String);
                 let exc_ptr = self.builder.alloca(HlirType::String, catch_var);
                 self.var_ptrs.insert(catch_var.clone(), exc_ptr.clone());
-                
+                // Store the exception value from catch_reg into the catch variable
+                self.builder.store(HlirValue::Temp(catch_reg), exc_ptr, HlirType::String);
+
                 for stmt in catch_block {
                     self.convert_stmt(stmt);
                 }
                 self.builder.br(&end_label);
-                
+
                 self.builder.begin_block(&end_label);
             }
-            
+
             Stmt::Throw { expr, .. } => {
-                self.convert_expr(expr);
+                let value = self.convert_expr(expr);
+                self.builder.throw(value);
             }
             
             Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | 

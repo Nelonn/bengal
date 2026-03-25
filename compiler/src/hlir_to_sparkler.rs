@@ -52,6 +52,8 @@ pub struct HlirToSparkler {
     block_offsets: std::collections::HashMap<String, usize>,
     /// Forward jumps that need patching: (offset_in_bytecode, target_label)
     pending_jumps: Vec<(usize, String)>,
+    /// TRY_START catch_pc patches that need patching: (offset_in_bytecode, target_label)
+    pending_try_starts: Vec<(usize, String)>,
     /// Registers allocated for constants in current instruction
     const_regs: Vec<u8>,
     /// Stack of reusable registers
@@ -79,6 +81,7 @@ impl HlirToSparkler {
             var_map: std::collections::HashMap::new(),
             block_offsets: std::collections::HashMap::new(),
             pending_jumps: Vec::new(),
+            pending_try_starts: Vec::new(),
             const_regs: Vec::new(),
             reusable_regs: Vec::new(),
             temp_last_use: std::collections::HashMap::new(),
@@ -100,6 +103,7 @@ impl HlirToSparkler {
             var_map: std::collections::HashMap::new(),
             block_offsets: std::collections::HashMap::new(),
             pending_jumps: Vec::new(),
+            pending_try_starts: Vec::new(),
             const_regs: Vec::new(),
             reusable_regs: Vec::new(),
             temp_last_use: std::collections::HashMap::new(),
@@ -229,11 +233,19 @@ impl HlirToSparkler {
         self.bytecode.len()
     }
 
-    /// Patch a jump target at the given offset
+    /// Patch a jump target at the given offset (uses relative offset)
     fn patch_jump(&mut self, offset: usize, target: usize) {
         let relative = target as i32 - offset as i32;
         self.bytecode[offset] = ((relative >> 8) & 0xFF) as u8;
         self.bytecode[offset + 1] = (relative & 0xFF) as u8;
+    }
+
+    /// Patch a TRY_START catch_pc (uses absolute offset)
+    fn patch_try_catch_pc(&mut self, offset: usize, target: usize) {
+        // TRY_START uses absolute PC offset, not relative
+        // Write in little-endian order: low byte first, then high byte
+        self.bytecode[offset] = (target & 0xFF) as u8;
+        self.bytecode[offset + 1] = ((target >> 8) & 0xFF) as u8;
     }
 
     /// Analyze liveness: find the last use of each temp in a function
@@ -496,6 +508,16 @@ impl HlirToSparkler {
                 self.patch_jump(offset, target);
             }
         }
+
+        // Patch pending TRY_START catch_pc (uses absolute offset)
+        let pending_try_starts = std::mem::take(&mut self.pending_try_starts);
+        for (offset, label) in pending_try_starts {
+            if let Some(&target) =
+                self.block_offsets.get(&format!("{}:{}", func.name, label))
+            {
+                self.patch_try_catch_pc(offset, target);
+            }
+        }
     }
 
     /// Compile a basic block
@@ -675,6 +697,30 @@ impl HlirToSparkler {
                 self.emit_u16(0);
                 self.pending_jumps
                     .push((then_end_placeholder, format!("{}_end", then_block)));
+            }
+
+            HlirInstr::TryStart { catch_block, catch_reg } => {
+                // Allocate a register for the exception
+                let exc_reg = self.get_reg_for_temp(*catch_reg);
+
+                // Emit TryStart opcode: [TryStart, catch_pc (2 bytes), catch_reg]
+                self.emit_opcode(Opcode::TryStart);
+                let placeholder = self.current_offset();
+                self.emit_u16(0);  // Placeholder for catch_pc
+                self.emit(exc_reg);
+
+                // Store the pending try_start to patch later (uses absolute offset)
+                self.pending_try_starts.push((placeholder, catch_block.clone()));
+            }
+
+            HlirInstr::TryEnd => {
+                self.emit_opcode(Opcode::TryEnd);
+            }
+
+            HlirInstr::Throw { value } => {
+                let value_reg = self.get_value_reg(value);
+                self.emit_opcode(Opcode::Throw);
+                self.emit(value_reg);
             }
 
             HlirInstr::Call { func, args, dest, return_ty, arg_types } => {
