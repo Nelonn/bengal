@@ -1,0 +1,10 @@
+import std.io
+import std.time
+
+// h,m,s must be Integer
+
+let h = CurrentHour()
+let m = CurrentMin()
+let s = CurrentSec()
+
+println("now is ${h}:${m}:${s}")

@@ -11,6 +11,7 @@ pub mod reflect;
 pub mod str;
 pub mod sys;
 pub mod test;
+pub mod time;
 
 use sparkler::{NativeModule, NativeResult, Value, VM};
 
@@ -188,6 +189,13 @@ pub fn register_all(vm: &mut VM) {
         .function("nextIntRange(int,int)", random::native_random_next_int_range)
         .function("nextFloat()", random::native_random_next_float)
         .function("nextFloatRange(float,float)", random::native_random_next_float_range)
+        .register(vm);
+
+    NativeModule::new("std.time")
+        .function("CurrentTime()", time::native_time_current_time)
+        .function("CurrentHour()", time::native_time_current_hour)
+        .function("CurrentMin()", time::native_time_current_min)
+        .function("CurrentSec()", time::native_time_current_sec)
         .register(vm);
 
     NativeModule::new("std.test")

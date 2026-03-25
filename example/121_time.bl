@@ -1,0 +1,7 @@
+import std.time
+import std.io
+
+let begin = CurrentTime()
+//some code for test
+let end = CurrentTime()
+println(end - begin)
