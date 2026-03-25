@@ -615,8 +615,8 @@ impl HlirCompiler {
             strings: all_strings,
             max_registers,
             functions: function_map.into_values().collect(),
-            classes: Vec::new(),
-            vtables: Vec::new(),
+            classes: class_map.into_values().collect(),
+            vtables: vtable_map.into_values().collect(),
         };
 
         #[cfg(feature = "llvm")]

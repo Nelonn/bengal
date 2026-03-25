@@ -4,7 +4,7 @@
 //! Supports ALL Bengal language features.
 
 use crate::parser::{self, Expr, Stmt, BinaryOp, UnaryOp, Literal, CastType, InterpPart};
-use crate::hlir::{HlirBuilder, HlirModule, HlirType, HlirValue, HlirBinOp, HlirUnaryOp, HlirCastKind};
+use crate::hlir::{HlirBuilder, HlirModule, HlirType, HlirValue, HlirBinOp, HlirUnaryOp, HlirCastKind, HlirClass};
 
 /// AST to HLIR converter
 pub struct AstToHlirConverter {
@@ -252,7 +252,7 @@ impl AstToHlirConverter {
             // Special handling for constructors with empty body - initialize fields
             let is_constructor = method.name == "constructor";
             let is_empty_body = method.body.is_empty();
-            
+
             if is_constructor && is_empty_body {
                 // Initialize fields with default values
                 for field in &class.fields {
@@ -316,6 +316,41 @@ impl AstToHlirConverter {
             self.builder.end_block();
             self.builder.end_function();
         }
+
+        // Generate class metadata for the VM
+        let fields: Vec<String> = class.fields.iter()
+            .filter(|f| !f.is_static)
+            .map(|f| f.name.clone())
+            .collect();
+        let private_fields: Vec<String> = class.fields.iter()
+            .filter(|f| !f.is_static && f.private)
+            .map(|f| f.name.clone())
+            .collect();
+        let methods: Vec<String> = class.methods.iter()
+            .filter(|m| !m.is_native)
+            .map(|m| {
+                let param_types: Vec<String> = m.params.iter().map(|p| {
+                    p.type_name.as_ref()
+                        .map(|t| t.clone())
+                        .unwrap_or_else(|| "Unknown".to_string())
+                }).collect();
+                if param_types.is_empty() {
+                    format!("{}_{}()", class.name, m.name)
+                } else {
+                    format!("{}_{}({})", class.name, m.name, param_types.join(","))
+                }
+            })
+            .collect();
+
+        let hlir_class = HlirClass {
+            name: class.name.clone(),
+            fields,
+            private_fields,
+            methods,
+            is_native: class.is_native,
+            is_interface: false,
+        };
+        self.builder.add_class(hlir_class);
     }
     
     /// Convert a statement
@@ -648,11 +683,30 @@ impl AstToHlirConverter {
                 let mut func_args: Vec<HlirValue> = args.iter()
                     .map(|a| self.convert_expr(a))
                     .collect();
-                
+
                 if let Expr::Variable { name, .. } = callee.as_ref() {
-                    // Check if it's a class constructor call
+                    // Check if it's a class constructor call (starts with uppercase)
                     let func_name = if name.chars().next().map_or(false, |c| c.is_uppercase()) {
-                        format!("{}_constructor()", name)
+                        // Mangle constructor name with parameter types
+                        let arg_types: Vec<String> = args.iter().map(|a| {
+                            let ty = self.infer_expr_type(a);
+                            // Convert HlirType to string for mangling
+                            match ty {
+                                HlirType::I8 => "int8".to_string(),
+                                HlirType::I32 => "int".to_string(),
+                                HlirType::I64 => "Int64".to_string(),
+                                HlirType::F32 => "Float32".to_string(),
+                                HlirType::F64 => "float".to_string(),
+                                HlirType::Bool => "bool".to_string(),
+                                HlirType::String => "str".to_string(),
+                                _ => "Unknown".to_string(),
+                            }
+                        }).collect();
+                        if arg_types.is_empty() {
+                            format!("{}_constructor()", name)
+                        } else {
+                            format!("{}_constructor({})", name, arg_types.join(","))
+                        }
                     } else {
                         name.clone()
                     };
@@ -665,10 +719,32 @@ impl AstToHlirConverter {
                     // Prepend self to arguments
                     let mut call_args = vec![obj_val];
                     call_args.extend(func_args);
+
+                    // Get the class name from the object's type
+                    // Try to get class name from the object expression
+                    let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
+                        // Look up the variable's type from var_types
+                        if let Some(ty) = self.var_types.get(var_name) {
+                            // Extract class name from type (for class types)
+                            // Since we use HlirType::Unknown for classes, we need another approach
+                            // Use a simple heuristic: convert snake_case to PascalCase
+                            let mut parts = var_name.split('_');
+                            let mut class = String::new();
+                            for part in parts {
+                                if let Some(first) = part.chars().next() {
+                                    class.push(first.to_ascii_uppercase());
+                                    class.push_str(&part[1..]);
+                                }
+                            }
+                            class
+                        } else {
+                            "Unknown".to_string()
+                        }
+                    } else {
+                        "Unknown".to_string()
+                    };
                     
-                    // Simple mangling: try to find the class name from the object type
-                    // For now, use a simplified approach as HlirType::Unknown is often used
-                    let method_name = format!("{}_{}()", "Test", name); // Fallback for Test example
+                    let method_name = format!("{}_{}()", class_name, name);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call(func, call_args, return_ty)
@@ -727,9 +803,33 @@ impl AstToHlirConverter {
                 }
             }
             
-            Expr::Set { object, name: _, value, .. } => {
-                self.convert_expr(object);
-                self.convert_expr(value);
+            Expr::Set { object, name, value, span } => {
+                // Handle field assignment: object.field = value
+                let object_val = self.convert_expr(object);
+
+                // Convert the value
+                let value = self.convert_expr(value);
+
+                // Check if this is a self.field assignment
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if obj_name == "self" {
+                        // Use SetProperty for self.field assignments
+                        self.builder.set_property(object_val, name, value);
+                    } else {
+                        // For other object.field assignments, use the field pointer approach
+                        let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
+                        if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
+                            self.builder.store(value, field_ptr, value_ty);
+                        }
+                    }
+                } else {
+                    // For complex object expressions, use the field pointer approach
+                    let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
+                    if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
+                        self.builder.store(value, field_ptr, value_ty);
+                    }
+                }
+
                 HlirValue::IntConst(0)
             }
             
@@ -941,9 +1041,30 @@ impl AstToHlirConverter {
                 }
             }
             Expr::Get { object, .. } => { self.convert_expr_discard(object); }
-            Expr::Set { object, value, .. } => {
-                let _ = self.convert_expr(object);
-                let _ = self.convert_expr(value);
+            Expr::Set { object, name, value, span } => {
+                // Handle field assignment: object.field = value
+                let object_val = self.convert_expr(object);
+                let value = self.convert_expr(value);
+
+                // Check if this is a self.field assignment
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if obj_name == "self" {
+                        // Use SetProperty for self.field assignments
+                        self.builder.set_property(object_val, name, value);
+                    } else {
+                        // For other object.field assignments, use the field pointer approach
+                        let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
+                        if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
+                            self.builder.store(value, field_ptr, value_ty);
+                        }
+                    }
+                } else {
+                    // For complex object expressions, use the field pointer approach
+                    let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
+                    if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
+                        self.builder.store(value, field_ptr, value_ty);
+                    }
+                }
             }
             Expr::Array { elements, .. } => {
                 for elem in elements { self.convert_expr_discard(elem); }
@@ -1052,9 +1173,30 @@ mod tests {
                 }
             }
             Expr::Get { object, .. } => { self.convert_expr_discard(object); }
-            Expr::Set { object, value, .. } => {
-                let _ = self.convert_expr(object);
-                let _ = self.convert_expr(value);
+            Expr::Set { object, name, value, span } => {
+                // Handle field assignment: object.field = value
+                let object_val = self.convert_expr(object);
+                let value = self.convert_expr(value);
+
+                // Check if this is a self.field assignment
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if obj_name == "self" {
+                        // Use SetProperty for self.field assignments
+                        self.builder.set_property(object_val, name, value);
+                    } else {
+                        // For other object.field assignments, use the field pointer approach
+                        let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
+                        if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
+                            self.builder.store(value, field_ptr, value_ty);
+                        }
+                    }
+                } else {
+                    // For complex object expressions, use the field pointer approach
+                    let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
+                    if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
+                        self.builder.store(value, field_ptr, value_ty);
+                    }
+                }
             }
             Expr::Array { elements, .. } => {
                 for elem in elements { self.convert_expr_discard(elem); }

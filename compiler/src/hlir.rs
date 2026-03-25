@@ -213,6 +213,14 @@ pub enum HlirInstr {
     Throw {
         value: HlirValue,
     },
+
+    /// Set property: object.field = value
+    /// Used for field assignments in constructors and methods
+    SetProperty {
+        object: HlirValue,
+        field_name: String,
+        value: HlirValue,
+    },
 }
 
 /// Cast kinds
@@ -293,6 +301,18 @@ pub struct HlirModule {
     pub name: String,
     pub functions: Vec<HlirFunction>,
     pub globals: Vec<HlirGlobal>,
+    pub classes: Vec<HlirClass>,
+}
+
+/// HLIR Class information
+#[derive(Debug, Clone)]
+pub struct HlirClass {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub private_fields: Vec<String>,
+    pub methods: Vec<String>,
+    pub is_native: bool,
+    pub is_interface: bool,
 }
 
 impl HlirModule {
@@ -301,15 +321,20 @@ impl HlirModule {
             name,
             functions: Vec::new(),
             globals: Vec::new(),
+            classes: Vec::new(),
         }
     }
-    
+
     pub fn add_function(&mut self, func: HlirFunction) {
         self.functions.push(func);
     }
-    
+
     pub fn add_global(&mut self, global: HlirGlobal) {
         self.globals.push(global);
+    }
+
+    pub fn add_class(&mut self, class: HlirClass) {
+        self.classes.push(class);
     }
 }
 
@@ -332,6 +357,10 @@ impl HlirBuilder {
             next_temp: 0,
             variables: std::collections::HashMap::new(),
         }
+    }
+
+    pub fn add_class(&mut self, class: HlirClass) {
+        self.module.add_class(class);
     }
     
     /// Start building a function
@@ -429,7 +458,17 @@ impl HlirBuilder {
         let instr = HlirInstr::Store { value, ptr, ty: ty.clone() };
         self.emit(instr);
     }
-    
+
+    /// Generate a set property instruction
+    pub fn set_property(&mut self, object: HlirValue, field_name: &str, value: HlirValue) {
+        let instr = HlirInstr::SetProperty { 
+            object, 
+            field_name: field_name.to_string(), 
+            value 
+        };
+        self.emit(instr);
+    }
+
     /// Generate a call
     pub fn call(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) -> HlirValue {
         let dest = self.new_temp();

@@ -34,12 +34,19 @@ pub fn get_async_callback_sender() -> Option<std::sync::mpsc::Sender<Result<Valu
 }
 
 /// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
+/// or from constructor names (e.g., "SomeObject_constructor(str)" -> "SomeObject")
 fn extract_base_class_name(name: &str) -> &str {
+    // Handle generic types like Array<T>
     if let Some(angle_pos) = name.find('<') {
-        &name[..angle_pos]
-    } else {
-        name
+        return &name[..angle_pos];
     }
+    
+    // Handle constructor names like SomeObject_constructor(str)
+    if let Some(constructor_pos) = name.find("_constructor(") {
+        return &name[..constructor_pos];
+    }
+    
+    name
 }
 
 pub type Bytecode = Vec<u8>;
@@ -1304,6 +1311,7 @@ impl VM {
                 let base_class_name = extract_base_class_name(&func_name);
 
                 // Check if it's a class constructor
+                let is_constructor = func_name.contains("_constructor(");
                 if let Some(class) = self.classes.get(base_class_name).cloned() {
                     let instance = Value::Instance(Arc::new(Mutex::new(Instance {
                         class: func_name.clone(),
@@ -1352,6 +1360,14 @@ impl VM {
                 else if let Some(function) = self.functions.get(&func_name).cloned() {
                     // Collect arguments
                     let mut args = Vec::new();
+                    
+                    // For constructor calls, prepend 'self' (the instance in rd) as the first argument
+                    let is_constructor = func_name.contains("_constructor(");
+                    if is_constructor {
+                        // The instance was already created and stored in rd above
+                        args.push(self.get_reg(rd).clone());
+                    }
+                    
                     for i in 0..arg_count {
                         args.push(self.get_reg(arg_start + i).clone());
                     }

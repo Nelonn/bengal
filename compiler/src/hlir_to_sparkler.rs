@@ -2,7 +2,7 @@
 //!
 //! This module compiles HLIR (High-Level IR) to Sparkler bytecode.
 
-use crate::hlir::{HlirModule, HlirFunction, HlirBasicBlock, HlirInstr, HlirValue, HlirBinOp, HlirUnaryOp, HlirType};
+use crate::hlir::{HlirModule, HlirFunction, HlirBasicBlock, HlirInstr, HlirValue, HlirBinOp, HlirUnaryOp, HlirType, HlirClass};
 use crate::types::{mangle, Type};
 use sparkler::opcodes::Opcode;
 use sparkler::vm::{Function, Class, VTable};
@@ -335,6 +335,12 @@ impl HlirToSparkler {
                 }
                 temps
             }
+            HlirInstr::SetProperty { object, value, .. } => {
+                let mut temps = Vec::new();
+                if let HlirValue::Temp(t) = object { temps.push(*t); }
+                if let HlirValue::Temp(t) = value { temps.push(*t); }
+                temps
+            }
             _ => vec![],
         };
 
@@ -453,19 +459,50 @@ impl HlirToSparkler {
             // RETURN R0
             root.push(Opcode::Return as u8);
             root.push(0);        // Return R0
-            
+
             root
         } else {
             // No main function - just return Null
             vec![Opcode::Return as u8, 0]
         };
 
+        // Generate Class metadata from HLIR class info
+        let classes: Vec<Class> = hlir.classes.iter().map(|hlir_class| {
+            use std::collections::{HashMap, HashSet};
+            
+            // Create default field values (Null for all fields)
+            let mut fields: HashMap<String, sparkler::vm::Value> = HashMap::new();
+            for field_name in &hlir_class.fields {
+                fields.insert(field_name.clone(), sparkler::vm::Value::Null);
+            }
+            
+            let private_fields: HashSet<String> = hlir_class.private_fields.iter().cloned().collect();
+            
+            // Methods will be filled in by the VM when it loads the bytecode
+            let methods: HashMap<String, sparkler::vm::Method> = HashMap::new();
+            let native_methods: HashMap<String, sparkler::vm::NativeFn> = HashMap::new();
+            
+            Class {
+                name: hlir_class.name.clone(),
+                fields,
+                private_fields,
+                methods,
+                native_methods,
+                native_create: None,
+                native_destroy: None,
+                is_native: hlir_class.is_native,
+                parent_interfaces: Vec::new(),
+                vtable: Vec::new(),
+                is_interface: hlir_class.is_interface,
+            }
+        }).collect();
+
         CompiledBytecode {
             data: root_bytecode,
             strings: self.strings.clone(),
             max_registers: self.max_reg as usize + 1,
             functions,
-            classes: Vec::new(),
+            classes,
             vtables: Vec::new(),
         }
     }
@@ -720,6 +757,18 @@ impl HlirToSparkler {
             HlirInstr::Throw { value } => {
                 let value_reg = self.get_value_reg(value);
                 self.emit_opcode(Opcode::Throw);
+                self.emit(value_reg);
+            }
+
+            HlirInstr::SetProperty { object, field_name, value } => {
+                // Emit SetProperty: Robj, name_idx, Rs
+                let object_reg = self.get_value_reg(object);
+                let value_reg = self.get_value_reg(value);
+                let field_idx = self.add_string(field_name.clone());
+
+                self.emit_opcode(Opcode::SetProperty);
+                self.emit(object_reg);
+                self.emit(field_idx as u8);
                 self.emit(value_reg);
             }
 
