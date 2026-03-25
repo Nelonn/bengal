@@ -1,0 +1,13 @@
+module std.time
+
+// Returns current time as Unix timestamp in seconds (float for sub-second precision)
+native fn CurrentTime(): float
+
+// Returns current hour (0-23)
+native fn CurrentHour(): int
+
+// Returns current minute (0-59)
+native fn CurrentMin(): int
+
+// Returns current second (0-59)
+native fn CurrentSec(): int
