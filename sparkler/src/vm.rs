@@ -1037,6 +1037,12 @@ impl VM {
         self.source_file.clone()
     }
 
+    /// Set a breakpoint in a source file at a specific line
+    pub fn set_breakpoint(&mut self, source_file: &str, line: usize) -> Result<(), String> {
+        self.breakpoints.insert((source_file.to_string(), line));
+        Ok(())
+    }
+
     fn push_frame(&mut self, frame: CallFrame) {
         self.bytecode = frame.bytecode.clone();
         self.strings = frame.strings.clone();
@@ -1059,58 +1065,56 @@ impl VM {
     }
 
     pub fn run(&mut self) -> Result<RunResult, Value> {
-        loop {
-            if self.call_stack.is_empty() {
-                return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
-            }
+        if self.call_stack.is_empty() {
+            return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
+        }
 
-            if self.pc() >= self.bytecode.len() {
-                if self.call_stack.len() > 1 {
-                    let frame = self.pop_frame().unwrap();
-                    if let Some(rd) = frame.return_reg {
-                        self.set_reg(rd, Value::Null);
-                    }
-                    continue;
+        if self.pc() >= self.bytecode.len() {
+            if self.call_stack.len() > 1 {
+                let frame = self.pop_frame().unwrap();
+                if let Some(rd) = frame.return_reg {
+                    self.set_reg(rd, Value::Null);
                 }
-                return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
+                return Ok(RunResult::InProgress);
             }
+            return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
+        }
 
-            let opcode = self.bytecode[self.pc()];
-            let result = match self.execute(opcode) {
-                Ok(res) => res,
-                Err(e) => {
-                    let exception = match &e {
-                        Value::Exception(existing) => existing.clone(),
-                        _ => self.build_exception(&e),
-                    };
+        let opcode = self.bytecode[self.pc()];
+        let result = match self.execute(opcode) {
+            Ok(res) => res,
+            Err(e) => {
+                let exception = match &e {
+                    Value::Exception(existing) => existing.clone(),
+                    _ => self.build_exception(&e),
+                };
 
-                    let mut has_local_handler = false;
-                    if let Some(handler) = self.exception_handlers.last() {
-                        if handler.call_stack_depth == self.call_stack.len() {
-                            has_local_handler = true;
-                        }
-                    }
-
-                    if has_local_handler {
-                        let handler = self.exception_handlers.pop().unwrap();
-                        self.set_pc(handler.catch_pc);
-                        self.set_reg(handler.catch_register as u8, Value::Exception(exception));
-                        continue;
-                    } else {
-                        return Err(Value::Exception(exception));
+                let mut has_local_handler = false;
+                if let Some(handler) = self.exception_handlers.last() {
+                    if handler.call_stack_depth == self.call_stack.len() {
+                        has_local_handler = true;
                     }
                 }
-            };
 
-            if opcode == Opcode::Halt as u8 {
-                return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
+                if has_local_handler {
+                    let handler = self.exception_handlers.pop().unwrap();
+                    self.set_pc(handler.catch_pc);
+                    self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                    return Ok(RunResult::InProgress);
+                } else {
+                    return Err(Value::Exception(exception));
+                }
             }
+        };
 
-            match result {
-                ExecutionResult::Breakpoint => return Ok(RunResult::Breakpoint),
-                ExecutionResult::Suspended => return Ok(RunResult::Suspended),
-                ExecutionResult::Continue => {}
-            }
+        if opcode == Opcode::Halt as u8 {
+            return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
+        }
+
+        match result {
+            ExecutionResult::Breakpoint => Ok(RunResult::Breakpoint),
+            ExecutionResult::Suspended => Ok(RunResult::Suspended),
+            ExecutionResult::Continue => Ok(RunResult::InProgress),
         }
     }
 
@@ -1715,6 +1719,7 @@ impl VM {
                         _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
                     };
                     self.set_reg(rd, result?);
+                    self.set_pc(self.pc() + 1);
                 // Check if this is a string method call
                 } else if let Some(Value::String(_)) = args.first() {
                     // Strip parameter signature from mangled name (e.g., "toInt()" -> "toInt")
@@ -1839,6 +1844,7 @@ impl VM {
                         _ => Err(Value::String(format!("Method '{}' not found on str", name))),
                     };
                     self.set_reg(rd, result?);
+                    self.set_pc(self.pc() + 1);
                 // Check if this is an array method call
                 } else if let Some(Value::Array(_)) = args.first() {
                     // Strip parameter signature from mangled name
@@ -1860,6 +1866,7 @@ impl VM {
                         _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
                     };
                     self.set_reg(rd, result?);
+                    self.set_pc(self.pc() + 1);
                 } else {
                     let instance = if let Some(Value::Instance(instance)) = args.first() {
                         instance.clone()
@@ -1881,9 +1888,11 @@ impl VM {
                                     } else {
                                         self.set_reg(rd, val);
                                     }
+                                    self.set_pc(self.pc() + 1);
                                 }
                                 NativeResult::Pending => {
                                     // VM should suspend - save state for callback
+                                    self.set_pc(self.pc() + 1);
                                     self.pending_native_result = Some(rd);
                                     return Ok(ExecutionResult::Suspended);
                                 }
@@ -2901,6 +2910,7 @@ pub enum RunResult {
     Finished(Option<Value>),
     Breakpoint,
     Suspended,
+    InProgress,
 }
 
 #[derive(Debug, Clone)]

@@ -177,6 +177,7 @@ impl Executor {
         loop {
             match self.vm.run().map_err(|e| e.to_string())? {
                 RunResult::Finished(val) => return Ok(val),
+                RunResult::InProgress => continue,
                 RunResult::Breakpoint => {
                     println!("Breakpoint hit at line {}", self.vm.get_line());
                     return Ok(None);
@@ -220,6 +221,9 @@ impl Executor {
                 RunResult::Finished(val) => {
                     return Ok(val);
                 }
+                RunResult::InProgress => {
+                    continue;
+                }
                 RunResult::Breakpoint => {
                     println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                     continue;
@@ -251,6 +255,9 @@ impl Executor {
                         Ok(RunResult::Finished(val)) => {
                             return Ok(val);
                         }
+                        Ok(RunResult::InProgress) => {
+                            continue;
+                        }
                         Ok(RunResult::Breakpoint) => {
                             println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                         }
@@ -273,6 +280,11 @@ impl Executor {
     /// The new implementation will be used on the next call.
     pub fn hot_swap(&mut self, name: &str, new_func: NativeFn) -> bool {
         self.vm.native_registry.hot_swap(name, new_func)
+    }
+
+    /// Set a breakpoint in a source file at a specific line
+    pub fn set_breakpoint(&mut self, source_file: &str, line: usize) -> Result<(), String> {
+        self.vm.set_breakpoint(source_file, line)
     }
 
     /// Force relinking of bytecode (useful after hot-swap if indices changed)
