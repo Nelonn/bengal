@@ -221,6 +221,14 @@ pub enum HlirInstr {
         field_name: String,
         value: HlirValue,
     },
+
+    /// Get property: dest = object.field
+    /// Used for field access in methods
+    GetProperty {
+        object: HlirValue,
+        field_name: String,
+        dest: usize,
+    },
 }
 
 /// Cast kinds
@@ -461,12 +469,24 @@ impl HlirBuilder {
 
     /// Generate a set property instruction
     pub fn set_property(&mut self, object: HlirValue, field_name: &str, value: HlirValue) {
-        let instr = HlirInstr::SetProperty { 
-            object, 
-            field_name: field_name.to_string(), 
-            value 
+        let instr = HlirInstr::SetProperty {
+            object,
+            field_name: field_name.to_string(),
+            value
         };
         self.emit(instr);
+    }
+
+    /// Generate a get property instruction
+    pub fn get_property(&mut self, object: HlirValue, field_name: &str) -> HlirValue {
+        let dest = self.new_temp();
+        let instr = HlirInstr::GetProperty {
+            object,
+            field_name: field_name.to_string(),
+            dest
+        };
+        self.emit(instr);
+        HlirValue::Temp(dest)
     }
 
     /// Generate a call
@@ -577,7 +597,10 @@ impl HlirBuilder {
                     if let Some(block_idx) = self.module.functions[func_idx].blocks.iter()
                         .position(|b| &b.name == block_name)
                     {
-                        self.module.functions[func_idx].blocks[block_idx].terminator = Some(instr);
+                        // Only set terminator if one doesn't already exist
+                        if self.module.functions[func_idx].blocks[block_idx].terminator.is_none() {
+                            self.module.functions[func_idx].blocks[block_idx].terminator = Some(instr);
+                        }
                     }
                 }
             }

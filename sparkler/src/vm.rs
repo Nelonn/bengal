@@ -1757,15 +1757,22 @@ impl VM {
         if let Some(function) = function_opt {
             let mut args = Vec::new();
             let is_constructor = func_name.contains("_constructor(");
+
+            // For constructors, the instance is created by the VM and stored in rd
+            // For instance methods, self is passed as the first argument from the caller
             if is_constructor {
                 args.push(self.get_reg(rd).clone());
             }
+
+            // Collect all arguments from the caller's frame
             for i in 0..arg_count {
                 args.push(self.get_reg(arg_start + i).clone());
             }
 
-            let caller_frame_base = self.frame_base();
-            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+            // Calculate new frame base: start after the caller's register window
+            // This prevents register overlap between caller and callee
+            let caller_frame = self.context.call_stack.last().unwrap();
+            let new_frame_base = caller_frame.frame_base + caller_frame.register_count as usize;
 
             if new_frame_base + function.register_count as usize > self.context.registers.len() {
                 return Err(Value::String("Register overflow: too many nested calls".to_string()));
@@ -1787,6 +1794,8 @@ impl VM {
 
             self.push_frame(new_frame);
 
+            // Set up arguments in the callee's frame
+            // R1 = first arg (self for instance methods/constructors), R2 = second arg, etc.
             for (i, arg) in args.iter().enumerate() {
                 self.set_reg((i + 1) as u8, arg.clone());
             }
@@ -2154,8 +2163,9 @@ impl VM {
                 });
 
                 if let Some(method) = method_opt {
-                    let caller_frame_base = self.frame_base();
-                    let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+                    // Calculate new frame base: start after the caller's register window
+                    let caller_frame = self.context.call_stack.last().unwrap();
+                    let new_frame_base = caller_frame.frame_base + caller_frame.register_count as usize;
 
                     if new_frame_base + method.register_count as usize > self.context.registers.len() {
                         return Err(Value::String("Register overflow in method call".to_string()));
@@ -2274,8 +2284,9 @@ impl VM {
                 });
 
             if let Some(method) = method_opt {
-                let caller_frame_base = self.frame_base();
-                let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+                // Calculate new frame base: start after the caller's register window
+                let caller_frame = self.context.call_stack.last().unwrap();
+                let new_frame_base = caller_frame.frame_base + caller_frame.register_count as usize;
 
                 if new_frame_base + method.register_count as usize > self.context.registers.len() {
                     return Err(Value::String("Register overflow in interface method call".to_string()));
@@ -2330,8 +2341,9 @@ impl VM {
                     let method = found_method.unwrap();
                     let iface_name = found_iface_name.unwrap();
 
-                    let caller_frame_base = self.frame_base();
-                    let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+                    // Calculate new frame base: start after the caller's register window
+                    let caller_frame = self.context.call_stack.last().unwrap();
+                    let new_frame_base = caller_frame.frame_base + caller_frame.register_count as usize;
 
                     if new_frame_base + method.register_count as usize > self.context.registers.len() {
                         return Err(Value::String("Register overflow in interface method call".to_string()));

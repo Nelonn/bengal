@@ -271,7 +271,12 @@ impl AstToHlirConverter {
                     self.convert_stmt(stmt);
                 }
 
-                if return_ty != HlirType::Void {
+                // Special handling for constructors - they must return self
+                if is_constructor {
+                    if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
+                        self.builder.ret(Some(HlirValue::Param(0)), HlirType::Pointer(Box::new(HlirType::Unknown)));
+                    }
+                } else if return_ty != HlirType::Void {
                     if !matches!(method.body.last(), Some(Stmt::Return { .. })) {
                         self.builder.ret(Some(HlirValue::IntConst(0)), return_ty);
                     }
@@ -792,14 +797,29 @@ impl AstToHlirConverter {
             }
             
             Expr::Get { object, name, .. } => {
-                // First convert the object to get the self pointer
-                self.convert_expr(object);
-                
-                // Look up the field pointer and load its value
-                if let Some(field_ptr) = self.var_ptrs.get(&name.clone()).cloned() {
-                    self.builder.load(field_ptr, HlirType::I32)
+                // Get the object value
+                let object_val = self.convert_expr(object);
+
+                // Check if this is a self.field access
+                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
+                    if obj_name == "self" {
+                        // Use GetProperty for self.field access
+                        self.builder.get_property(object_val, name)
+                    } else {
+                        // For other object.field access, use field pointer
+                        if let Some(field_ptr) = self.var_ptrs.get(&name.clone()).cloned() {
+                            self.builder.load(field_ptr, HlirType::I32)
+                        } else {
+                            HlirValue::IntConst(0)
+                        }
+                    }
                 } else {
-                    HlirValue::IntConst(0)
+                    // For complex object expressions, use field pointer
+                    if let Some(field_ptr) = self.var_ptrs.get(&name.clone()).cloned() {
+                        self.builder.load(field_ptr, HlirType::I32)
+                    } else {
+                        HlirValue::IntConst(0)
+                    }
                 }
             }
             

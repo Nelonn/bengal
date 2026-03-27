@@ -233,11 +233,12 @@ impl HlirToSparkler {
         self.bytecode.len()
     }
 
-    /// Patch a jump target at the given offset (uses relative offset)
+    /// Patch a jump target at the given offset (uses absolute offset)
     fn patch_jump(&mut self, offset: usize, target: usize) {
-        let relative = target as i32 - offset as i32;
-        self.bytecode[offset] = ((relative >> 8) & 0xFF) as u8;
-        self.bytecode[offset + 1] = (relative & 0xFF) as u8;
+        // The VM uses absolute PC offsets for jumps, not relative
+        // Write in little-endian order: low byte first, then high byte
+        self.bytecode[offset] = (target & 0xFF) as u8;
+        self.bytecode[offset + 1] = ((target >> 8) & 0xFF) as u8;
     }
 
     /// Patch a TRY_START catch_pc (uses absolute offset)
@@ -341,6 +342,12 @@ impl HlirToSparkler {
                 if let HlirValue::Temp(t) = value { temps.push(*t); }
                 temps
             }
+            HlirInstr::GetProperty { object, dest, .. } => {
+                let mut temps = Vec::new();
+                if let HlirValue::Temp(t) = object { temps.push(*t); }
+                temps.push(*dest);
+                temps
+            }
             _ => vec![],
         };
 
@@ -369,7 +376,11 @@ impl HlirToSparkler {
                 if let Some(temps) = self.reg_to_temps.get_mut(&reg) {
                     temps.remove(&temp);
                     if temps.is_empty() {
-                        reg_release_check.insert(reg);
+                        // Don't free registers that hold local variables
+                        let is_local_reg = self.var_map.values().any(|&r| r == reg);
+                        if !is_local_reg {
+                            reg_release_check.insert(reg);
+                        }
                     }
                 }
             }
@@ -728,12 +739,6 @@ impl HlirToSparkler {
                 let else_placeholder = self.current_offset();
                 self.emit_u16(0);
                 self.pending_jumps.push((else_placeholder, else_block.clone()));
-
-                self.emit_opcode(Opcode::Jump);
-                let then_end_placeholder = self.current_offset();
-                self.emit_u16(0);
-                self.pending_jumps
-                    .push((then_end_placeholder, format!("{}_end", then_block)));
             }
 
             HlirInstr::TryStart { catch_block, catch_reg } => {
@@ -770,6 +775,18 @@ impl HlirToSparkler {
                 self.emit(object_reg);
                 self.emit(field_idx as u8);
                 self.emit(value_reg);
+            }
+
+            HlirInstr::GetProperty { object, field_name, dest } => {
+                // Emit GetProperty: Rd, Robj, name_idx
+                let dest_reg = self.get_reg_for_temp(*dest);
+                let object_reg = self.get_value_reg(object);
+                let field_idx = self.add_string(field_name.clone());
+
+                self.emit_opcode(Opcode::GetProperty);
+                self.emit(dest_reg);
+                self.emit(object_reg);
+                self.emit(field_idx as u8);
             }
 
             HlirInstr::Call { func, args, dest, return_ty, arg_types } => {
