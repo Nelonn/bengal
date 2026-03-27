@@ -52,6 +52,8 @@ pub enum HlirValue {
     BoolConst(bool),
     /// Constant string
     StringConst(String),
+    /// Null value
+    Null,
     /// Local variable reference
     Local(String),
     /// Function parameter
@@ -407,6 +409,22 @@ impl HlirBuilder {
     pub fn end_block(&mut self) {
         self.current_block = None;
     }
+
+    /// Check if the current block has a terminator
+    pub fn current_block_has_terminator(&self) -> bool {
+        if let Some(func_name) = &self.current_function {
+            if let Some(func_idx) = self.module.functions.iter().position(|f| &f.name == func_name) {
+                if let Some(block_name) = &self.current_block {
+                    if let Some(block_idx) = self.module.functions[func_idx].blocks.iter()
+                        .position(|b| &b.name == block_name)
+                    {
+                        return self.module.functions[func_idx].blocks[block_idx].terminator.is_some();
+                    }
+                }
+            }
+        }
+        false
+    }
     
     /// Allocate a new temporary
     pub fn new_temp(&mut self) -> usize {
@@ -422,6 +440,7 @@ impl HlirBuilder {
             HlirValue::FloatConst(_) => HlirType::F64,
             HlirValue::BoolConst(_) => HlirType::Bool,
             HlirValue::StringConst(_) => HlirType::String,
+            HlirValue::Null => HlirType::Unknown,
             HlirValue::Temp(_) => HlirType::Unknown,
             HlirValue::Local(_) => HlirType::Unknown,
             HlirValue::Param(_) => HlirType::Unknown,

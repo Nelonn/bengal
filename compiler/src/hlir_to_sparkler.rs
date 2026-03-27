@@ -138,10 +138,8 @@ impl HlirToSparkler {
 
     /// Allocate a new Sparkler register (for constants/temporaries, not liveness-tracked)
     fn alloc_reg(&mut self) -> u8 {
-        if let Some(reg) = self.reusable_regs.pop() {
-            return reg;
-        }
-
+        // Don't reuse from reusable_regs to avoid conflicts with temps
+        // that may still be using those registers
         let reg = self.next_sparkler_reg as u8;
         self.next_sparkler_reg += 1;
         if reg as u16 > self.max_reg {
@@ -542,18 +540,22 @@ impl HlirToSparkler {
             }
         }
 
+        // Record the start offset of this function's bytecode for relative jump calculations
+        let func_start_offset = self.current_offset();
+
         // Compile blocks
         for block in &func.blocks {
             self.compile_block(block, func);
         }
 
-        // Patch pending jumps
+        // Patch pending jumps - convert absolute offsets to relative offsets
         let pending = std::mem::take(&mut self.pending_jumps);
         for (offset, label) in pending {
-            if let Some(&target) =
-                self.block_offsets.get(&format!("{}:{}", func.name, label))
-            {
-                self.patch_jump(offset, target);
+            let block_key = format!("{}:{}", func.name, label);
+            if let Some(&target) = self.block_offsets.get(&block_key) {
+                // Convert absolute offset to relative offset (relative to function start)
+                let relative_target = target - func_start_offset;
+                self.patch_jump(offset, relative_target);
             }
         }
 
@@ -975,10 +977,10 @@ impl HlirToSparkler {
                     let reg = self.get_value_reg(value);
                     value_regs.push(reg);
                 }
-                
+
                 // Allocate contiguous registers for the CONCAT operation
                 let start_reg = self.alloc_consecutive_regs(values.len());
-                
+
                 // Copy values to contiguous registers
                 for (i, &value_reg) in value_regs.iter().enumerate() {
                     let target_reg = start_reg + i as u8;
@@ -986,9 +988,11 @@ impl HlirToSparkler {
                         self.emit_opcode(Opcode::Move);
                         self.emit(target_reg);
                         self.emit(value_reg);
+                        // Mark source register as constant so it gets released
+                        // (only release if we moved the value, otherwise the register
+                        // is still in use by CONCAT and cannot be reused)
+                        self.const_regs.push(value_reg);
                     }
-                    // Mark source register as constant so it gets released
-                    self.const_regs.push(value_reg);
                 }
                 
                 // Emit CONCAT: Rd, rs_start, count
@@ -1064,7 +1068,7 @@ impl HlirToSparkler {
                     reg
                 }
             }
-            _ => {
+            HlirValue::Null => {
                 let reg = self.alloc_reg();
                 self.emit_opcode(Opcode::LoadNull);
                 self.emit(reg);

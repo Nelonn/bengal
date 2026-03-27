@@ -438,36 +438,45 @@ impl AstToHlirConverter {
             
             Stmt::If { condition, then_branch, else_branch, .. } => {
                 let cond = self.convert_expr(condition);
-                
+
                 let then_label = format!("if_then_{}", self.builder.new_temp());
                 let else_label = format!("if_else_{}", self.builder.new_temp());
                 let end_label = format!("if_end_{}", self.builder.new_temp());
-                
+
                 if else_branch.is_some() {
                     self.builder.cond_br(cond, &then_label, &else_label);
-                    
+
                     self.builder.begin_block(&then_label);
                     for stmt in then_branch {
                         self.convert_stmt(stmt);
                     }
-                    self.builder.br(&end_label);
-                    
+                    // Only emit branch if then_branch doesn't end with a terminator
+                    if !self.builder.current_block_has_terminator() {
+                        self.builder.br(&end_label);
+                    }
+
                     self.builder.begin_block(&else_label);
                     for stmt in else_branch.as_ref().unwrap() {
                         self.convert_stmt(stmt);
                     }
-                    self.builder.br(&end_label);
-                    
+                    // Only emit branch if else_branch doesn't end with a terminator
+                    if !self.builder.current_block_has_terminator() {
+                        self.builder.br(&end_label);
+                    }
+
                     self.builder.begin_block(&end_label);
                 } else {
                     self.builder.cond_br(cond, &then_label, &end_label);
-                    
+
                     self.builder.begin_block(&then_label);
                     for stmt in then_branch {
                         self.convert_stmt(stmt);
                     }
-                    self.builder.br(&end_label);
-                    
+                    // Only emit branch if then_branch doesn't end with a terminator
+                    if !self.builder.current_block_has_terminator() {
+                        self.builder.br(&end_label);
+                    }
+
                     self.builder.begin_block(&end_label);
                 }
             }
@@ -606,7 +615,7 @@ impl AstToHlirConverter {
                         self.add_string(s.clone());
                         HlirValue::StringConst(s.clone())
                     },
-                    Literal::Null(_) => HlirValue::IntConst(0),
+                    Literal::Null(_) => HlirValue::Null,
                 }
             }
             
