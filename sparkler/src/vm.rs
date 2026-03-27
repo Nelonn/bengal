@@ -913,19 +913,16 @@ impl VM {
             pending_native_methods: HashMap::new(),
             pending_class_native_create: HashMap::new(),
             pending_class_native_destroy: HashMap::new(),
-            breakpoints: std::collections::HashSet::new(),
+            breakpoints: HashSet::new(),
             is_debugging: false,
             dispatch_table: VM::create_dispatch_table(),
         }
     }
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
-        // Check if already registered
         if self.program.native_registry.get_index(name).is_some() {
-            // Update existing registration (hot-swap)
             self.program.native_registry.hot_swap(name, f);
         } else {
-            // New registration
             self.program.native_registry.register(name, f);
         }
     }
