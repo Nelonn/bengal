@@ -1,5 +1,5 @@
 use bengal_compiler::{HlirCompiler, CompilerOptions, sparkler_to_bytecode};
-use sparkler::{Executor, vm::VmState};
+use sparkler::{Executor, vm::Snapshot};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
@@ -10,7 +10,7 @@ pub struct ReplState {
     /// Executor with registered native functions
     executor: Executor,
     /// Last known good VM state for rollback on errors
-    last_good_state: Option<VmState>,
+    last_good_state: Option<Snapshot>,
 }
 
 impl ReplState {

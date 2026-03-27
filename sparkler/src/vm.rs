@@ -1392,7 +1392,7 @@ impl<'de> Deserialize<'de> for Value {
 
 /// Snapshot of VM state for REPL rollback support
 #[derive(Clone)]
-pub struct VmState {
+pub struct Snapshot {
     pub locals: HashMap<String, Value>,
     pub classes: HashMap<String, Class>,
     pub functions: HashMap<String, Function>,
@@ -1400,8 +1400,8 @@ pub struct VmState {
 
 impl VM {
     /// Create a snapshot of the current VM state
-    pub fn snapshot(&self) -> VmState {
-        VmState {
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
             locals: self.context.locals.clone(),
             classes: (*self.program.classes).clone(),
             functions: (*self.program.functions).clone(),
@@ -1409,7 +1409,7 @@ impl VM {
     }
 
     /// Restore the VM to a previous state
-    pub fn restore(&mut self, state: &VmState) {
+    pub fn restore(&mut self, state: &Snapshot) {
         self.context.locals = state.locals.clone();
         self.program.classes = Arc::new(state.classes.clone());
         self.program.functions = Arc::new(state.functions.clone());
