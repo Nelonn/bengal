@@ -757,16 +757,69 @@ impl CallFrame {
     }
 }
 
-pub struct VM {
+/// Execution context - contains runtime state that can be saved/restored when suspended
+pub struct Context {
+    /// The register file - fixed size array of values
+    pub registers: Vec<Value>,
+    /// Local variables (for module-level code)
+    pub locals: HashMap<String, Value>,
+    /// Call stack - frames for active function calls
+    pub call_stack: Vec<CallFrame>,
+    /// Exception handlers
+    pub exception_handlers: Vec<ExceptionHandler>,
+    /// Source file for the current execution context
+    pub source_file: Option<String>,
+    /// Current line being executed
+    pub current_line: usize,
+    /// Pending native result register (for async native callbacks)
+    pub pending_native_result: Option<u8>,
+    /// Callback for pending native operation
+    pub pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
+}
+
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        Self {
+            registers: self.registers.clone(),
+            locals: self.locals.clone(),
+            call_stack: self.call_stack.clone(),
+            exception_handlers: self.exception_handlers.clone(),
+            source_file: self.source_file.clone(),
+            current_line: self.current_line,
+            pending_native_result: self.pending_native_result,
+            pending_native_callback: None, // Cannot clone the callback
+        }
+    }
+}
+
+impl Context {
+    pub fn new() -> Self {
+        Self {
+            registers: vec![Value::Null; 256],
+            locals: HashMap::new(),
+            call_stack: Vec::new(),
+            exception_handlers: Vec::new(),
+            source_file: None,
+            current_line: 1,
+            pending_native_result: None,
+            pending_native_callback: None,
+        }
+    }
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Loaded program data - shared/immutable bytecode and definitions
+#[derive(Clone)]
+pub struct Program {
     /// The current bytecode being executed
     pub bytecode: Arc<Vec<u8>>,
-    /// The register file - fixed size array of values
-    /// In a true registry VM, registers are allocated per-frame
-    pub registers: Vec<Value>,
     /// String constant pool
     pub strings: Arc<Vec<String>>,
-    /// Local variables (for module-level code)
-    locals: HashMap<String, Value>,
     /// Class definitions
     pub classes: Arc<HashMap<String, Class>>,
     /// Function definitions
@@ -775,40 +828,63 @@ pub struct VM {
     pub native_registry: NativeFunctionRegistry,
     /// Fallback native handler
     pub fallback_native: Option<crate::linker::NativeFnType>,
+    /// Vtables for interface method dispatch (indexed by vtable_idx)
+    pub vtables: Vec<VTable>,
+}
+
+impl Program {
+    pub fn new() -> Self {
+        Self {
+            bytecode: Arc::new(Vec::new()),
+            strings: Arc::new(Vec::new()),
+            classes: Arc::new(HashMap::new()),
+            functions: Arc::new(HashMap::new()),
+            native_registry: NativeFunctionRegistry::new(),
+            fallback_native: None,
+            vtables: Vec::new(),
+        }
+    }
+}
+
+impl Default for Program {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Scope for REPL - persistent state across multiple executions
+#[derive(Clone, Default)]
+pub struct Scope {
+    pub locals: HashMap<String, Value>,
+    pub classes: HashMap<String, Class>,
+    pub functions: HashMap<String, Function>,
+}
+
+impl Scope {
+    pub fn new() -> Self {
+        Self {
+            locals: HashMap::new(),
+            classes: HashMap::new(),
+            functions: HashMap::new(),
+        }
+    }
+}
+
+pub struct VM {
+    /// Loaded program data
+    pub program: Program,
+    /// Execution context (registers, stack, etc.)
+    pub context: Context,
     /// Pending native methods to be attached to classes
     pending_native_methods: HashMap<String, HashMap<String, NativeFn>>,
     /// Pending class native_create callbacks
     pending_class_native_create: HashMap<String, NativeFn>,
     /// Pending class native_destroy callbacks
     pending_class_native_destroy: HashMap<String, NativeFn>,
-    /// Exception handlers
-    exception_handlers: Vec<ExceptionHandler>,
-    /// Call stack - frames for active function calls
-    call_stack: Vec<CallFrame>,
-    /// Source file for the current execution context
-    source_file: Option<String>,
-    /// Current line being executed
-    current_line: usize,
     /// Breakpoints for debugging
     pub breakpoints: HashSet<(String, usize)>,
     /// Whether debugging mode is enabled
     pub is_debugging: bool,
-    /// Vtables for interface method dispatch (indexed by vtable_idx)
-    vtables: Vec<VTable>,
-    /// Pending native result register (for async native callbacks)
-    pending_native_result: Option<u8>,
-    /// Callback for pending native operation
-    pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
-    /// Saved bytecode for function call suspension
-    saved_bytecode: Option<Vec<u8>>,
-    /// Saved strings for function call suspension
-    saved_strings: Option<Vec<String>>,
-    /// Saved functions for function call suspension
-    saved_functions: Option<HashMap<String, Function>>,
-    /// Saved native registry for function call suspension
-    saved_native_registry: Option<NativeFunctionRegistry>,
-    /// Saved classes for function call suspension
-    saved_classes: Option<HashMap<String, Class>>,
     /// Opcode dispatch table for fast execution
     dispatch_table: [OpcodeHandler; 256],
 }
@@ -840,45 +916,25 @@ impl VM {
     /// Each call frame gets a window into this register file.
     pub fn new() -> Self {
         Self {
-            bytecode: Arc::new(Vec::new()),
-            // 256 registers - typical for registry-based VMs
-            // Each frame gets a window of registers
-            registers: vec![Value::Null; 256],
-            strings: Arc::new(Vec::new()),
-            locals: HashMap::new(),
-            classes: Arc::new(HashMap::new()),
-            functions: Arc::new(HashMap::new()),
-            native_registry: NativeFunctionRegistry::new(),
-            fallback_native: None,
+            program: Program::new(),
+            context: Context::new(),
             pending_native_methods: HashMap::new(),
             pending_class_native_create: HashMap::new(),
             pending_class_native_destroy: HashMap::new(),
-            exception_handlers: Vec::new(),
-            call_stack: Vec::new(),
-            source_file: None,
-            current_line: 1,
             breakpoints: std::collections::HashSet::new(),
             is_debugging: false,
-            vtables: Vec::new(),
-            pending_native_result: None,
-            pending_native_callback: None,
-            saved_bytecode: None,
-            saved_strings: None,
-            saved_functions: None,
-            saved_native_registry: None,
-            saved_classes: None,
             dispatch_table: VM::create_dispatch_table(),
         }
     }
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
         // Check if already registered
-        if self.native_registry.get_index(name).is_some() {
+        if self.program.native_registry.get_index(name).is_some() {
             // Update existing registration (hot-swap)
-            self.native_registry.hot_swap(name, f);
+            self.program.native_registry.hot_swap(name, f);
         } else {
             // New registration
-            self.native_registry.register(name, f);
+            self.program.native_registry.register(name, f);
         }
     }
 
@@ -914,15 +970,15 @@ impl VM {
     }
 
     pub fn register_fallback(&mut self, f: NativeFn) {
-        self.fallback_native = Some(crate::linker::NativeFnType::Sync(f));
-        self.native_registry.set_fallback(f);
+        self.program.fallback_native = Some(crate::linker::NativeFnType::Sync(f));
+        self.program.native_registry.set_fallback(f);
     }
 
     /// Load bytecode and initialize the VM
     pub fn load(&mut self, bytecode: &[u8], strings: Vec<String>, classes: Vec<Class>, functions: Vec<Function>, vtables: Vec<VTable>) -> Result<(), String> {
-        self.bytecode = Arc::new(bytecode.to_vec());
-        self.strings = Arc::new(strings);
-        self.vtables = vtables;
+        self.program.bytecode = Arc::new(bytecode.to_vec());
+        self.program.strings = Arc::new(strings);
+        self.program.vtables = vtables;
 
         let mut classes_map = HashMap::new();
         for mut class in classes {
@@ -939,57 +995,57 @@ impl VM {
             }
             classes_map.insert(class.name.clone(), class);
         }
-        self.classes = Arc::new(classes_map);
+        self.program.classes = Arc::new(classes_map);
 
         let mut functions_map = HashMap::new();
         for function in functions {
             functions_map.insert(function.name.clone(), function);
         }
-        self.functions = Arc::new(functions_map);
+        self.program.functions = Arc::new(functions_map);
 
         // Initialize for execution
         self.set_pc(0);
-        self.registers.fill(Value::Null);
+        self.context.registers.fill(Value::Null);
 
         // Create initial call frame for module-level code
-        self.call_stack = vec![CallFrame::new(
+        self.context.call_stack = vec![CallFrame::new(
             0,
             0,
             0,
             16,
             "<main>".to_string(),
-            self.source_file.clone(),
-            self.bytecode.clone(),
-            self.strings.clone(),
-            self.functions.clone(),
-            self.classes.clone(),
+            self.context.source_file.clone(),
+            self.program.bytecode.clone(),
+            self.program.strings.clone(),
+            self.program.functions.clone(),
+            self.program.classes.clone(),
             None,
         )];
 
-        self.current_line = 1;
+        self.context.current_line = 1;
         Ok(())
     }
 
     /// Set a local variable by name
     pub fn set_local(&mut self, name: &str, value: Value) {
-        self.locals.insert(name.to_string(), value);
+        self.context.locals.insert(name.to_string(), value);
     }
 
     /// Get a local variable by name
     pub fn get_local(&self, name: &str) -> Option<&Value> {
-        self.locals.get(name)
+        self.context.locals.get(name)
     }
 
     /// Get current PC from the top frame
     #[inline]
     fn pc(&self) -> usize {
-        self.call_stack.last().map(|f| f.pc).unwrap_or(0)
+        self.context.call_stack.last().map(|f| f.pc).unwrap_or(0)
     }
 
     /// Set current PC in the top frame
     #[inline]
     fn set_pc(&mut self, pc: usize) {
-        if let Some(frame) = self.call_stack.last_mut() {
+        if let Some(frame) = self.context.call_stack.last_mut() {
             frame.pc = pc;
         }
     }
@@ -997,21 +1053,21 @@ impl VM {
     /// Get current frame base
     #[inline]
     fn frame_base(&self) -> usize {
-        self.call_stack.last().map(|f| f.frame_base).unwrap_or(0)
+        self.context.call_stack.last().map(|f| f.frame_base).unwrap_or(0)
     }
 
     /// Read a register relative to the current frame base
     #[inline]
     fn get_reg(&self, offset: u8) -> &Value {
         let idx = self.frame_base() + offset as usize;
-        &self.registers[idx]
+        &self.context.registers[idx]
     }
 
     /// Write to a register relative to the current frame base
     #[inline]
     fn set_reg(&mut self, offset: u8, value: Value) {
         let idx = self.frame_base() + offset as usize;
-        self.registers[idx] = value;
+        self.context.registers[idx] = value;
     }
 
     /// Clone a register value
@@ -1022,22 +1078,22 @@ impl VM {
     }
 
     pub fn set_source_file(&mut self, file: &str) {
-        self.source_file = Some(file.to_string());
+        self.context.source_file = Some(file.to_string());
     }
 
     pub fn set_line(&mut self, line: usize) {
-        self.current_line = line;
-        if let Some(frame) = self.call_stack.last_mut() {
+        self.context.current_line = line;
+        if let Some(frame) = self.context.call_stack.last_mut() {
             frame.line_number = line;
         }
     }
 
     pub fn get_line(&self) -> usize {
-        self.current_line
+        self.context.current_line
     }
 
     pub fn get_source_file(&self) -> Option<String> {
-        self.source_file.clone()
+        self.context.source_file.clone()
     }
 
     /// Set a breakpoint in a source file at a specific line
@@ -1047,33 +1103,33 @@ impl VM {
     }
 
     fn push_frame(&mut self, frame: CallFrame) {
-        self.bytecode = frame.bytecode.clone();
-        self.strings = frame.strings.clone();
-        self.functions = frame.functions.clone();
-        self.classes = frame.classes.clone();
-        self.call_stack.push(frame);
+        self.program.bytecode = frame.bytecode.clone();
+        self.program.strings = frame.strings.clone();
+        self.program.functions = frame.functions.clone();
+        self.program.classes = frame.classes.clone();
+        self.context.call_stack.push(frame);
     }
 
     fn pop_frame(&mut self) -> Option<CallFrame> {
-        let frame = self.call_stack.pop();
-        if let Some(top) = self.call_stack.last() {
-            self.bytecode = top.bytecode.clone();
-            self.strings = top.strings.clone();
-            self.functions = top.functions.clone();
-            self.classes = top.classes.clone();
-            self.current_line = top.line_number;
-            self.source_file = top.source_file.clone();
+        let frame = self.context.call_stack.pop();
+        if let Some(top) = self.context.call_stack.last() {
+            self.program.bytecode = top.bytecode.clone();
+            self.program.strings = top.strings.clone();
+            self.program.functions = top.functions.clone();
+            self.program.classes = top.classes.clone();
+            self.context.current_line = top.line_number;
+            self.context.source_file = top.source_file.clone();
         }
         frame
     }
 
     pub fn run(&mut self) -> Result<RunResult, Value> {
-        if self.call_stack.is_empty() {
+        if self.context.call_stack.is_empty() {
             return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
         }
 
-        if self.pc() >= self.bytecode.len() {
-            if self.call_stack.len() > 1 {
+        if self.pc() >= self.program.bytecode.len() {
+            if self.context.call_stack.len() > 1 {
                 let frame = self.pop_frame().unwrap();
                 if let Some(rd) = frame.return_reg {
                     self.set_reg(rd, Value::Null);
@@ -1083,7 +1139,7 @@ impl VM {
             return Ok(RunResult::Finished(Some(self.get_reg(0).clone())));
         }
 
-        let opcode = self.bytecode[self.pc()];
+        let opcode = self.program.bytecode[self.pc()];
         let result = match self.execute(opcode) {
             Ok(res) => res,
             Err(e) => {
@@ -1093,14 +1149,14 @@ impl VM {
                 };
 
                 let mut has_local_handler = false;
-                if let Some(handler) = self.exception_handlers.last() {
-                    if handler.call_stack_depth == self.call_stack.len() {
+                if let Some(handler) = self.context.exception_handlers.last() {
+                    if handler.call_stack_depth == self.context.call_stack.len() {
                         has_local_handler = true;
                     }
                 }
 
                 if has_local_handler {
-                    let handler = self.exception_handlers.pop().unwrap();
+                    let handler = self.context.exception_handlers.pop().unwrap();
                     self.set_pc(handler.catch_pc);
                     self.set_reg(handler.catch_register as u8, Value::Exception(exception));
                     return Ok(RunResult::InProgress);
@@ -1126,29 +1182,18 @@ impl VM {
     where
         F: FnOnce(Result<Value, Value>) + Send + 'static,
     {
-        self.pending_native_callback = Some(Box::new(callback));
+        self.context.pending_native_callback = Some(Box::new(callback));
     }
 
     /// Resume execution after a native callback with the result
     pub fn resume_with_result(&mut self, result: Result<Value, Value>) -> Result<RunResult, Value> {
-        debug_vm!("resume_with_result: PC = {}, bytecode.len() = {}", self.pc(), self.bytecode.len());
-        if let Some(reg) = self.pending_native_result.take() {
+        debug_vm!("resume_with_result: PC = {}, bytecode.len() = {}", self.pc(), self.program.bytecode.len());
+        if let Some(reg) = self.context.pending_native_result.take() {
             debug_vm!("resume_with_result: Setting reg {} with result", reg);
             match result {
                 Ok(val) => self.set_reg(reg, val),
                 Err(val) => self.set_reg(reg, val),
             }
-            // PC was already advanced past the Invoke instruction when it was executed
-            // Just continue execution from the current PC
-        }
-        // Restore saved state if any
-        if let Some(bytecode) = self.saved_bytecode.take() {
-            self.bytecode = Arc::new(bytecode);
-            self.strings = Arc::new(self.saved_strings.take().unwrap());
-            self.functions = Arc::new(self.saved_functions.take().unwrap());
-            self.native_registry = self.saved_native_registry.take().unwrap();
-            self.classes = Arc::new(self.saved_classes.take().unwrap());
-            debug_vm!("resume_with_result: Restored saved state, bytecode.len() = {}", self.bytecode.len());
         }
         // Continue execution
         debug_vm!("resume_with_result: Calling self.run()");
@@ -1157,7 +1202,7 @@ impl VM {
 
     /// Check if VM is suspended
     pub fn is_suspended(&self) -> bool {
-        self.pending_native_result.is_some()
+        self.context.pending_native_result.is_some()
     }
 
     fn build_exception(&self, value: &Value) -> Exception {
@@ -1167,7 +1212,7 @@ impl VM {
             _ => value.to_string(),
         };
 
-        let stack_trace: Vec<StackFrame> = self.call_stack.iter().map(|frame| {
+        let stack_trace: Vec<StackFrame> = self.context.call_stack.iter().map(|frame| {
             StackFrame {
                 function_name: frame.function_name.clone(),
                 source_file: frame.source_file.clone(),
@@ -1354,17 +1399,17 @@ impl VM {
     /// Create a snapshot of the current VM state
     pub fn snapshot(&self) -> VmState {
         VmState {
-            locals: self.locals.clone(),
-            classes: (*self.classes).clone(),
-            functions: (*self.functions).clone(),
+            locals: self.context.locals.clone(),
+            classes: (*self.program.classes).clone(),
+            functions: (*self.program.functions).clone(),
         }
     }
 
     /// Restore the VM to a previous state
     pub fn restore(&mut self, state: &VmState) {
-        self.locals = state.locals.clone();
-        self.classes = Arc::new(state.classes.clone());
-        self.functions = Arc::new(state.functions.clone());
+        self.context.locals = state.locals.clone();
+        self.program.classes = Arc::new(state.classes.clone());
+        self.program.functions = Arc::new(state.functions.clone());
     }
 
     /// Create the opcode dispatch table
@@ -1434,10 +1479,10 @@ impl VM {
     #[inline]
     fn op_load_const(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let idx = self.bytecode[self.pc()] as usize;
-        let s = self.strings.get(idx)
+        let idx = self.program.bytecode[self.pc()] as usize;
+        let s = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
         self.set_reg(rd, Value::String(s));
@@ -1448,9 +1493,9 @@ impl VM {
     #[inline]
     fn op_load_int(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let bytes: [u8; 8] = self.bytecode[self.pc()..self.pc() + 8]
+        let bytes: [u8; 8] = self.program.bytecode[self.pc()..self.pc() + 8]
             .try_into()
             .map_err(|_| Value::String("Invalid int encoding".to_string()))?;
         let n = i64::from_le_bytes(bytes);
@@ -1462,9 +1507,9 @@ impl VM {
     #[inline]
     fn op_load_float(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let bytes: [u8; 8] = self.bytecode[self.pc()..self.pc() + 8]
+        let bytes: [u8; 8] = self.program.bytecode[self.pc()..self.pc() + 8]
             .try_into()
             .map_err(|_| Value::String("Invalid float encoding".to_string()))?;
         let n = f64::from_le_bytes(bytes);
@@ -1476,9 +1521,9 @@ impl VM {
     #[inline]
     fn op_load_bool(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let b = self.bytecode[self.pc()] != 0;
+        let b = self.program.bytecode[self.pc()] != 0;
         self.set_reg(rd, Value::Bool(b));
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -1487,7 +1532,7 @@ impl VM {
     #[inline]
     fn op_load_null(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_reg(rd, Value::Null);
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -1496,9 +1541,9 @@ impl VM {
     #[inline]
     fn op_move(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         self.clone_reg(rd, rs);
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -1507,13 +1552,13 @@ impl VM {
     #[inline]
     fn op_load_local(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let idx = self.bytecode[self.pc()] as usize;
-        let name = self.strings.get(idx)
+        let idx = self.program.bytecode[self.pc()] as usize;
+        let name = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
-        let value = self.locals.get(&name).cloned().unwrap_or(Value::Null);
+        let value = self.context.locals.get(&name).cloned().unwrap_or(Value::Null);
         self.set_reg(rd, value);
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -1522,14 +1567,14 @@ impl VM {
     #[inline]
     fn op_store_local(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let idx = self.bytecode[self.pc()] as usize;
+        let idx = self.program.bytecode[self.pc()] as usize;
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
-        let name = self.strings.get(idx)
+        let rs = self.program.bytecode[self.pc()] as u8;
+        let name = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
         let value = self.get_reg(rs).clone();
-        self.locals.insert(name, value);
+        self.context.locals.insert(name, value);
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
     }
@@ -1537,12 +1582,12 @@ impl VM {
     #[inline]
     fn op_get_property(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let robj = self.bytecode[self.pc()] as u8;
+        let robj = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let idx = self.bytecode[self.pc()] as usize;
-        let name = self.strings.get(idx)
+        let idx = self.program.bytecode[self.pc()] as usize;
+        let name = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
 
@@ -1582,12 +1627,12 @@ impl VM {
     #[inline]
     fn op_set_property(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let robj = self.bytecode[self.pc()] as u8;
+        let robj = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let idx = self.bytecode[self.pc()] as usize;
+        let idx = self.program.bytecode[self.pc()] as usize;
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
-        let name = self.strings.get(idx)
+        let rs = self.program.bytecode[self.pc()] as u8;
+        let name = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
 
@@ -1607,38 +1652,38 @@ impl VM {
     #[inline]
     fn op_call(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let func_idx = self.bytecode[self.pc()] as usize;
+        let func_idx = self.program.bytecode[self.pc()] as usize;
         self.set_pc(self.pc() + 1);
-        let arg_start = self.bytecode[self.pc()] as u8;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let arg_count = self.bytecode[self.pc()] as u8;
+        let arg_count = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
 
-        let func_name_raw = self.strings.get(func_idx)
+        let func_name_raw = self.program.strings.get(func_idx)
             .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_idx)))?
             .clone();
 
-        let mut function_opt = self.functions.get(&func_name_raw).cloned();
+        let mut function_opt = self.program.functions.get(&func_name_raw).cloned();
 
         if function_opt.is_none() {
             if !func_name_raw.contains('.') {
-                if let Some(ref source) = self.source_file {
+                if let Some(ref source) = self.context.source_file {
                     let file_name = std::path::Path::new(source)
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("");
 
                     let qualified = format!("{}.{}", file_name, func_name_raw);
-                    function_opt = self.functions.get(&qualified).cloned();
+                    function_opt = self.program.functions.get(&qualified).cloned();
                 }
             }
         }
 
         if function_opt.is_none() {
             let search_name = func_name_raw.clone();
-            for (name, func) in self.functions.as_ref() {
+            for (name, func) in self.program.functions.as_ref() {
                 if name == &search_name || name.ends_with(&format!(".{}", search_name)) {
                     function_opt = Some(func.clone());
                     break;
@@ -1649,7 +1694,7 @@ impl VM {
         if function_opt.is_none() {
             if let Some(paren_pos) = func_name_raw.find('(') {
                 let base_name = &func_name_raw[..paren_pos];
-                for (name, func) in self.functions.as_ref() {
+                for (name, func) in self.program.functions.as_ref() {
                     if name == base_name || name.ends_with(&format!(".{}", base_name)) {
                         function_opt = Some(func.clone());
                         break;
@@ -1666,7 +1711,7 @@ impl VM {
 
         let base_class_name = extract_base_class_name(&func_name);
 
-        if let Some(class) = self.classes.get(base_class_name).cloned() {
+        if let Some(class) = self.program.classes.get(base_class_name).cloned() {
             let instance = Value::Instance(Arc::new(Mutex::new(Instance {
                 class: func_name.clone(),
                 fields: class.fields.clone(),
@@ -1681,11 +1726,11 @@ impl VM {
             }
         }
 
-        let native_idx = self.native_registry.get_index(&func_name)
-            .or_else(|| self.native_registry.get_index_by_prefix(&func_name));
+        let native_idx = self.program.native_registry.get_index(&func_name)
+            .or_else(|| self.program.native_registry.get_index_by_prefix(&func_name));
 
         if let Some(idx) = native_idx {
-            if let Some(func_type) = self.native_registry.get_by_index(idx) {
+            if let Some(func_type) = self.program.native_registry.get_by_index(idx) {
                 let mut args = Vec::new();
                 for i in 0..arg_count {
                     args.push(self.get_reg(arg_start + i).clone());
@@ -1700,7 +1745,7 @@ impl VM {
                         return Ok(ExecutionResult::Continue);
                     }
                     NativeResult::Pending => {
-                        self.pending_native_result = Some(rd);
+                        self.context.pending_native_result = Some(rd);
                         return Ok(ExecutionResult::Suspended);
                     }
                 }
@@ -1722,7 +1767,7 @@ impl VM {
             let caller_frame_base = self.frame_base();
             let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
 
-            if new_frame_base + function.register_count as usize > self.registers.len() {
+            if new_frame_base + function.register_count as usize > self.context.registers.len() {
                 return Err(Value::String("Register overflow: too many nested calls".to_string()));
             }
 
@@ -1734,9 +1779,9 @@ impl VM {
                 func_name.clone(),
                 function.source_file.clone(),
                 Arc::new(function.bytecode.clone()),
-                self.strings.clone(),
-                self.functions.clone(),
-                self.classes.clone(),
+                self.program.strings.clone(),
+                self.program.functions.clone(),
+                self.program.classes.clone(),
                 Some(rd),
             );
 
@@ -1755,15 +1800,15 @@ impl VM {
     #[inline]
     fn op_call_native(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let name_idx = self.bytecode[self.pc()] as usize;
+        let name_idx = self.program.bytecode[self.pc()] as usize;
         self.set_pc(self.pc() + 1);
-        let arg_start = self.bytecode[self.pc()] as u8;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let arg_count = self.bytecode[self.pc()] as u8;
+        let arg_count = self.program.bytecode[self.pc()] as u8;
 
-        let name = self.strings.get(name_idx)
+        let name = self.program.strings.get(name_idx)
             .ok_or_else(|| Value::String(format!("Invalid native name index: {}", name_idx)))?
             .clone();
 
@@ -1772,9 +1817,9 @@ impl VM {
             args.push(self.get_reg(arg_start + i).clone());
         }
 
-        let result = match self.native_registry.get_index(&name)
-            .or_else(|| self.native_registry.get_index_by_prefix(&name))
-            .and_then(|idx| self.native_registry.get_by_index(idx)) {
+        let result = match self.program.native_registry.get_index(&name)
+            .or_else(|| self.program.native_registry.get_index_by_prefix(&name))
+            .and_then(|idx| self.program.native_registry.get_by_index(idx)) {
             Some(func_type) => {
                 match func_type {
                     crate::linker::NativeFnType::Sync(f) => f(&mut args),
@@ -1782,7 +1827,7 @@ impl VM {
                 }
             }
             None => {
-                match self.fallback_native.clone() {
+                match self.program.fallback_native.clone() {
                     Some(func_type) => {
                         match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),
@@ -1802,7 +1847,7 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
             NativeResult::Pending => {
-                self.pending_native_result = Some(rd);
+                self.context.pending_native_result = Some(rd);
                 return Ok(ExecutionResult::Suspended);
             }
         }
@@ -1812,24 +1857,24 @@ impl VM {
     #[inline]
     fn op_call_native_indexed(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let func_idx_lo = self.bytecode[self.pc()] as u16;
+        let func_idx_lo = self.program.bytecode[self.pc()] as u16;
         self.set_pc(self.pc() + 1);
-        let func_idx_hi = self.bytecode[self.pc()] as u16;
+        let func_idx_hi = self.program.bytecode[self.pc()] as u16;
         self.set_pc(self.pc() + 1);
         let func_index = (func_idx_hi << 8) | func_idx_lo;
 
-        let arg_start = self.bytecode[self.pc()] as u8;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let arg_count = self.bytecode[self.pc()] as u8;
+        let arg_count = self.program.bytecode[self.pc()] as u8;
 
         let mut args = Vec::new();
         for i in 0..arg_count {
             args.push(self.get_reg(arg_start + i).clone());
         }
 
-        let result = match self.native_registry.get_by_index(func_index) {
+        let result = match self.program.native_registry.get_by_index(func_index) {
             Some(func_type) => {
                 match func_type {
                     crate::linker::NativeFnType::Sync(f) => f(&mut args),
@@ -1837,7 +1882,7 @@ impl VM {
                 }
             }
             None => {
-                match self.fallback_native.clone() {
+                match self.program.fallback_native.clone() {
                     Some(func_type) => {
                         match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),
@@ -1858,7 +1903,7 @@ impl VM {
             }
             NativeResult::Pending => {
                 self.set_pc(self.pc() + 1);
-                self.pending_native_result = Some(rd);
+                self.context.pending_native_result = Some(rd);
                 return Ok(ExecutionResult::Suspended);
             }
         }
@@ -1868,16 +1913,16 @@ impl VM {
     #[inline]
     fn op_invoke(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let method_idx = self.bytecode[self.pc()] as usize;
+        let method_idx = self.program.bytecode[self.pc()] as usize;
         self.set_pc(self.pc() + 1);
-        let arg_start = self.bytecode[self.pc()] as u8;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let arg_count = self.bytecode[self.pc()] as u8;
+        let arg_count = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
 
-        let name = self.strings.get(method_idx)
+        let name = self.program.strings.get(method_idx)
             .ok_or_else(|| Value::String(format!("Invalid method index: {}", method_idx)))?
             .clone();
 
@@ -2055,7 +2100,7 @@ impl VM {
         };
 
         let class_name = instance.lock().unwrap().class.clone();
-        if let Some(class) = self.classes.get(&class_name).cloned() {
+        if let Some(class) = self.program.classes.get(&class_name).cloned() {
             if let Some(native_method) = class.native_methods.get(&name) {
                 let mut method_args = args.clone();
                 let result = native_method(&mut method_args);
@@ -2070,7 +2115,7 @@ impl VM {
                     }
                     NativeResult::Pending => {
                         self.set_pc(self.pc() + 1);
-                        self.pending_native_result = Some(rd);
+                        self.context.pending_native_result = Some(rd);
                         return Ok(ExecutionResult::Suspended);
                     }
                 }
@@ -2112,7 +2157,7 @@ impl VM {
                     let caller_frame_base = self.frame_base();
                     let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
 
-                    if new_frame_base + method.register_count as usize > self.registers.len() {
+                    if new_frame_base + method.register_count as usize > self.context.registers.len() {
                         return Err(Value::String("Register overflow in method call".to_string()));
                     }
 
@@ -2122,11 +2167,11 @@ impl VM {
                         arg_count,
                         method.register_count,
                         format!("{}.{}", class_name, name),
-                        self.source_file.clone(),
+                        self.context.source_file.clone(),
                         Arc::new(method.bytecode.clone()),
-                        self.strings.clone(),
-                        self.functions.clone(),
-                        self.classes.clone(),
+                        self.program.strings.clone(),
+                        self.program.functions.clone(),
+                        self.program.classes.clone(),
                         Some(rd),
                     );
 
@@ -2188,13 +2233,13 @@ impl VM {
     #[inline]
     fn op_invoke_interface(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let method_idx = self.bytecode[self.pc()] as usize;
+        let method_idx = self.program.bytecode[self.pc()] as usize;
         self.set_pc(self.pc() + 1);
-        let arg_start = self.bytecode[self.pc()] as u8;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let arg_count = self.bytecode[self.pc()] as u8;
+        let arg_count = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
 
         let mut args = Vec::new();
@@ -2210,7 +2255,7 @@ impl VM {
 
         let class_name = instance.lock().unwrap().class.clone();
 
-        if let Some(class) = self.classes.get(&class_name).cloned() {
+        if let Some(class) = self.program.classes.get(&class_name).cloned() {
             let method_name = class.vtable.get(method_idx)
                 .ok_or_else(|| Value::String(format!(
                     "Vtable method index {} out of range for class '{}' (vtable size: {})",
@@ -2232,7 +2277,7 @@ impl VM {
                 let caller_frame_base = self.frame_base();
                 let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
 
-                if new_frame_base + method.register_count as usize > self.registers.len() {
+                if new_frame_base + method.register_count as usize > self.context.registers.len() {
                     return Err(Value::String("Register overflow in interface method call".to_string()));
                 }
 
@@ -2242,11 +2287,11 @@ impl VM {
                     arg_count,
                     method.register_count,
                     format!("{}.{}", class_name, method_name),
-                    self.source_file.clone(),
+                    self.context.source_file.clone(),
                     Arc::new(method.bytecode.clone()),
-                    self.strings.clone(),
-                    self.functions.clone(),
-                    self.classes.clone(),
+                    self.program.strings.clone(),
+                    self.program.functions.clone(),
+                    self.program.classes.clone(),
                     Some(rd),
                 );
 
@@ -2263,7 +2308,7 @@ impl VM {
                 let mut found_iface_name = None;
 
                 for iface_name in &class.parent_interfaces {
-                    if let Some(iface) = self.classes.get(iface_name) {
+                    if let Some(iface) = self.program.classes.get(iface_name) {
                         let method = iface.methods.iter().find(|(k, _)| {
                             if let Some(paren_pos) = k.find('(') {
                                 &k[..paren_pos] == method_name
@@ -2288,7 +2333,7 @@ impl VM {
                     let caller_frame_base = self.frame_base();
                     let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
 
-                    if new_frame_base + method.register_count as usize > self.registers.len() {
+                    if new_frame_base + method.register_count as usize > self.context.registers.len() {
                         return Err(Value::String("Register overflow in interface method call".to_string()));
                     }
 
@@ -2298,11 +2343,11 @@ impl VM {
                         arg_count,
                         method.register_count,
                         format!("{}.{}", iface_name, method_name),
-                        self.source_file.clone(),
+                        self.context.source_file.clone(),
                         Arc::new(method.bytecode.clone()),
-                        self.strings.clone(),
-                        self.functions.clone(),
-                        self.classes.clone(),
+                        self.program.strings.clone(),
+                        self.program.functions.clone(),
+                        self.program.classes.clone(),
                         Some(rd),
                     );
 
@@ -2325,7 +2370,7 @@ impl VM {
     #[inline]
     fn op_return(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         let return_value = self.get_reg(rs).clone();
 
         let frame = self.pop_frame().unwrap();
@@ -2342,8 +2387,8 @@ impl VM {
     fn op_jump(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
         let target = u16::from_le_bytes([
-            self.bytecode[self.pc()],
-            self.bytecode[self.pc() + 1],
+            self.program.bytecode[self.pc()],
+            self.program.bytecode[self.pc() + 1],
         ]) as usize;
         self.set_pc(target);
         Ok(ExecutionResult::Continue)
@@ -2352,11 +2397,11 @@ impl VM {
     #[inline]
     fn op_jump_if_true(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
         let target = u16::from_le_bytes([
-            self.bytecode[self.pc()],
-            self.bytecode[self.pc() + 1],
+            self.program.bytecode[self.pc()],
+            self.program.bytecode[self.pc() + 1],
         ]) as usize;
         if self.get_reg(rs).is_truthy() {
             self.set_pc(target);
@@ -2369,11 +2414,11 @@ impl VM {
     #[inline]
     fn op_jump_if_false(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
         let target = u16::from_le_bytes([
-            self.bytecode[self.pc()],
-            self.bytecode[self.pc() + 1],
+            self.program.bytecode[self.pc()],
+            self.program.bytecode[self.pc() + 1],
         ]) as usize;
         if !self.get_reg(rs).is_truthy() {
             self.set_pc(target);
@@ -2386,11 +2431,11 @@ impl VM {
     #[inline]
     fn op_equal(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         self.set_reg(rd, Value::Bool(self.get_reg(rs1) == self.get_reg(rs2)));
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -2399,11 +2444,11 @@ impl VM {
     #[inline]
     fn op_not_equal(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         self.set_reg(rd, Value::Bool(self.get_reg(rs1) != self.get_reg(rs2)));
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -2412,11 +2457,11 @@ impl VM {
     #[inline]
     fn op_greater(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2436,11 +2481,11 @@ impl VM {
     #[inline]
     fn op_less(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2460,11 +2505,11 @@ impl VM {
     #[inline]
     fn op_greater_equal(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2484,11 +2529,11 @@ impl VM {
     #[inline]
     fn op_less_equal(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2508,11 +2553,11 @@ impl VM {
     #[inline]
     fn op_and(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         self.set_reg(rd, Value::Bool(self.get_reg(rs1).is_truthy() && self.get_reg(rs2).is_truthy()));
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -2521,11 +2566,11 @@ impl VM {
     #[inline]
     fn op_or(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         self.set_reg(rd, Value::Bool(self.get_reg(rs1).is_truthy() || self.get_reg(rs2).is_truthy()));
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -2534,9 +2579,9 @@ impl VM {
     #[inline]
     fn op_not(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         self.set_reg(rd, Value::Bool(!self.get_reg(rs).is_truthy()));
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
@@ -2545,11 +2590,11 @@ impl VM {
     #[inline]
     fn op_add(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2576,11 +2621,11 @@ impl VM {
     #[inline]
     fn op_subtract(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2604,11 +2649,11 @@ impl VM {
     #[inline]
     fn op_multiply(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2632,11 +2677,11 @@ impl VM {
     #[inline]
     fn op_divide(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2675,11 +2720,11 @@ impl VM {
     #[inline]
     fn op_modulo(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = match (left, right) {
@@ -2709,11 +2754,11 @@ impl VM {
     #[inline]
     fn op_bit_and(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
@@ -2729,11 +2774,11 @@ impl VM {
     #[inline]
     fn op_bit_or(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
@@ -2749,11 +2794,11 @@ impl VM {
     #[inline]
     fn op_bit_xor(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
@@ -2769,9 +2814,9 @@ impl VM {
     #[inline]
     fn op_bit_not(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         let value = self.get_reg(rs);
         let result = if value.is_arithmetic_int() {
             Value::Int64(!value.to_arithmetic_int().unwrap())
@@ -2786,11 +2831,11 @@ impl VM {
     #[inline]
     fn op_shift_left(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
@@ -2807,11 +2852,11 @@ impl VM {
     #[inline]
     fn op_shift_right(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs1 = self.bytecode[self.pc()] as u8;
+        let rs1 = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs2 = self.bytecode[self.pc()] as u8;
+        let rs2 = self.program.bytecode[self.pc()] as u8;
         let left = self.get_reg(rs1);
         let right = self.get_reg(rs2);
         let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
@@ -2828,11 +2873,11 @@ impl VM {
     #[inline]
     fn op_concat(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs_start = self.bytecode[self.pc()] as u8;
+        let rs_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let count = self.bytecode[self.pc()] as u8;
+        let count = self.program.bytecode[self.pc()] as u8;
 
         let mut result = String::new();
         for i in 0..count {
@@ -2846,11 +2891,11 @@ impl VM {
     #[inline]
     fn op_convert(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let cast_type = self.bytecode[self.pc()];
+        let cast_type = self.program.bytecode[self.pc()];
 
         let value = self.get_reg(rs).clone();
         let result = match cast_type {
@@ -2929,11 +2974,11 @@ impl VM {
     #[inline]
     fn op_array(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let rs_start = self.bytecode[self.pc()] as u8;
+        let rs_start = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let count = self.bytecode[self.pc()] as u8;
+        let count = self.program.bytecode[self.pc()] as u8;
 
         let mut elements = Vec::new();
         for i in 0..count {
@@ -2948,11 +2993,11 @@ impl VM {
     #[inline]
     fn op_index(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rd = self.bytecode[self.pc()] as u8;
+        let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let r_obj = self.bytecode[self.pc()] as u8;
+        let r_obj = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let r_idx = self.bytecode[self.pc()] as u8;
+        let r_idx = self.program.bytecode[self.pc()] as u8;
 
         let obj = self.get_reg(r_obj).clone();
         let idx_val = self.get_reg(r_idx).clone();
@@ -2979,14 +3024,14 @@ impl VM {
     fn op_line(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
         let line = u16::from_le_bytes([
-            self.bytecode[self.pc()],
-            self.bytecode[self.pc() + 1],
+            self.program.bytecode[self.pc()],
+            self.program.bytecode[self.pc() + 1],
         ]) as usize;
         self.set_line(line);
         self.set_pc(self.pc() + 2);
 
         if self.is_debugging {
-            if let Some(ref file) = self.source_file {
+            if let Some(ref file) = self.context.source_file {
                 if self.breakpoints.contains(&(file.clone(), line)) {
                     return Ok(ExecutionResult::Breakpoint);
                 }
@@ -2999,24 +3044,24 @@ impl VM {
     fn op_try_start(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
         let catch_pc = u16::from_le_bytes([
-            self.bytecode[self.pc()],
-            self.bytecode[self.pc() + 1],
+            self.program.bytecode[self.pc()],
+            self.program.bytecode[self.pc() + 1],
         ]) as usize;
         self.set_pc(self.pc() + 2);
-        let catch_reg = self.bytecode[self.pc()] as u8;
+        let catch_reg = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
 
-        self.exception_handlers.push(ExceptionHandler {
+        self.context.exception_handlers.push(ExceptionHandler {
             catch_pc,
             catch_register: catch_reg as usize,
-            call_stack_depth: self.call_stack.len(),
+            call_stack_depth: self.context.call_stack.len(),
         });
         Ok(ExecutionResult::Continue)
     }
 
     #[inline]
     fn op_try_end(&mut self) -> Result<ExecutionResult, Value> {
-        self.exception_handlers.pop();
+        self.context.exception_handlers.pop();
         self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
     }
@@ -3024,7 +3069,7 @@ impl VM {
     #[inline]
     fn op_throw(&mut self) -> Result<ExecutionResult, Value> {
         self.set_pc(self.pc() + 1);
-        let rs = self.bytecode[self.pc()] as u8;
+        let rs = self.program.bytecode[self.pc()] as u8;
         Err(self.get_reg(rs).clone())
     }
 
@@ -3042,7 +3087,7 @@ impl VM {
 
     #[inline]
     fn op_unknown(&mut self) -> Result<ExecutionResult, Value> {
-        let opcode = self.bytecode[self.pc()];
+        let opcode = self.program.bytecode[self.pc()];
         Err(Value::String(format!("Unknown opcode: 0x{:02X}", opcode)))
     }
 }

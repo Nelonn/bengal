@@ -42,7 +42,7 @@ async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> R
     // but the linker needs to have the same registry for bytecode linking
     if let Some(linker) = executor.linker.as_mut() {
         let registry = linker.registry();
-        *registry.write().unwrap() = executor.vm.native_registry.clone();
+        *registry.write().unwrap() = executor.vm.program.native_registry.clone();
     }
 
     // Pass arguments to the script as ARGV

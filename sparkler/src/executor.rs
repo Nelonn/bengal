@@ -40,7 +40,7 @@ impl Executor {
         let registry = linker.registry();
         let mut vm = VM::new();
         // Share the same registry between VM and linker
-        vm.native_registry = (*registry.read().unwrap()).clone();
+        vm.program.native_registry = (*registry.read().unwrap()).clone();
         let (tx, rx) = channel();
         Self {
             vm,
@@ -53,7 +53,7 @@ impl Executor {
     /// Create a new executor with a shared registry
     pub fn with_registry(registry: Arc<RwLock<NativeFunctionRegistry>>) -> Self {
         let mut vm = VM::new();
-        vm.native_registry = (*registry.read().unwrap()).clone();
+        vm.program.native_registry = (*registry.read().unwrap()).clone();
         let (tx, rx) = channel();
         Self {
             vm,
@@ -70,7 +70,7 @@ impl Executor {
 
     /// Get the native function registry
     pub fn registry(&mut self) -> &mut NativeFunctionRegistry {
-        &mut self.vm.native_registry
+        &mut self.vm.program.native_registry
     }
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
@@ -79,7 +79,7 @@ impl Executor {
             linker.register(name, f);
             // Update VM registry from linker
             let registry = linker.registry();
-            self.vm.native_registry = (*registry.read().unwrap()).clone();
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
         } else {
             self.vm.register_native(name, f);
         }
@@ -93,24 +93,24 @@ impl Executor {
                 let mut guard = registry.write().unwrap();
                 guard.set_fallback(f);
             }
-            self.vm.native_registry = (*registry.read().unwrap()).clone();
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
         } else {
             self.vm.register_fallback(f);
         }
     }
 
     /// Link bytecode to native functions using indexed calls
-    /// 
+    ///
     /// This converts string-based CallNative to indexed CallNativeIndexed
     /// for O(1) lookup during execution.
     pub fn link_bytecode(&mut self, bytecode: &mut Bytecode) {
         if let Some(ref mut linker) = self.linker {
             // Update VM registry from linker
             let registry = linker.registry();
-            self.vm.native_registry = (*registry.read().unwrap()).clone();
-            
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
+
             // Convert CallNative to CallNativeIndexed
-            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.native_registry);
+            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.program.native_registry);
         }
     }
 
@@ -170,7 +170,7 @@ impl Executor {
 
         // Link bytecode if linker is available
         if self.linker.is_some() {
-            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
+            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.program.native_registry);
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
@@ -200,7 +200,7 @@ impl Executor {
 
         // Link bytecode if linker is available
         if self.linker.is_some() {
-            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
+            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.program.native_registry);
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
@@ -275,11 +275,11 @@ impl Executor {
     }
 
     /// Hot-swap a native function at runtime
-    /// 
+    ///
     /// This replaces the function implementation without recompiling bytecode.
     /// The new implementation will be used on the next call.
     pub fn hot_swap(&mut self, name: &str, new_func: NativeFn) -> bool {
-        self.vm.native_registry.hot_swap(name, new_func)
+        self.vm.program.native_registry.hot_swap(name, new_func)
     }
 
     /// Set a breakpoint in a source file at a specific line
@@ -291,8 +291,8 @@ impl Executor {
     pub fn relink(&mut self, bytecode: &mut Bytecode) {
         if let Some(ref mut linker) = self.linker {
             let registry = linker.registry();
-            self.vm.native_registry = (*registry.read().unwrap()).clone();
-            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.native_registry);
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
+            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.program.native_registry);
         }
     }
 }
