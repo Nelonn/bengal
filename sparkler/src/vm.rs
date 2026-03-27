@@ -790,7 +790,7 @@ pub struct VM {
     /// Current line being executed
     current_line: usize,
     /// Breakpoints for debugging
-    pub breakpoints: std::collections::HashSet<(String, usize)>,
+    pub breakpoints: HashSet<(String, usize)>,
     /// Whether debugging mode is enabled
     pub is_debugging: bool,
     /// Vtables for interface method dispatch (indexed by vtable_idx)
@@ -809,6 +809,8 @@ pub struct VM {
     saved_native_registry: Option<NativeFunctionRegistry>,
     /// Saved classes for function call suspension
     saved_classes: Option<HashMap<String, Class>>,
+    /// Opcode dispatch table for fast execution
+    dispatch_table: [OpcodeHandler; 256],
 }
 
 /// VTable entry for interface method dispatch
@@ -865,6 +867,7 @@ impl VM {
             saved_functions: None,
             saved_native_registry: None,
             saved_classes: None,
+            dispatch_table: VM::create_dispatch_table(),
         }
     }
 
@@ -1175,1726 +1178,11 @@ impl VM {
         Exception::new(message, stack_trace)
     }
 
+    /// Execute a single opcode using the dispatch table
+    #[inline]
     fn execute(&mut self, opcode: u8) -> Result<ExecutionResult, Value> {
-        match opcode {
-            x if x == Opcode::Nop as u8 => {
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Load constant string into register
-            // Format: [LoadConst, Rd, string_idx]
-            x if x == Opcode::LoadConst as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let idx = self.bytecode[self.pc()] as usize;
-                let s = self.strings.get(idx)
-                    .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
-                    .clone();
-                self.set_reg(rd, Value::String(s));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Load 64-bit integer into register
-            // Format: [LoadInt, Rd, 8 bytes (little endian)]
-            x if x == Opcode::LoadInt as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let bytes: [u8; 8] = self.bytecode[self.pc()..self.pc() + 8]
-                    .try_into()
-                    .map_err(|_| Value::String("Invalid int encoding".to_string()))?;
-                let n = i64::from_le_bytes(bytes);
-                self.set_reg(rd, Value::Int64(n));
-                self.set_pc(self.pc() + 8);
-            }
-
-            // Load 64-bit float into register
-            // Format: [LoadFloat, Rd, 8 bytes (little endian)]
-            x if x == Opcode::LoadFloat as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let bytes: [u8; 8] = self.bytecode[self.pc()..self.pc() + 8]
-                    .try_into()
-                    .map_err(|_| Value::String("Invalid float encoding".to_string()))?;
-                let n = f64::from_le_bytes(bytes);
-                self.set_reg(rd, Value::Float64(n));
-                self.set_pc(self.pc() + 8);
-            }
-
-            // Load boolean into register
-            // Format: [LoadBool, Rd, 0/1]
-            x if x == Opcode::LoadBool as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let b = self.bytecode[self.pc()] != 0;
-                self.set_reg(rd, Value::Bool(b));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Load null into register
-            // Format: [LoadNull, Rd]
-            x if x == Opcode::LoadNull as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_reg(rd, Value::Null);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Move value from one register to another
-            // Format: [Move, Rd, Rs]
-            x if x == Opcode::Move as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                self.clone_reg(rd, rs);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Load local variable into register
-            // Format: [LoadLocal, Rd, name_idx]
-            x if x == Opcode::LoadLocal as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let idx = self.bytecode[self.pc()] as usize;
-                let name = self.strings.get(idx)
-                    .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
-                    .clone();
-                let value = self.locals.get(&name).cloned().unwrap_or(Value::Null);
-                self.set_reg(rd, value);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Store register value to local variable
-            // Format: [StoreLocal, name_idx, Rs]
-            x if x == Opcode::StoreLocal as u8 => {
-                self.set_pc(self.pc() + 1);
-                let idx = self.bytecode[self.pc()] as usize;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                let name = self.strings.get(idx)
-                    .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
-                    .clone();
-                let value = self.get_reg(rs).clone();
-                self.locals.insert(name, value);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Get property from instance
-            // Format: [GetProperty, Rd, Robj, name_idx]
-            x if x == Opcode::GetProperty as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let robj = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let idx = self.bytecode[self.pc()] as usize;
-                let name = self.strings.get(idx)
-                    .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
-                    .clone();
-
-                let robj_val = self.get_reg(robj).clone();
-                match robj_val {
-                    Value::Instance(instance) => {
-                        let instance_lock = instance.lock().unwrap();
-                        let value = instance_lock.fields.get(&name).cloned().unwrap_or(Value::Null);
-                        self.set_reg(rd, value);
-                    }
-                    Value::Exception(exception) => {
-                        if name == "message" {
-                            self.set_reg(rd, Value::String(exception.message.clone()));
-                        } else if name == "stack_trace" {
-                            let trace = exception.stack_trace.iter().map(|f| f.to_string()).collect::<Vec<String>>().join("\n");
-                            self.set_reg(rd, Value::String(trace));
-                        } else {
-                            self.set_reg(rd, Value::Null);
-                        }
-                    }
-                    Value::Array(arr) => {
-                        // Handle array properties
-                        if name == "length" {
-                            let elements = arr.lock().unwrap();
-                            self.set_reg(rd, Value::Int64(elements.len() as i64));
-                        } else {
-                            return Err(Value::String(format!("Unknown property '{}' on Array", name)));
-                        }
-                    }
-                    _ => {
-                        return Err(Value::String(format!("Expected instance for property get, got {:?}", robj_val)));
-                    }
-                }
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Set property on instance
-            // Format: [SetProperty, Robj, name_idx, Rs]
-            x if x == Opcode::SetProperty as u8 => {
-                self.set_pc(self.pc() + 1);
-                let robj = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let idx = self.bytecode[self.pc()] as usize;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                let name = self.strings.get(idx)
-                    .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
-                    .clone();
-
-                let value = self.get_reg(rs).clone();
-                let instance = if let Value::Instance(instance) = self.get_reg(robj) {
-                    instance.clone()
-                } else {
-                    return Err(Value::String("Expected instance for property set".to_string()));
-                };
-
-                let mut instance_lock = instance.lock().unwrap();
-                instance_lock.fields.insert(name, value);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Call function
-            // Format: [Call, Rd, func_idx, arg_start, arg_count]
-            // Rd receives the result, args are in registers [arg_start..arg_start+arg_count]
-            x if x == Opcode::Call as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let func_idx = self.bytecode[self.pc()] as usize;
-                self.set_pc(self.pc() + 1);
-                let arg_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let arg_count = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);  // Advance PC past all operands
-
-                let func_name_raw = self.strings.get(func_idx)
-                    .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_idx)))?
-                    .clone();
-                
-                // Try to find the function with various name variants (robust lookup)
-                let mut function_opt = self.functions.get(&func_name_raw).cloned();
-                
-                if function_opt.is_none() {
-                    // Try with module prefix if not present
-                    if !func_name_raw.contains('.') {
-                        if let Some(ref source) = self.source_file {
-                            // Try both with and without directory prefix
-                            let file_name = std::path::Path::new(source)
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("");
-                            
-                            let qualified = format!("{}.{}", file_name, func_name_raw);
-                            function_opt = self.functions.get(&qualified).cloned();
-                        }
-                    }
-                }
-                
-                if function_opt.is_none() {
-                    // Try by searching for ANY function that ends with .name or is just name
-                    let search_name = if func_name_raw.contains('(') {
-                        func_name_raw.clone()
-                    } else {
-                        func_name_raw.clone()
-                    };
-                    
-                    for (name, func) in self.functions.as_ref() {
-                        if name == &search_name || name.ends_with(&format!(".{}", search_name)) {
-                            function_opt = Some(func.clone());
-                            break;
-                        }
-                    }
-                }
-
-                if function_opt.is_none() {
-                    // Try without signature
-                    if let Some(paren_pos) = func_name_raw.find('(') {
-                        let base_name = &func_name_raw[..paren_pos];
-                        for (name, func) in self.functions.as_ref() {
-                            if name == base_name || name.ends_with(&format!(".{}", base_name)) {
-                                function_opt = Some(func.clone());
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                let func_name = if let Some(ref f) = function_opt {
-                    f.name.clone()
-                } else {
-                    func_name_raw.clone()
-                };
-
-                // For generic class instantiations like Array<T>, extract base class name
-                let base_class_name = extract_base_class_name(&func_name);
-
-                // Check if it's a class constructor
-                if let Some(class) = self.classes.get(base_class_name).cloned() {
-                    // ...
-                    let instance = Value::Instance(Arc::new(Mutex::new(Instance {
-                        class: func_name.clone(),
-                        fields: class.fields.clone(),
-                        private_fields: class.private_fields.clone(),
-                        native_data: Arc::new(Mutex::new(None)),
-                    })));
-                    self.set_reg(rd, instance.clone());
-
-                    // Call native_create if it exists
-                    if let Some(native_create) = class.native_create {
-                        let mut args = vec![instance];
-                        let _ = native_create(&mut args);
-                    }
-                }
-                // Check if it's a native function using indexed registry lookup
-                // Try exact match first, then prefix match (for names without signature)
-                let native_idx = self.native_registry.get_index(&func_name)
-                    .or_else(|| self.native_registry.get_index_by_prefix(&func_name));
-                
-                if let Some(idx) = native_idx {
-                    if let Some(func_type) = self.native_registry.get_by_index(idx) {
-                        let mut args = Vec::new();
-                        for i in 0..arg_count {
-                            args.push(self.get_reg(arg_start + i).clone());
-                        }
-                        let result = match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                            crate::linker::NativeFnType::Async(_f) => {
-                                NativeResult::Pending
-                            }
-                        };
-                        match result {
-                            NativeResult::Ready(val) => {
-                                self.set_reg(rd, val);
-                                return Ok(ExecutionResult::Continue);
-                            }
-                            NativeResult::Pending => {
-                                // VM should suspend - save state for callback
-                                self.pending_native_result = Some(rd);
-                                return Ok(ExecutionResult::Suspended);
-                            }
-                        }
-                    } else {
-                        return Err(Value::String(format!("Native function not found: {}", func_name)));
-                    }
-                }
-                // Check if it's a bytecode function
-                if let Some(function) = function_opt {
-                    // Collect arguments
-                    let mut args = Vec::new();
-
-                    
-                    // For constructor calls, prepend 'self' (the instance in rd) as the first argument
-                    let is_constructor = func_name.contains("_constructor(");
-                    if is_constructor {
-                        // The instance was already created and stored in rd above
-                        args.push(self.get_reg(rd).clone());
-                    }
-                    
-                    for i in 0..arg_count {
-                        args.push(self.get_reg(arg_start + i).clone());
-                    }
-
-                    let caller_frame_base = self.frame_base();
-
-                    // Calculate new frame base - place args in R1..Rn of new frame
-                    // R0 of new frame will be the return value
-                    let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-
-                    // Check register bounds
-                    if new_frame_base + function.register_count as usize > self.registers.len() {
-                        return Err(Value::String("Register overflow: too many nested calls".to_string()));
-                    }
-
-                    // Set up new frame
-                    let new_frame = CallFrame::new(
-                        0,
-                        new_frame_base,
-                        function.param_count,
-                        function.register_count,
-                        func_name.clone(),
-                        function.source_file.clone(),
-                        Arc::new(function.bytecode.clone()),
-                        self.strings.clone(),
-                        self.functions.clone(),
-                        self.classes.clone(),
-                        Some(rd),
-                    );
-
-                    self.push_frame(new_frame);
-
-                    // Copy arguments to parameter registers (R1..Rn)
-                    for (i, arg) in args.iter().enumerate() {
-                        self.set_reg((i + 1) as u8, arg.clone());
-                    }
-
-                    return Ok(ExecutionResult::Continue);
-                } else {
-                    return Err(Value::String(format!("Function not found: {}", func_name)));
-                }
-            }
-
-            // Call native function
-            // Format: [CallNative, Rd, name_idx, arg_start, arg_count]
-            x if x == Opcode::CallNative as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let name_idx = self.bytecode[self.pc()] as usize;
-                self.set_pc(self.pc() + 1);
-                let arg_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let arg_count = self.bytecode[self.pc()] as u8;
-
-                let name = self.strings.get(name_idx)
-                    .ok_or_else(|| Value::String(format!("Invalid native name index: {}", name_idx)))?
-                    .clone();
-
-                let mut args = Vec::new();
-                for i in 0..arg_count {
-                    args.push(self.get_reg(arg_start + i).clone());
-                }
-
-                // Try indexed lookup first (exact match), then prefix match (for names without signature)
-                // fall back to fallback handler
-                let result = match self.native_registry.get_index(&name)
-                    .or_else(|| self.native_registry.get_index_by_prefix(&name))
-                    .and_then(|idx| self.native_registry.get_by_index(idx)) {
-                    Some(func_type) => {
-                        match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                            crate::linker::NativeFnType::Async(_f) => {
-                                // For async functions, return Pending to suspend VM
-                                NativeResult::Pending
-                            }
-                        }
-                    }
-                    None => {
-                        match self.fallback_native.clone() {
-                            Some(func_type) => {
-                                match func_type {
-                                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                                    crate::linker::NativeFnType::Async(_f) => {
-                                        NativeResult::Pending
-                                    }
-                                }
-                            }
-                            None => {
-                                return Err(Value::String(format!("Native function not found: {}", name)));
-                            }
-                        }
-                    }
-                };
-
-                match result {
-                    NativeResult::Ready(val) => {
-                        self.set_reg(rd, val);
-                        self.set_pc(self.pc() + 1);
-                    }
-                    NativeResult::Pending => {
-                        // VM should suspend - save state for callback
-                        self.pending_native_result = Some(rd);
-                        return Ok(ExecutionResult::Suspended);
-                    }
-                }
-            }
-
-            // Call native function by index (optimized - O(1) lookup)
-            // Format: [CallNativeIndexed, Rd, func_idx_lo, func_idx_hi, arg_start, arg_count]
-            x if x == Opcode::CallNativeIndexed as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                // Read u16 function index (little-endian)
-                let func_idx_lo = self.bytecode[self.pc()] as u16;
-                self.set_pc(self.pc() + 1);
-                let func_idx_hi = self.bytecode[self.pc()] as u16;
-                self.set_pc(self.pc() + 1);
-                let func_index = (func_idx_hi << 8) | func_idx_lo;
-
-                let arg_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let arg_count = self.bytecode[self.pc()] as u8;
-
-                let mut args = Vec::new();
-                for i in 0..arg_count {
-                    args.push(self.get_reg(arg_start + i).clone());
-                }
-
-                // Direct indexed lookup - O(1)
-                let result = match self.native_registry.get_by_index(func_index) {
-                    Some(func_type) => {
-                        match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                            crate::linker::NativeFnType::Async(_f) => {
-                                NativeResult::Pending
-                            }
-                        }
-                    }
-                    None => {
-                        match self.fallback_native.clone() {
-                            Some(func_type) => {
-                                match func_type {
-                                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
-                                    crate::linker::NativeFnType::Async(_f) => {
-                                        NativeResult::Pending
-                                    }
-                                }
-                            }
-                            None => {
-                                return Err(Value::String(format!("Native function not found at index: {}", func_index)));
-                            }
-                        }
-                    }
-                };
-
-                match result {
-                    NativeResult::Ready(val) => {
-                        self.set_reg(rd, val);
-                        self.set_pc(self.pc() + 1);
-                    }
-                    NativeResult::Pending => {
-                        // VM should suspend - save state for callback
-                        self.set_pc(self.pc() + 1);
-                        self.pending_native_result = Some(rd);
-                        return Ok(ExecutionResult::Suspended);
-                    }
-                }
-            }
-
-            // Invoke method on instance
-            // Format: [Invoke, Rd, method_idx, arg_start, arg_count]
-            // First argument (arg_start) is the receiver (self)
-            x if x == Opcode::Invoke as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let method_idx = self.bytecode[self.pc()] as usize;
-                self.set_pc(self.pc() + 1);
-                let arg_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let arg_count = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);  // Advance PC past all operands
-
-                let name = self.strings.get(method_idx)
-                    .ok_or_else(|| Value::String(format!("Invalid method index: {}", method_idx)))?
-                    .clone();
-
-                let mut args = Vec::new();
-                for i in 0..arg_count {
-                    args.push(self.get_reg(arg_start + i).clone());
-                }
-
-                // Check if this is an array method call
-                if let Some(Value::Array(_)) = args.first() {
-                    // Handle array native methods directly
-                    // Strip parameter signature from mangled name (e.g., "add(Unknown)" -> "add")
-                    let base_name = if let Some(paren_pos) = name.find('(') {
-                        &name[..paren_pos]
-                    } else {
-                        &name
-                    };
-
-                    let result = match base_name {
-                        "length" => {
-                            if let Value::Array(arr) = &args[0] {
-                                let elements = arr.lock().unwrap();
-                                Ok(Value::Int64(elements.len() as i64))
-                            } else {
-                                Err(Value::String("length requires an array".to_string()))
-                            }
-                        }
-                        "add" => {
-                            if args.len() < 2 {
-                                Err(Value::String("add requires a value argument".to_string()))
-                            } else if let Value::Array(arr) = &args[0] {
-                                let mut elements = arr.lock().unwrap();
-                                elements.push(args[1].clone());
-                                Ok(Value::Null)
-                            } else {
-                                Err(Value::String("add requires an array".to_string()))
-                            }
-                        }
-                        _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
-                    };
-                    self.set_reg(rd, result?);
-                    self.set_pc(self.pc() + 1);
-                // Check if this is a string method call
-                } else if let Some(Value::String(_)) = args.first() {
-                    // Strip parameter signature from mangled name (e.g., "toInt()" -> "toInt")
-                    let base_name = if let Some(paren_pos) = name.find('(') {
-                        &name[..paren_pos]
-                    } else {
-                        &name
-                    };
-
-                    let result = match base_name {
-                        "length" => {
-                            if let Value::String(s) = &args[0] {
-                                Ok(Value::Int64(s.len() as i64))
-                            } else {
-                                Err(Value::String("length requires a string".to_string()))
-                            }
-                        }
-                        "trim" => {
-                            if let Value::String(s) = &args[0] {
-                                Ok(Value::String(s.trim().to_string()))
-                            } else {
-                                Err(Value::String("trim requires a string".to_string()))
-                            }
-                        }
-                        "toInt" => {
-                            if let Value::String(s) = &args[0] {
-                                match s.parse::<i64>() {
-                                    Ok(n) => Ok(Value::Int64(n)),
-                                    Err(_) => Ok(Value::Null),
-                                }
-                            } else {
-                                Err(Value::String("toInt requires a string".to_string()))
-                            }
-                        }
-                        "toFloat" => {
-                            if let Value::String(s) = &args[0] {
-                                match s.parse::<f64>() {
-                                    Ok(n) => Ok(Value::Float64(n)),
-                                    Err(_) => Ok(Value::Null),
-                                }
-                            } else {
-                                Err(Value::String("toFloat requires a string".to_string()))
-                            }
-                        }
-                        "contains" => {
-                            if args.len() < 2 {
-                                Err(Value::String("contains requires a string argument".to_string()))
-                            } else if let (Value::String(s), Value::String(substr)) = (&args[0], &args[1]) {
-                                Ok(Value::Bool(s.contains(substr)))
-                            } else {
-                                Err(Value::String("contains requires string arguments".to_string()))
-                            }
-                        }
-                        "startsWith" => {
-                            if args.len() < 2 {
-                                Err(Value::String("startsWith requires a string argument".to_string()))
-                            } else if let (Value::String(s), Value::String(prefix)) = (&args[0], &args[1]) {
-                                Ok(Value::Bool(s.starts_with(prefix)))
-                            } else {
-                                Err(Value::String("startsWith requires string arguments".to_string()))
-                            }
-                        }
-                        "endsWith" => {
-                            if args.len() < 2 {
-                                Err(Value::String("endsWith requires a string argument".to_string()))
-                            } else if let (Value::String(s), Value::String(suffix)) = (&args[0], &args[1]) {
-                                Ok(Value::Bool(s.ends_with(suffix)))
-                            } else {
-                                Err(Value::String("endsWith requires string arguments".to_string()))
-                            }
-                        }
-                        "substring" => {
-                            if args.len() < 3 {
-                                Err(Value::String("substring requires start and end arguments".to_string()))
-                            } else if let (Value::String(s), Value::Int64(start), Value::Int64(end)) = (&args[0], &args[1], &args[2]) {
-                                let start = *start as usize;
-                                let end = *end as usize;
-                                if start > s.len() || end > s.len() || start > end {
-                                    Err(Value::String("substring: invalid indices".to_string()))
-                                } else {
-                                    Ok(Value::String(s[start..end].to_string()))
-                                }
-                            } else {
-                                Err(Value::String("substring requires string and int arguments".to_string()))
-                            }
-                        }
-                        "toLower" => {
-                            if let Value::String(s) = &args[0] {
-                                Ok(Value::String(s.to_lowercase()))
-                            } else {
-                                Err(Value::String("toLower requires a string".to_string()))
-                            }
-                        }
-                        "toUpper" => {
-                            if let Value::String(s) = &args[0] {
-                                Ok(Value::String(s.to_uppercase()))
-                            } else {
-                                Err(Value::String("toUpper requires a string".to_string()))
-                            }
-                        }
-                        "replace" => {
-                            if args.len() < 3 {
-                                Err(Value::String("replace requires pattern and replacement arguments".to_string()))
-                            } else if let (Value::String(s), Value::String(pattern), Value::String(replacement)) = (&args[0], &args[1], &args[2]) {
-                                Ok(Value::String(s.replace(pattern, replacement)))
-                            } else {
-                                Err(Value::String("replace requires string arguments".to_string()))
-                            }
-                        }
-                        "split" => {
-                            if args.len() < 2 {
-                                Err(Value::String("split requires a delimiter argument".to_string()))
-                            } else if let (Value::String(s), Value::String(delimiter)) = (&args[0], &args[1]) {
-                                let elements: Vec<Value> = s.split(delimiter)
-                                    .map(|part| Value::String(part.to_string()))
-                                    .collect();
-                                Ok(Value::Array(Arc::new(Mutex::new(elements))))
-                            } else {
-                                Err(Value::String("split requires string arguments".to_string()))
-                            }
-                        }
-                        _ => Err(Value::String(format!("Method '{}' not found on str", name))),
-                    };
-                    self.set_reg(rd, result?);
-                    self.set_pc(self.pc() + 1);
-                // Check if this is an array method call
-                } else if let Some(Value::Array(_)) = args.first() {
-                    // Strip parameter signature from mangled name
-                    let base_name = if let Some(paren_pos) = name.find('(') {
-                        &name[..paren_pos]
-                    } else {
-                        &name
-                    };
-
-                    let result = match base_name {
-                        "length" => {
-                            if let Value::Array(arr) = &args[0] {
-                                let elements = arr.lock().unwrap();
-                                Ok(Value::Int64(elements.len() as i64))
-                            } else {
-                                Err(Value::String("length requires an array".to_string()))
-                            }
-                        }
-                        _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
-                    };
-                    self.set_reg(rd, result?);
-                    self.set_pc(self.pc() + 1);
-                } else {
-                    let instance = if let Some(Value::Instance(instance)) = args.first() {
-                        instance.clone()
-                    } else {
-                        return Err(Value::String("Invoke requires an instance".to_string()));
-                    };
-
-                    let class_name = instance.lock().unwrap().class.clone();
-                    if let Some(class) = self.classes.get(&class_name).cloned() {
-                        // Exact match lookup for native methods
-                        if let Some(native_method) = class.native_methods.get(&name) {
-                            let mut method_args = args.clone();
-                            let result = native_method(&mut method_args);
-                            match result {
-                                NativeResult::Ready(val) => {
-                                    // For constructors, return the instance (self) instead of the method's return value
-                                    if name == "constructor" {
-                                        self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
-                                    } else {
-                                        self.set_reg(rd, val);
-                                    }
-                                    self.set_pc(self.pc() + 1);
-                                }
-                                NativeResult::Pending => {
-                                    // VM should suspend - save state for callback
-                                    self.set_pc(self.pc() + 1);
-                                    self.pending_native_result = Some(rd);
-                                    return Ok(ExecutionResult::Suspended);
-                                }
-                            }
-                        } else {
-                            // For bytecode methods, try exact match first, then generic type parameter matching
-                            let method_opt = class.methods.get(&name);
-
-                            // If not found, try to match with generic type parameters (T matches any type)
-                            let method_opt = method_opt.or_else(|| {
-                                let (base_name, requested_params) = if let Some(paren_pos) = name.find('(') {
-                                    let params_str = &name[paren_pos + 1..name.len() - 1];
-                                    (&name[..paren_pos], params_str.split(',').collect::<Vec<_>>())
-                                } else {
-                                    (&name[..], Vec::new())
-                                };
-
-                                // Find a method with same base name, same arg count, where each param is either
-                                // an exact match or a generic type parameter (single uppercase letter like T)
-                                class.methods.iter().find(|(k, _)| {
-                                    if let Some(paren_pos) = k.find('(') {
-                                        let k_base = &k[..paren_pos];
-                                        let k_params_str = &k[paren_pos + 1..k.len() - 1];
-                                        let k_params: Vec<&str> = k_params_str.split(',').collect();
-
-                                        if k_base != base_name || k_params.len() != requested_params.len() {
-                                            return false;
-                                        }
-
-                                        // Check each parameter - T matches anything
-                                        for (k_param, req_param) in k_params.iter().zip(requested_params.iter()) {
-                                            let is_generic = k_param.len() == 1 && k_param.chars().next().unwrap().is_uppercase();
-                                            if !is_generic && k_param != req_param {
-                                                return false;
-                                            }
-                                        }
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                }).map(|(_, v)| v)
-                            });
-
-                            if let Some(method) = method_opt {
-                                // Set up method call frame
-                                let caller_frame_base = self.frame_base();
-
-                                let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-
-                                if new_frame_base + method.register_count as usize > self.registers.len() {
-                                    return Err(Value::String("Register overflow in method call".to_string()));
-                                }
-
-                                let new_frame = CallFrame::new(
-                                    0,
-                                    new_frame_base,
-                                    arg_count,
-                                    method.register_count,
-                                    format!("{}.{}", class_name, name),
-                                    self.source_file.clone(),
-                                    Arc::new(method.bytecode.clone()),
-                                    self.strings.clone(),
-                                    self.functions.clone(),
-                                    self.classes.clone(),
-                                    Some(rd),
-                                );
-
-                                self.push_frame(new_frame);
-
-                                // Copy arguments (first is self, placed in R1..Rn)
-                                for (i, arg) in args.iter().enumerate() {
-                                    self.set_reg((i + 1) as u8, arg.clone());
-                                }
-
-                                return Ok(ExecutionResult::Continue);
-                            } else {
-                                // Method not found - provide helpful error with available methods
-                                let base_name = if let Some(paren_pos) = name.find('(') {
-                                    &name[..paren_pos]
-                                } else {
-                                    &name
-                                };
-
-                                // Collect available native methods with matching base name
-                                let mut available_native: Vec<&String> = class.native_methods.keys()
-                                    .filter(|k| {
-                                        if let Some(paren_pos) = k.find('(') {
-                                            &k[..paren_pos] == base_name
-                                        } else {
-                                            k.as_str() == base_name
-                                        }
-                                    })
-                                    .collect();
-
-                                // Collect available bytecode methods with matching base name
-                                let mut available_bytecode: Vec<&String> = class.methods.keys()
-                                    .filter(|k| {
-                                        if let Some(paren_pos) = k.find('(') {
-                                            &k[..paren_pos] == base_name
-                                        } else {
-                                            k.as_str() == base_name
-                                        }
-                                    })
-                                    .collect();
-
-                                if !available_native.is_empty() || !available_bytecode.is_empty() {
-                                    let mut available = Vec::new();
-                                    available_native.sort();
-                                    available_bytecode.sort();
-                                    available.extend(available_native.iter().map(|s| s.as_str()));
-                                    available.extend(available_bytecode.iter().map(|s| s.as_str()));
-                                    return Err(Value::String(format!(
-                                        "Method '{}' not found on class '{}'. Available methods: [{}]",
-                                        name, class_name, available.join(", ")
-                                    )));
-                                } else {
-                                    return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
-                                }
-                            }
-                        }
-                    } else {
-                        return Err(Value::String(format!("Class '{}' not found", class_name)));
-                    }
-                }
-            }
-
-            // Invoke interface method via vtable
-            // Format: [InvokeInterface, Rd, method_idx, arg_start, arg_count]
-            // First argument (arg_start) is the receiver (self)
-            // method_idx is the index into the class's vtable
-            x if x == Opcode::InvokeInterface as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let method_idx = self.bytecode[self.pc()] as usize;
-                self.set_pc(self.pc() + 1);
-                let arg_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let arg_count = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);  // Advance PC past all operands
-
-                let mut args = Vec::new();
-                for i in 0..arg_count {
-                    args.push(self.get_reg(arg_start + i).clone());
-                }
-
-                let instance = if let Some(Value::Instance(instance)) = args.first() {
-                    instance.clone()
-                } else {
-                    return Err(Value::String("InvokeInterface requires an instance".to_string()));
-                };
-
-                let class_name = instance.lock().unwrap().class.clone();
-
-                // Look up the method through the vtable
-                if let Some(class) = self.classes.get(&class_name).cloned() {
-                    // Get the method name from the vtable by index
-                    let method_name = class.vtable.get(method_idx)
-                        .ok_or_else(|| Value::String(format!(
-                            "Vtable method index {} out of range for class '{}' (vtable size: {})",
-                            method_idx, class_name, class.vtable.len()
-                        )))?;
-
-                    // Look up the actual method by name (try different mangled variants)
-                    let method_opt = class.methods.get(method_name)
-                        .or_else(|| {
-                            // Try to find a method with matching base name
-                            class.methods.iter().find(|(k, _)| {
-                                if let Some(paren_pos) = k.find('(') {
-                                    &k[..paren_pos] == method_name
-                                } else {
-                                    k.as_str() == method_name
-                                }
-                            }).map(|(_, v)| v)
-                        });
-
-                    if let Some(method) = method_opt {
-                        // Found the method in the class, invoke it
-                        let caller_frame_base = self.frame_base();
-
-                        let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-
-                        if new_frame_base + method.register_count as usize > self.registers.len() {
-                            return Err(Value::String("Register overflow in interface method call".to_string()));
-                        }
-
-                        let new_frame = CallFrame::new(
-                            0,
-                            new_frame_base,
-                            arg_count,
-                            method.register_count,
-                            format!("{}.{}", class_name, method_name),
-                            self.source_file.clone(),
-                            Arc::new(method.bytecode.clone()),
-                            self.strings.clone(),
-                            self.functions.clone(),
-                            self.classes.clone(),
-                            Some(rd),
-                        );
-
-                        self.push_frame(new_frame);
-
-                        for (i, arg) in args.iter().enumerate() {
-                            self.set_reg((i + 1) as u8, arg.clone());
-                        }
-
-                        return Ok(ExecutionResult::Continue);
-                    } else {
-                        // Check parent interfaces for the method (default implementation)
-                        let mut found = false;
-                        let mut found_method = None;
-                        let mut found_iface_name = None;
-
-                        for iface_name in &class.parent_interfaces {
-                            if let Some(iface) = self.classes.get(iface_name) {
-                                // Try to find method with matching base name
-                                let method = iface.methods.iter().find(|(k, _)| {
-                                    if let Some(paren_pos) = k.find('(') {
-                                        &k[..paren_pos] == method_name
-                                    } else {
-                                        k.as_str() == method_name
-                                    }
-                                }).map(|(_, v)| v.clone());
-                                
-                                if let Some(m) = method {
-                                    found_method = Some(m);
-                                    found_iface_name = Some(iface_name.clone());
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if found {
-                            let method = found_method.unwrap();
-                            let iface_name = found_iface_name.unwrap();
-
-                            // Found in parent interface, use default implementation
-                            let caller_frame_base = self.frame_base();
-                            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
-
-                            if new_frame_base + method.register_count as usize > self.registers.len() {
-                                return Err(Value::String("Register overflow in interface method call".to_string()));
-                            }
-
-                            let new_frame = CallFrame::new(
-                                0,
-                                new_frame_base,
-                                arg_count,
-                                method.register_count,
-                                format!("{}.{}", iface_name, method_name),
-                                self.source_file.clone(),
-                                Arc::new(method.bytecode.clone()),
-                                self.strings.clone(),
-                                self.functions.clone(),
-                                self.classes.clone(),
-                                Some(rd),
-                            );
-
-                            self.push_frame(new_frame);
-
-                            for (i, arg) in args.iter().enumerate() {
-                                self.set_reg((i + 1) as u8, arg.clone());
-                            }
-
-                            return Ok(ExecutionResult::Continue);
-                        } else {
-                            return Err(Value::String(format!("Interface method '{}' not found in class '{}' or its interfaces", method_name, class_name)));
-                        }
-                    }
-                } else {
-                    return Err(Value::String(format!("Class '{}' not found", class_name)));
-                }
-            }
-
-            // Return from function
-            // Format: [Return, Rs]
-            // Rs value goes into caller's Rd (typically R0 of caller receives result)
-            x if x == Opcode::Return as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                let return_value = self.get_reg(rs).clone();
-                
-                let frame = self.pop_frame().unwrap();
-                if let Some(rd) = frame.return_reg {
-                    self.set_reg(rd, return_value);
-                } else {
-                    // If no return register (e.g. module-level), put in R0 of caller
-                    self.set_reg(0, return_value);
-                }
-                
-                return Ok(ExecutionResult::Continue);
-            }
-
-            // Unconditional jump
-            // Format: [Jump, target (2 bytes little endian)]
-            x if x == Opcode::Jump as u8 => {
-                self.set_pc(self.pc() + 1);
-                let target = u16::from_le_bytes([
-                    self.bytecode[self.pc()],
-                    self.bytecode[self.pc() + 1],
-                ]) as usize;
-                self.set_pc(target);
-            }
-
-            // Jump if register is truthy
-            // Format: [JumpIfTrue, Rs, target (2 bytes)]
-            x if x == Opcode::JumpIfTrue as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let target = u16::from_le_bytes([
-                    self.bytecode[self.pc()],
-                    self.bytecode[self.pc() + 1],
-                ]) as usize;
-                if self.get_reg(rs).is_truthy() {
-                    self.set_pc(target);
-                } else {
-                    self.set_pc(self.pc() + 2);
-                }
-            }
-
-            // Jump if register is falsy
-            // Format: [JumpIfFalse, Rs, target (2 bytes)]
-            x if x == Opcode::JumpIfFalse as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let target = u16::from_le_bytes([
-                    self.bytecode[self.pc()],
-                    self.bytecode[self.pc() + 1],
-                ]) as usize;
-                if !self.get_reg(rs).is_truthy() {
-                    self.set_pc(target);
-                } else {
-                    self.set_pc(self.pc() + 2);
-                }
-            }
-
-            // Compare equality
-            // Format: [Equal, Rd, Rs1, Rs2]
-            x if x == Opcode::Equal as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                self.set_reg(rd, Value::Bool(self.get_reg(rs1) == self.get_reg(rs2)));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Compare inequality
-            // Format: [NotEqual, Rd, Rs1, Rs2]
-            x if x == Opcode::NotEqual as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                self.set_reg(rd, Value::Bool(self.get_reg(rs1) != self.get_reg(rs2)));
-                self.set_pc(self.pc() + 1);
-            }
-            // Logical NOT
-            // Format: [Not, Rd, Rs]
-            x if x == Opcode::Not as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                self.set_reg(rd, Value::Bool(!self.get_reg(rs).is_truthy()));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Type conversion
-            // Format: [Convert, Rd, Rs, type_code]
-            x if x == Opcode::Convert as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let cast_type = self.bytecode[self.pc()];
-
-                let value = self.get_reg(rs).clone();
-                let result = match cast_type {
-                    0x01 => { // Cast to int
-                        match &value {
-                            Value::Int64(n) => Value::Int64(*n),
-                            Value::Int8(n) => Value::Int64(*n as i64),
-                            Value::Int16(n) => Value::Int64(*n as i64),
-                            Value::Int32(n) => Value::Int64(*n as i64),
-                            Value::UInt8(n) => Value::Int64(*n as i64),
-                            Value::UInt16(n) => Value::Int64(*n as i64),
-                            Value::UInt32(n) => Value::Int64(*n as i64),
-                            Value::UInt64(n) => Value::Int64(*n as i64),
-                            Value::Float64(f) => Value::Int64(*f as i64),
-                            Value::Float32(f) => Value::Int64(*f as i64),
-                            Value::Bool(b) => Value::Int64(if *b { 1 } else { 0 }),
-                            Value::String(s) => {
-                                if let Ok(n) = s.parse::<i64>() {
-                                    Value::Int64(n)
-                                } else if let Ok(f) = s.parse::<f64>() {
-                                    Value::Int64(f as i64)
-                                } else {
-                                    Value::Int64(0)
-                                }
-                            }
-                            _ => Value::Int64(0),
-                        }
-                    }
-                    0x02 => { // Cast to float
-                        match &value {
-                            Value::Int64(n) => Value::Float64(*n as f64),
-                            Value::Int8(n) => Value::Float64(*n as f64),
-                            Value::Int16(n) => Value::Float64(*n as f64),
-                            Value::Int32(n) => Value::Float64(*n as f64),
-                            Value::UInt8(n) => Value::Float64(*n as f64),
-                            Value::UInt16(n) => Value::Float64(*n as f64),
-                            Value::UInt32(n) => Value::Float64(*n as f64),
-                            Value::UInt64(n) => Value::Float64(*n as f64),
-                            Value::Float64(f) => Value::Float64(*f),
-                            Value::Float32(f) => Value::Float64(*f as f64),
-                            Value::Bool(b) => Value::Float64(if *b { 1.0 } else { 0.0 }),
-                            Value::String(s) => {
-                                if let Ok(n) = s.parse::<f64>() {
-                                    Value::Float64(n)
-                                } else {
-                                    Value::Float64(0.0)
-                                }
-                            }
-                            _ => Value::Float64(0.0),
-                        }
-                    }
-                    0x03 => { // Cast to str
-                        match &value {
-                            Value::String(s) => Value::String(s.clone()),
-                            _ => Value::String(value.to_string()),
-                        }
-                    }
-                    0x04 => { // Cast to bool
-                        Value::Bool(value.is_truthy())
-                    }
-                    0x05 => Value::Int8(value.to_i8().unwrap_or(0)),
-                    0x06 => Value::UInt8(value.to_u8().unwrap_or(0)),
-                    0x07 => Value::Int16(value.to_i16().unwrap_or(0)),
-                    0x08 => Value::UInt16(value.to_u16().unwrap_or(0)),
-                    0x09 => Value::Int32(value.to_i32().unwrap_or(0)),
-                    0x0A => Value::UInt32(value.to_u32().unwrap_or(0)),
-                    0x0B => Value::Int64(value.to_i64().unwrap_or(0)),
-                    0x0C => Value::UInt64(value.to_u64().unwrap_or(0)),
-                    0x0D => Value::Float32(value.to_f32().unwrap_or(0.0)),
-                    0x0E => Value::Float64(value.to_f64().unwrap_or(0.0)),
-                    _ => value,
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Create array
-            // Format: [Array, Rd, rs_start, count]
-            x if x == Opcode::Array as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let count = self.bytecode[self.pc()] as u8;
-                
-                let mut elements = Vec::new();
-                for i in 0..count {
-                    elements.push(self.get_reg(rs_start + i).clone());
-                }
-                
-                self.set_reg(rd, Value::Array(Arc::new(Mutex::new(elements))));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Index array or object
-            // Format: [Index, Rd, Robj, Ridx]
-            x if x == Opcode::Index as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let r_obj = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let r_idx = self.bytecode[self.pc()] as u8;
-                
-                let obj = self.get_reg(r_obj).clone();
-                let idx_val = self.get_reg(r_idx).clone();
-                
-                let result = match obj {
-                    Value::Array(arr) => {
-                        let idx = idx_val.to_int().unwrap_or(0) as usize;
-                        let elements = arr.lock().unwrap();
-                        elements.get(idx).cloned().unwrap_or(Value::Null)
-                    }
-                    Value::String(s) => {
-                        let idx = idx_val.to_int().unwrap_or(0) as usize;
-                        s.chars().nth(idx).map(|c| Value::String(c.to_string())).unwrap_or(Value::Null)
-                    }
-                    _ => Value::Null,
-                };
-                
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Logical AND
-            // Format: [And, Rd, Rs1, Rs2]
-            x if x == Opcode::And as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                self.set_reg(rd, Value::Bool(self.get_reg(rs1).is_truthy() && self.get_reg(rs2).is_truthy()));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Logical OR
-            // Format: [Or, Rd, Rs1, Rs2]
-            x if x == Opcode::Or as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                self.set_reg(rd, Value::Bool(self.get_reg(rs1).is_truthy() || self.get_reg(rs2).is_truthy()));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Greater than comparison
-            // Format: [Greater, Rd, Rs1, Rs2]
-            x if x == Opcode::Greater as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Bool(left.to_arithmetic_int().unwrap() > right.to_arithmetic_int().unwrap())
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Bool(left.to_float().unwrap() > right.to_float().unwrap())
-                    }
-                    _ => Value::Bool(false),
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Less than comparison
-            // Format: [Less, Rd, Rs1, Rs2]
-            x if x == Opcode::Less as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Bool(left.to_arithmetic_int().unwrap() < right.to_arithmetic_int().unwrap())
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Bool(left.to_float().unwrap() < right.to_float().unwrap())
-                    }
-                    _ => Value::Bool(false),
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Greater than or equal comparison
-            x if x == Opcode::GreaterEqual as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Bool(left.to_arithmetic_int().unwrap() >= right.to_arithmetic_int().unwrap())
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Bool(left.to_float().unwrap() >= right.to_float().unwrap())
-                    }
-                    _ => Value::Bool(false),
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Less than or equal comparison
-            x if x == Opcode::LessEqual as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Bool(left.to_arithmetic_int().unwrap() <= right.to_arithmetic_int().unwrap())
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Bool(left.to_float().unwrap() <= right.to_float().unwrap())
-                    }
-                    _ => Value::Bool(false),
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Addition
-            // Format: [Add, Rd, Rs1, Rs2]
-            x if x == Opcode::Add as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    (Value::String(a), Value::String(b)) => Value::String(a.clone() + b),
-                    (Value::String(a), b) => Value::String(a.clone() + &b.to_string()),
-                    (a, Value::String(b)) => Value::String(a.to_string() + b),
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_add(right.to_arithmetic_int().unwrap()))
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
-                    }
-                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
-                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
-                        Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
-                    }
-                    _ => Value::Null,
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Subtraction
-            // Format: [Subtract, Rd, Rs1, Rs2]
-            x if x == Opcode::Subtract as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_sub(right.to_arithmetic_int().unwrap()))
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
-                    }
-                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
-                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
-                        Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
-                    }
-                    _ => Value::Null,
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Multiplication
-            // Format: [Multiply, Rd, Rs1, Rs2]
-            x if x == Opcode::Multiply as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        Value::Int64(left.to_arithmetic_int().unwrap().wrapping_mul(right.to_arithmetic_int().unwrap()))
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
-                    }
-                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
-                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
-                        Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
-                    }
-                    _ => Value::Null,
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Division
-            // Format: [Divide, Rd, Rs1, Rs2]
-            x if x == Opcode::Divide as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        let r = right.to_arithmetic_int().unwrap();
-                        if r != 0 {
-                            Value::Int64(left.to_arithmetic_int().unwrap() / r)
-                        } else {
-                            Value::Null
-                        }
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        let r = right.to_float().unwrap();
-                        if r != 0.0 {
-                            Value::Float64(left.to_float().unwrap() / r)
-                        } else {
-                            Value::Null
-                        }
-                    }
-                    _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
-                         (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
-                        let r = right.to_float().unwrap();
-                        if r != 0.0 {
-                            Value::Float64(left.to_float().unwrap() / r)
-                        } else {
-                            Value::Null
-                        }
-                    }
-                    _ => Value::Null,
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Modulo
-            // Format: [Modulo, Rd, Rs1, Rs2]
-            x if x == Opcode::Modulo as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = match (left, right) {
-                    _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
-                        let r = right.to_arithmetic_int().unwrap();
-                        if r != 0 {
-                            Value::Int64(left.to_arithmetic_int().unwrap() % r)
-                        } else {
-                            Value::Null
-                        }
-                    }
-                    _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
-                        let r = right.to_float().unwrap();
-                        if r != 0.0 {
-                            Value::Float64(left.to_float().unwrap() % r)
-                        } else {
-                            Value::Null
-                        }
-                    }
-                    _ => Value::Null,
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Bitwise AND
-            // Format: [BitAnd, Rd, Rs1, Rs2]
-            x if x == Opcode::BitAnd as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
-                    Value::Int64(left.to_arithmetic_int().unwrap() & right.to_arithmetic_int().unwrap())
-                } else {
-                    Value::Null
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Bitwise OR
-            // Format: [BitOr, Rd, Rs1, Rs2]
-            x if x == Opcode::BitOr as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
-                    Value::Int64(left.to_arithmetic_int().unwrap() | right.to_arithmetic_int().unwrap())
-                } else {
-                    Value::Null
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Bitwise XOR
-            // Format: [BitXor, Rd, Rs1, Rs2]
-            x if x == Opcode::BitXor as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
-                    Value::Int64(left.to_arithmetic_int().unwrap() ^ right.to_arithmetic_int().unwrap())
-                } else {
-                    Value::Null
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Bitwise NOT
-            // Format: [BitNot, Rd, Rs]
-            x if x == Opcode::BitNot as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                let value = self.get_reg(rs);
-                let result = if value.is_arithmetic_int() {
-                    Value::Int64(!value.to_arithmetic_int().unwrap())
-                } else {
-                    Value::Null
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Shift left
-            // Format: [ShiftLeft, Rd, Rs1, Rs2]
-            x if x == Opcode::ShiftLeft as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
-                    let shift = right.to_arithmetic_int().unwrap() as u32;
-                    Value::Int64(left.to_arithmetic_int().unwrap().wrapping_shl(shift))
-                } else {
-                    Value::Null
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Shift right
-            // Format: [ShiftRight, Rd, Rs1, Rs2]
-            x if x == Opcode::ShiftRight as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs1 = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs2 = self.bytecode[self.pc()] as u8;
-                let left = self.get_reg(rs1);
-                let right = self.get_reg(rs2);
-                let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
-                    let shift = right.to_arithmetic_int().unwrap() as u32;
-                    Value::Int64(left.to_arithmetic_int().unwrap().wrapping_shr(shift))
-                } else {
-                    Value::Null
-                };
-                self.set_reg(rd, result);
-                self.set_pc(self.pc() + 1);
-            }
-
-            // String concatenation
-            // Format: [Concat, Rd, rs_start, count]
-            x if x == Opcode::Concat as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rd = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let rs_start = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-                let count = self.bytecode[self.pc()] as u8;
-
-                let mut result = String::new();
-                for i in 0..count {
-                    result.push_str(&self.get_reg(rs_start + i).to_string());
-                }
-                self.set_reg(rd, Value::String(result));
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Line number for debugging
-            // Format: [Line, line_number (2 bytes)]
-            x if x == Opcode::Line as u8 => {
-                self.set_pc(self.pc() + 1);
-                let line = u16::from_le_bytes([
-                    self.bytecode[self.pc()],
-                    self.bytecode[self.pc() + 1],
-                ]) as usize;
-                self.set_line(line);
-                self.set_pc(self.pc() + 2);
-
-                // Check for breakpoint
-                if self.is_debugging {
-                    if let Some(ref file) = self.source_file {
-                        if self.breakpoints.contains(&(file.clone(), line)) {
-                            return Ok(ExecutionResult::Breakpoint);
-                        }
-                    }
-                }
-            }
-
-            // Exception handling start
-            // Format: [TryStart, catch_pc (2 bytes), catch_reg]
-            x if x == Opcode::TryStart as u8 => {
-                self.set_pc(self.pc() + 1);
-                let catch_pc = u16::from_le_bytes([
-                    self.bytecode[self.pc()],
-                    self.bytecode[self.pc() + 1],
-                ]) as usize;
-                self.set_pc(self.pc() + 2);
-                let catch_reg = self.bytecode[self.pc()] as u8;
-                self.set_pc(self.pc() + 1);
-
-                self.exception_handlers.push(ExceptionHandler {
-                    catch_pc,
-                    catch_register: catch_reg as usize,
-                    call_stack_depth: self.call_stack.len(),
-                });
-            }
-
-            // Exception handling end
-            x if x == Opcode::TryEnd as u8 => {
-                self.exception_handlers.pop();
-                self.set_pc(self.pc() + 1);
-            }
-
-            // Throw exception
-            // Format: [Throw, Rs]
-            x if x == Opcode::Throw as u8 => {
-                self.set_pc(self.pc() + 1);
-                let rs = self.bytecode[self.pc()] as u8;
-                return Err(self.get_reg(rs).clone());
-            }
-
-            // Breakpoint for debugging
-            x if x == Opcode::Breakpoint as u8 => {
-                self.set_pc(self.pc() + 1);
-                return Ok(ExecutionResult::Breakpoint);
-            }
-
-            // Halt execution
-            x if x == Opcode::Halt as u8 => {
-                self.set_pc(self.pc() + 1);
-                return Ok(ExecutionResult::Continue);
-            }
-
-            _ => {
-                return Err(Value::String(format!("Unknown opcode: 0x{:02X}", opcode)));
-            }
-        }
-
-        Ok(ExecutionResult::Continue)
+        let handler = self.dispatch_table[opcode as usize];
+        handler(self)
     }
 }
 
@@ -2919,6 +1207,10 @@ pub enum ExecutionResult {
     Breakpoint,
     Suspended,
 }
+
+/// Opcode handler function type
+/// Takes a mutable reference to VM and returns Result<ExecutionResult, Value>
+pub type OpcodeHandler = fn(&mut VM) -> Result<ExecutionResult, Value>;
 
 impl Serialize for Value {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -3073,5 +1365,1684 @@ impl VM {
         self.locals = state.locals.clone();
         self.classes = Arc::new(state.classes.clone());
         self.functions = Arc::new(state.functions.clone());
+    }
+
+    /// Create the opcode dispatch table
+    fn create_dispatch_table() -> [OpcodeHandler; 256] {
+        let mut table: [OpcodeHandler; 256] = [VM::op_unknown; 256];
+
+        table[Opcode::Nop as usize] = VM::op_nop;
+        table[Opcode::LoadConst as usize] = VM::op_load_const;
+        table[Opcode::LoadInt as usize] = VM::op_load_int;
+        table[Opcode::LoadFloat as usize] = VM::op_load_float;
+        table[Opcode::LoadBool as usize] = VM::op_load_bool;
+        table[Opcode::LoadNull as usize] = VM::op_load_null;
+        table[Opcode::Move as usize] = VM::op_move;
+        table[Opcode::LoadLocal as usize] = VM::op_load_local;
+        table[Opcode::StoreLocal as usize] = VM::op_store_local;
+        table[Opcode::GetProperty as usize] = VM::op_get_property;
+        table[Opcode::SetProperty as usize] = VM::op_set_property;
+        table[Opcode::Call as usize] = VM::op_call;
+        table[Opcode::CallNative as usize] = VM::op_call_native;
+        table[Opcode::Invoke as usize] = VM::op_invoke;
+        table[Opcode::Return as usize] = VM::op_return;
+        table[Opcode::InvokeInterface as usize] = VM::op_invoke_interface;
+        table[Opcode::CallNativeIndexed as usize] = VM::op_call_native_indexed;
+        table[Opcode::Jump as usize] = VM::op_jump;
+        table[Opcode::JumpIfTrue as usize] = VM::op_jump_if_true;
+        table[Opcode::JumpIfFalse as usize] = VM::op_jump_if_false;
+        table[Opcode::Equal as usize] = VM::op_equal;
+        table[Opcode::NotEqual as usize] = VM::op_not_equal;
+        table[Opcode::Greater as usize] = VM::op_greater;
+        table[Opcode::Less as usize] = VM::op_less;
+        table[Opcode::GreaterEqual as usize] = VM::op_greater_equal;
+        table[Opcode::LessEqual as usize] = VM::op_less_equal;
+        table[Opcode::And as usize] = VM::op_and;
+        table[Opcode::Or as usize] = VM::op_or;
+        table[Opcode::Not as usize] = VM::op_not;
+        table[Opcode::Add as usize] = VM::op_add;
+        table[Opcode::Subtract as usize] = VM::op_subtract;
+        table[Opcode::Multiply as usize] = VM::op_multiply;
+        table[Opcode::Divide as usize] = VM::op_divide;
+        table[Opcode::Modulo as usize] = VM::op_modulo;
+        table[Opcode::BitAnd as usize] = VM::op_bit_and;
+        table[Opcode::BitOr as usize] = VM::op_bit_or;
+        table[Opcode::BitXor as usize] = VM::op_bit_xor;
+        table[Opcode::BitNot as usize] = VM::op_bit_not;
+        table[Opcode::ShiftLeft as usize] = VM::op_shift_left;
+        table[Opcode::ShiftRight as usize] = VM::op_shift_right;
+        table[Opcode::Concat as usize] = VM::op_concat;
+        table[Opcode::Convert as usize] = VM::op_convert;
+        table[Opcode::Array as usize] = VM::op_array;
+        table[Opcode::Index as usize] = VM::op_index;
+        table[Opcode::Line as usize] = VM::op_line;
+        table[Opcode::TryStart as usize] = VM::op_try_start;
+        table[Opcode::TryEnd as usize] = VM::op_try_end;
+        table[Opcode::Throw as usize] = VM::op_throw;
+        table[Opcode::Breakpoint as usize] = VM::op_breakpoint;
+        table[Opcode::Halt as usize] = VM::op_halt;
+
+        table
+    }
+
+    #[inline]
+    fn op_nop(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_load_const(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let idx = self.bytecode[self.pc()] as usize;
+        let s = self.strings.get(idx)
+            .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
+            .clone();
+        self.set_reg(rd, Value::String(s));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_load_int(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let bytes: [u8; 8] = self.bytecode[self.pc()..self.pc() + 8]
+            .try_into()
+            .map_err(|_| Value::String("Invalid int encoding".to_string()))?;
+        let n = i64::from_le_bytes(bytes);
+        self.set_reg(rd, Value::Int64(n));
+        self.set_pc(self.pc() + 8);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_load_float(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let bytes: [u8; 8] = self.bytecode[self.pc()..self.pc() + 8]
+            .try_into()
+            .map_err(|_| Value::String("Invalid float encoding".to_string()))?;
+        let n = f64::from_le_bytes(bytes);
+        self.set_reg(rd, Value::Float64(n));
+        self.set_pc(self.pc() + 8);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_load_bool(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let b = self.bytecode[self.pc()] != 0;
+        self.set_reg(rd, Value::Bool(b));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_load_null(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_reg(rd, Value::Null);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_move(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        self.clone_reg(rd, rs);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_load_local(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let idx = self.bytecode[self.pc()] as usize;
+        let name = self.strings.get(idx)
+            .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
+            .clone();
+        let value = self.locals.get(&name).cloned().unwrap_or(Value::Null);
+        self.set_reg(rd, value);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_store_local(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let idx = self.bytecode[self.pc()] as usize;
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        let name = self.strings.get(idx)
+            .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
+            .clone();
+        let value = self.get_reg(rs).clone();
+        self.locals.insert(name, value);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_get_property(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let robj = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let idx = self.bytecode[self.pc()] as usize;
+        let name = self.strings.get(idx)
+            .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
+            .clone();
+
+        let robj_val = self.get_reg(robj).clone();
+        match robj_val {
+            Value::Instance(instance) => {
+                let instance_lock = instance.lock().unwrap();
+                let value = instance_lock.fields.get(&name).cloned().unwrap_or(Value::Null);
+                self.set_reg(rd, value);
+            }
+            Value::Exception(exception) => {
+                if name == "message" {
+                    self.set_reg(rd, Value::String(exception.message.clone()));
+                } else if name == "stack_trace" {
+                    let trace = exception.stack_trace.iter().map(|f| f.to_string()).collect::<Vec<String>>().join("\n");
+                    self.set_reg(rd, Value::String(trace));
+                } else {
+                    self.set_reg(rd, Value::Null);
+                }
+            }
+            Value::Array(arr) => {
+                if name == "length" {
+                    let elements = arr.lock().unwrap();
+                    self.set_reg(rd, Value::Int64(elements.len() as i64));
+                } else {
+                    return Err(Value::String(format!("Unknown property '{}' on Array", name)));
+                }
+            }
+            _ => {
+                return Err(Value::String(format!("Expected instance for property get, got {:?}", robj_val)));
+            }
+        }
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_set_property(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let robj = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let idx = self.bytecode[self.pc()] as usize;
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        let name = self.strings.get(idx)
+            .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
+            .clone();
+
+        let value = self.get_reg(rs).clone();
+        let instance = if let Value::Instance(instance) = self.get_reg(robj) {
+            instance.clone()
+        } else {
+            return Err(Value::String("Expected instance for property set".to_string()));
+        };
+
+        let mut instance_lock = instance.lock().unwrap();
+        instance_lock.fields.insert(name, value);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_call(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let func_idx = self.bytecode[self.pc()] as usize;
+        self.set_pc(self.pc() + 1);
+        let arg_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+
+        let func_name_raw = self.strings.get(func_idx)
+            .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_idx)))?
+            .clone();
+
+        let mut function_opt = self.functions.get(&func_name_raw).cloned();
+
+        if function_opt.is_none() {
+            if !func_name_raw.contains('.') {
+                if let Some(ref source) = self.source_file {
+                    let file_name = std::path::Path::new(source)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+
+                    let qualified = format!("{}.{}", file_name, func_name_raw);
+                    function_opt = self.functions.get(&qualified).cloned();
+                }
+            }
+        }
+
+        if function_opt.is_none() {
+            let search_name = func_name_raw.clone();
+            for (name, func) in self.functions.as_ref() {
+                if name == &search_name || name.ends_with(&format!(".{}", search_name)) {
+                    function_opt = Some(func.clone());
+                    break;
+                }
+            }
+        }
+
+        if function_opt.is_none() {
+            if let Some(paren_pos) = func_name_raw.find('(') {
+                let base_name = &func_name_raw[..paren_pos];
+                for (name, func) in self.functions.as_ref() {
+                    if name == base_name || name.ends_with(&format!(".{}", base_name)) {
+                        function_opt = Some(func.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        let func_name = if let Some(ref f) = function_opt {
+            f.name.clone()
+        } else {
+            func_name_raw.clone()
+        };
+
+        let base_class_name = extract_base_class_name(&func_name);
+
+        if let Some(class) = self.classes.get(base_class_name).cloned() {
+            let instance = Value::Instance(Arc::new(Mutex::new(Instance {
+                class: func_name.clone(),
+                fields: class.fields.clone(),
+                private_fields: class.private_fields.clone(),
+                native_data: Arc::new(Mutex::new(None)),
+            })));
+            self.set_reg(rd, instance.clone());
+
+            if let Some(native_create) = class.native_create {
+                let mut args = vec![instance];
+                let _ = native_create(&mut args);
+            }
+        }
+
+        let native_idx = self.native_registry.get_index(&func_name)
+            .or_else(|| self.native_registry.get_index_by_prefix(&func_name));
+
+        if let Some(idx) = native_idx {
+            if let Some(func_type) = self.native_registry.get_by_index(idx) {
+                let mut args = Vec::new();
+                for i in 0..arg_count {
+                    args.push(self.get_reg(arg_start + i).clone());
+                }
+                let result = match func_type {
+                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                };
+                match result {
+                    NativeResult::Ready(val) => {
+                        self.set_reg(rd, val);
+                        return Ok(ExecutionResult::Continue);
+                    }
+                    NativeResult::Pending => {
+                        self.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                }
+            } else {
+                return Err(Value::String(format!("Native function not found: {}", func_name)));
+            }
+        }
+
+        if let Some(function) = function_opt {
+            let mut args = Vec::new();
+            let is_constructor = func_name.contains("_constructor(");
+            if is_constructor {
+                args.push(self.get_reg(rd).clone());
+            }
+            for i in 0..arg_count {
+                args.push(self.get_reg(arg_start + i).clone());
+            }
+
+            let caller_frame_base = self.frame_base();
+            let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+            if new_frame_base + function.register_count as usize > self.registers.len() {
+                return Err(Value::String("Register overflow: too many nested calls".to_string()));
+            }
+
+            let new_frame = CallFrame::new(
+                0,
+                new_frame_base,
+                function.param_count,
+                function.register_count,
+                func_name.clone(),
+                function.source_file.clone(),
+                Arc::new(function.bytecode.clone()),
+                self.strings.clone(),
+                self.functions.clone(),
+                self.classes.clone(),
+                Some(rd),
+            );
+
+            self.push_frame(new_frame);
+
+            for (i, arg) in args.iter().enumerate() {
+                self.set_reg((i + 1) as u8, arg.clone());
+            }
+
+            return Ok(ExecutionResult::Continue);
+        } else {
+            return Err(Value::String(format!("Function not found: {}", func_name)));
+        }
+    }
+
+    #[inline]
+    fn op_call_native(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let name_idx = self.bytecode[self.pc()] as usize;
+        self.set_pc(self.pc() + 1);
+        let arg_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.bytecode[self.pc()] as u8;
+
+        let name = self.strings.get(name_idx)
+            .ok_or_else(|| Value::String(format!("Invalid native name index: {}", name_idx)))?
+            .clone();
+
+        let mut args = Vec::new();
+        for i in 0..arg_count {
+            args.push(self.get_reg(arg_start + i).clone());
+        }
+
+        let result = match self.native_registry.get_index(&name)
+            .or_else(|| self.native_registry.get_index_by_prefix(&name))
+            .and_then(|idx| self.native_registry.get_by_index(idx)) {
+            Some(func_type) => {
+                match func_type {
+                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                }
+            }
+            None => {
+                match self.fallback_native.clone() {
+                    Some(func_type) => {
+                        match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                        }
+                    }
+                    None => {
+                        return Err(Value::String(format!("Native function not found: {}", name)));
+                    }
+                }
+            }
+        };
+
+        match result {
+            NativeResult::Ready(val) => {
+                self.set_reg(rd, val);
+                self.set_pc(self.pc() + 1);
+            }
+            NativeResult::Pending => {
+                self.pending_native_result = Some(rd);
+                return Ok(ExecutionResult::Suspended);
+            }
+        }
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_call_native_indexed(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let func_idx_lo = self.bytecode[self.pc()] as u16;
+        self.set_pc(self.pc() + 1);
+        let func_idx_hi = self.bytecode[self.pc()] as u16;
+        self.set_pc(self.pc() + 1);
+        let func_index = (func_idx_hi << 8) | func_idx_lo;
+
+        let arg_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.bytecode[self.pc()] as u8;
+
+        let mut args = Vec::new();
+        for i in 0..arg_count {
+            args.push(self.get_reg(arg_start + i).clone());
+        }
+
+        let result = match self.native_registry.get_by_index(func_index) {
+            Some(func_type) => {
+                match func_type {
+                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                }
+            }
+            None => {
+                match self.fallback_native.clone() {
+                    Some(func_type) => {
+                        match func_type {
+                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                        }
+                    }
+                    None => {
+                        return Err(Value::String(format!("Native function not found at index: {}", func_index)));
+                    }
+                }
+            }
+        };
+
+        match result {
+            NativeResult::Ready(val) => {
+                self.set_reg(rd, val);
+                self.set_pc(self.pc() + 1);
+            }
+            NativeResult::Pending => {
+                self.set_pc(self.pc() + 1);
+                self.pending_native_result = Some(rd);
+                return Ok(ExecutionResult::Suspended);
+            }
+        }
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_invoke(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let method_idx = self.bytecode[self.pc()] as usize;
+        self.set_pc(self.pc() + 1);
+        let arg_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+
+        let name = self.strings.get(method_idx)
+            .ok_or_else(|| Value::String(format!("Invalid method index: {}", method_idx)))?
+            .clone();
+
+        let mut args = Vec::new();
+        for i in 0..arg_count {
+            args.push(self.get_reg(arg_start + i).clone());
+        }
+
+        // Handle array methods
+        if let Some(Value::Array(_)) = args.first() {
+            let base_name = if let Some(paren_pos) = name.find('(') {
+                &name[..paren_pos]
+            } else {
+                &name
+            };
+
+            let result = match base_name {
+                "length" => {
+                    if let Value::Array(arr) = &args[0] {
+                        let elements = arr.lock().unwrap();
+                        Ok(Value::Int64(elements.len() as i64))
+                    } else {
+                        Err(Value::String("length requires an array".to_string()))
+                    }
+                }
+                "add" => {
+                    if args.len() < 2 {
+                        Err(Value::String("add requires a value argument".to_string()))
+                    } else if let Value::Array(arr) = &args[0] {
+                        let mut elements = arr.lock().unwrap();
+                        elements.push(args[1].clone());
+                        Ok(Value::Null)
+                    } else {
+                        Err(Value::String("add requires an array".to_string()))
+                    }
+                }
+                _ => Err(Value::String(format!("Method '{}' not found on Array", name))),
+            };
+            self.set_reg(rd, result?);
+            self.set_pc(self.pc() + 1);
+            return Ok(ExecutionResult::Continue);
+        }
+
+        // Handle string methods
+        if let Some(Value::String(_)) = args.first() {
+            let base_name = if let Some(paren_pos) = name.find('(') {
+                &name[..paren_pos]
+            } else {
+                &name
+            };
+
+            let result = match base_name {
+                "length" => {
+                    if let Value::String(s) = &args[0] {
+                        Ok(Value::Int64(s.len() as i64))
+                    } else {
+                        Err(Value::String("length requires a string".to_string()))
+                    }
+                }
+                "trim" => {
+                    if let Value::String(s) = &args[0] {
+                        Ok(Value::String(s.trim().to_string()))
+                    } else {
+                        Err(Value::String("trim requires a string".to_string()))
+                    }
+                }
+                "toInt" => {
+                    if let Value::String(s) = &args[0] {
+                        match s.parse::<i64>() {
+                            Ok(n) => Ok(Value::Int64(n)),
+                            Err(_) => Ok(Value::Null),
+                        }
+                    } else {
+                        Err(Value::String("toInt requires a string".to_string()))
+                    }
+                }
+                "toFloat" => {
+                    if let Value::String(s) = &args[0] {
+                        match s.parse::<f64>() {
+                            Ok(n) => Ok(Value::Float64(n)),
+                            Err(_) => Ok(Value::Null),
+                        }
+                    } else {
+                        Err(Value::String("toFloat requires a string".to_string()))
+                    }
+                }
+                "contains" => {
+                    if args.len() < 2 {
+                        Err(Value::String("contains requires a string argument".to_string()))
+                    } else if let (Value::String(s), Value::String(substr)) = (&args[0], &args[1]) {
+                        Ok(Value::Bool(s.contains(substr)))
+                    } else {
+                        Err(Value::String("contains requires string arguments".to_string()))
+                    }
+                }
+                "startsWith" => {
+                    if args.len() < 2 {
+                        Err(Value::String("startsWith requires a string argument".to_string()))
+                    } else if let (Value::String(s), Value::String(prefix)) = (&args[0], &args[1]) {
+                        Ok(Value::Bool(s.starts_with(prefix)))
+                    } else {
+                        Err(Value::String("startsWith requires string arguments".to_string()))
+                    }
+                }
+                "endsWith" => {
+                    if args.len() < 2 {
+                        Err(Value::String("endsWith requires a string argument".to_string()))
+                    } else if let (Value::String(s), Value::String(suffix)) = (&args[0], &args[1]) {
+                        Ok(Value::Bool(s.ends_with(suffix)))
+                    } else {
+                        Err(Value::String("endsWith requires string arguments".to_string()))
+                    }
+                }
+                "substring" => {
+                    if args.len() < 3 {
+                        Err(Value::String("substring requires start and end arguments".to_string()))
+                    } else if let (Value::String(s), Value::Int64(start), Value::Int64(end)) = (&args[0], &args[1], &args[2]) {
+                        let start = *start as usize;
+                        let end = *end as usize;
+                        if start > s.len() || end > s.len() || start > end {
+                            Err(Value::String("substring: invalid indices".to_string()))
+                        } else {
+                            Ok(Value::String(s[start..end].to_string()))
+                        }
+                    } else {
+                        Err(Value::String("substring requires string and int arguments".to_string()))
+                    }
+                }
+                "toLower" => {
+                    if let Value::String(s) = &args[0] {
+                        Ok(Value::String(s.to_lowercase()))
+                    } else {
+                        Err(Value::String("toLower requires a string".to_string()))
+                    }
+                }
+                "toUpper" => {
+                    if let Value::String(s) = &args[0] {
+                        Ok(Value::String(s.to_uppercase()))
+                    } else {
+                        Err(Value::String("toUpper requires a string".to_string()))
+                    }
+                }
+                "replace" => {
+                    if args.len() < 3 {
+                        Err(Value::String("replace requires pattern and replacement arguments".to_string()))
+                    } else if let (Value::String(s), Value::String(pattern), Value::String(replacement)) = (&args[0], &args[1], &args[2]) {
+                        Ok(Value::String(s.replace(pattern, replacement)))
+                    } else {
+                        Err(Value::String("replace requires string arguments".to_string()))
+                    }
+                }
+                "split" => {
+                    if args.len() < 2 {
+                        Err(Value::String("split requires a delimiter argument".to_string()))
+                    } else if let (Value::String(s), Value::String(delimiter)) = (&args[0], &args[1]) {
+                        let elements: Vec<Value> = s.split(delimiter)
+                            .map(|part| Value::String(part.to_string()))
+                            .collect();
+                        Ok(Value::Array(Arc::new(Mutex::new(elements))))
+                    } else {
+                        Err(Value::String("split requires string arguments".to_string()))
+                    }
+                }
+                _ => Err(Value::String(format!("Method '{}' not found on str", name))),
+            };
+            self.set_reg(rd, result?);
+            self.set_pc(self.pc() + 1);
+            return Ok(ExecutionResult::Continue);
+        }
+
+        let instance = if let Some(Value::Instance(instance)) = args.first() {
+            instance.clone()
+        } else {
+            return Err(Value::String("Invoke requires an instance".to_string()));
+        };
+
+        let class_name = instance.lock().unwrap().class.clone();
+        if let Some(class) = self.classes.get(&class_name).cloned() {
+            if let Some(native_method) = class.native_methods.get(&name) {
+                let mut method_args = args.clone();
+                let result = native_method(&mut method_args);
+                match result {
+                    NativeResult::Ready(val) => {
+                        if name == "constructor" {
+                            self.set_reg(rd, args.first().cloned().unwrap_or(Value::Null));
+                        } else {
+                            self.set_reg(rd, val);
+                        }
+                        self.set_pc(self.pc() + 1);
+                    }
+                    NativeResult::Pending => {
+                        self.set_pc(self.pc() + 1);
+                        self.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                }
+            } else {
+                let method_opt = class.methods.get(&name);
+
+                let method_opt = method_opt.or_else(|| {
+                    let (base_name, requested_params) = if let Some(paren_pos) = name.find('(') {
+                        let params_str = &name[paren_pos + 1..name.len() - 1];
+                        (&name[..paren_pos], params_str.split(',').collect::<Vec<_>>())
+                    } else {
+                        (&name[..], Vec::new())
+                    };
+
+                    class.methods.iter().find(|(k, _)| {
+                        if let Some(paren_pos) = k.find('(') {
+                            let k_base = &k[..paren_pos];
+                            let k_params_str = &k[paren_pos + 1..k.len() - 1];
+                            let k_params: Vec<&str> = k_params_str.split(',').collect();
+
+                            if k_base != base_name || k_params.len() != requested_params.len() {
+                                return false;
+                            }
+
+                            for (k_param, req_param) in k_params.iter().zip(requested_params.iter()) {
+                                let is_generic = k_param.len() == 1 && k_param.chars().next().unwrap().is_uppercase();
+                                if !is_generic && k_param != req_param {
+                                    return false;
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }).map(|(_, v)| v)
+                });
+
+                if let Some(method) = method_opt {
+                    let caller_frame_base = self.frame_base();
+                    let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+                    if new_frame_base + method.register_count as usize > self.registers.len() {
+                        return Err(Value::String("Register overflow in method call".to_string()));
+                    }
+
+                    let new_frame = CallFrame::new(
+                        0,
+                        new_frame_base,
+                        arg_count,
+                        method.register_count,
+                        format!("{}.{}", class_name, name),
+                        self.source_file.clone(),
+                        Arc::new(method.bytecode.clone()),
+                        self.strings.clone(),
+                        self.functions.clone(),
+                        self.classes.clone(),
+                        Some(rd),
+                    );
+
+                    self.push_frame(new_frame);
+
+                    for (i, arg) in args.iter().enumerate() {
+                        self.set_reg((i + 1) as u8, arg.clone());
+                    }
+
+                    return Ok(ExecutionResult::Continue);
+                } else {
+                    let base_name = if let Some(paren_pos) = name.find('(') {
+                        &name[..paren_pos]
+                    } else {
+                        &name
+                    };
+
+                    let mut available_native: Vec<&String> = class.native_methods.keys()
+                        .filter(|k| {
+                            if let Some(paren_pos) = k.find('(') {
+                                &k[..paren_pos] == base_name
+                            } else {
+                                k.as_str() == base_name
+                            }
+                        })
+                        .collect();
+
+                    let mut available_bytecode: Vec<&String> = class.methods.keys()
+                        .filter(|k| {
+                            if let Some(paren_pos) = k.find('(') {
+                                &k[..paren_pos] == base_name
+                            } else {
+                                k.as_str() == base_name
+                            }
+                        })
+                        .collect();
+
+                    if !available_native.is_empty() || !available_bytecode.is_empty() {
+                        let mut available = Vec::new();
+                        available_native.sort();
+                        available_bytecode.sort();
+                        available.extend(available_native.iter().map(|s| s.as_str()));
+                        available.extend(available_bytecode.iter().map(|s| s.as_str()));
+                        return Err(Value::String(format!(
+                            "Method '{}' not found on class '{}'. Available methods: [{}]",
+                            name, class_name, available.join(", ")
+                        )));
+                    } else {
+                        return Err(Value::String(format!("Method '{}' not found on class '{}'", name, class_name)));
+                    }
+                }
+            }
+        } else {
+            return Err(Value::String(format!("Class '{}' not found", class_name)));
+        }
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_invoke_interface(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let method_idx = self.bytecode[self.pc()] as usize;
+        self.set_pc(self.pc() + 1);
+        let arg_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+
+        let mut args = Vec::new();
+        for i in 0..arg_count {
+            args.push(self.get_reg(arg_start + i).clone());
+        }
+
+        let instance = if let Some(Value::Instance(instance)) = args.first() {
+            instance.clone()
+        } else {
+            return Err(Value::String("InvokeInterface requires an instance".to_string()));
+        };
+
+        let class_name = instance.lock().unwrap().class.clone();
+
+        if let Some(class) = self.classes.get(&class_name).cloned() {
+            let method_name = class.vtable.get(method_idx)
+                .ok_or_else(|| Value::String(format!(
+                    "Vtable method index {} out of range for class '{}' (vtable size: {})",
+                    method_idx, class_name, class.vtable.len()
+                )))?;
+
+            let method_opt = class.methods.get(method_name)
+                .or_else(|| {
+                    class.methods.iter().find(|(k, _)| {
+                        if let Some(paren_pos) = k.find('(') {
+                            &k[..paren_pos] == method_name
+                        } else {
+                            k.as_str() == method_name
+                        }
+                    }).map(|(_, v)| v)
+                });
+
+            if let Some(method) = method_opt {
+                let caller_frame_base = self.frame_base();
+                let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+                if new_frame_base + method.register_count as usize > self.registers.len() {
+                    return Err(Value::String("Register overflow in interface method call".to_string()));
+                }
+
+                let new_frame = CallFrame::new(
+                    0,
+                    new_frame_base,
+                    arg_count,
+                    method.register_count,
+                    format!("{}.{}", class_name, method_name),
+                    self.source_file.clone(),
+                    Arc::new(method.bytecode.clone()),
+                    self.strings.clone(),
+                    self.functions.clone(),
+                    self.classes.clone(),
+                    Some(rd),
+                );
+
+                self.push_frame(new_frame);
+
+                for (i, arg) in args.iter().enumerate() {
+                    self.set_reg((i + 1) as u8, arg.clone());
+                }
+
+                return Ok(ExecutionResult::Continue);
+            } else {
+                let mut found = false;
+                let mut found_method = None;
+                let mut found_iface_name = None;
+
+                for iface_name in &class.parent_interfaces {
+                    if let Some(iface) = self.classes.get(iface_name) {
+                        let method = iface.methods.iter().find(|(k, _)| {
+                            if let Some(paren_pos) = k.find('(') {
+                                &k[..paren_pos] == method_name
+                            } else {
+                                k.as_str() == method_name
+                            }
+                        }).map(|(_, v)| v.clone());
+
+                        if let Some(m) = method {
+                            found_method = Some(m);
+                            found_iface_name = Some(iface_name.clone());
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                if found {
+                    let method = found_method.unwrap();
+                    let iface_name = found_iface_name.unwrap();
+
+                    let caller_frame_base = self.frame_base();
+                    let new_frame_base = caller_frame_base + arg_start as usize + arg_count as usize;
+
+                    if new_frame_base + method.register_count as usize > self.registers.len() {
+                        return Err(Value::String("Register overflow in interface method call".to_string()));
+                    }
+
+                    let new_frame = CallFrame::new(
+                        0,
+                        new_frame_base,
+                        arg_count,
+                        method.register_count,
+                        format!("{}.{}", iface_name, method_name),
+                        self.source_file.clone(),
+                        Arc::new(method.bytecode.clone()),
+                        self.strings.clone(),
+                        self.functions.clone(),
+                        self.classes.clone(),
+                        Some(rd),
+                    );
+
+                    self.push_frame(new_frame);
+
+                    for (i, arg) in args.iter().enumerate() {
+                        self.set_reg((i + 1) as u8, arg.clone());
+                    }
+
+                    return Ok(ExecutionResult::Continue);
+                } else {
+                    return Err(Value::String(format!("Interface method '{}' not found in class '{}' or its interfaces", method_name, class_name)));
+                }
+            }
+        } else {
+            return Err(Value::String(format!("Class '{}' not found", class_name)));
+        }
+    }
+
+    #[inline]
+    fn op_return(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        let return_value = self.get_reg(rs).clone();
+
+        let frame = self.pop_frame().unwrap();
+        if let Some(rd) = frame.return_reg {
+            self.set_reg(rd, return_value);
+        } else {
+            self.set_reg(0, return_value);
+        }
+
+        return Ok(ExecutionResult::Continue);
+    }
+
+    #[inline]
+    fn op_jump(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let target = u16::from_le_bytes([
+            self.bytecode[self.pc()],
+            self.bytecode[self.pc() + 1],
+        ]) as usize;
+        self.set_pc(target);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_jump_if_true(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let target = u16::from_le_bytes([
+            self.bytecode[self.pc()],
+            self.bytecode[self.pc() + 1],
+        ]) as usize;
+        if self.get_reg(rs).is_truthy() {
+            self.set_pc(target);
+        } else {
+            self.set_pc(self.pc() + 2);
+        }
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_jump_if_false(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let target = u16::from_le_bytes([
+            self.bytecode[self.pc()],
+            self.bytecode[self.pc() + 1],
+        ]) as usize;
+        if !self.get_reg(rs).is_truthy() {
+            self.set_pc(target);
+        } else {
+            self.set_pc(self.pc() + 2);
+        }
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_equal(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        self.set_reg(rd, Value::Bool(self.get_reg(rs1) == self.get_reg(rs2)));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_not_equal(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        self.set_reg(rd, Value::Bool(self.get_reg(rs1) != self.get_reg(rs2)));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_greater(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Bool(left.to_arithmetic_int().unwrap() > right.to_arithmetic_int().unwrap())
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Bool(left.to_float().unwrap() > right.to_float().unwrap())
+            }
+            _ => Value::Bool(false),
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_less(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Bool(left.to_arithmetic_int().unwrap() < right.to_arithmetic_int().unwrap())
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Bool(left.to_float().unwrap() < right.to_float().unwrap())
+            }
+            _ => Value::Bool(false),
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_greater_equal(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Bool(left.to_arithmetic_int().unwrap() >= right.to_arithmetic_int().unwrap())
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Bool(left.to_float().unwrap() >= right.to_float().unwrap())
+            }
+            _ => Value::Bool(false),
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_less_equal(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Bool(left.to_arithmetic_int().unwrap() <= right.to_arithmetic_int().unwrap())
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Bool(left.to_float().unwrap() <= right.to_float().unwrap())
+            }
+            _ => Value::Bool(false),
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_and(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        self.set_reg(rd, Value::Bool(self.get_reg(rs1).is_truthy() && self.get_reg(rs2).is_truthy()));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_or(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        self.set_reg(rd, Value::Bool(self.get_reg(rs1).is_truthy() || self.get_reg(rs2).is_truthy()));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_not(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        self.set_reg(rd, Value::Bool(!self.get_reg(rs).is_truthy()));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_add(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            (Value::String(a), Value::String(b)) => Value::String(a.clone() + b),
+            (Value::String(a), b) => Value::String(a.clone() + &b.to_string()),
+            (a, Value::String(b)) => Value::String(a.to_string() + b),
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Int64(left.to_arithmetic_int().unwrap().wrapping_add(right.to_arithmetic_int().unwrap()))
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
+            }
+            _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                 (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                Value::Float64(left.to_float().unwrap() + right.to_float().unwrap())
+            }
+            _ => Value::Null,
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_subtract(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Int64(left.to_arithmetic_int().unwrap().wrapping_sub(right.to_arithmetic_int().unwrap()))
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
+            }
+            _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                 (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                Value::Float64(left.to_float().unwrap() - right.to_float().unwrap())
+            }
+            _ => Value::Null,
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_multiply(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                Value::Int64(left.to_arithmetic_int().unwrap().wrapping_mul(right.to_arithmetic_int().unwrap()))
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
+            }
+            _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                 (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                Value::Float64(left.to_float().unwrap() * right.to_float().unwrap())
+            }
+            _ => Value::Null,
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_divide(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                let r = right.to_arithmetic_int().unwrap();
+                if r != 0 {
+                    Value::Int64(left.to_arithmetic_int().unwrap() / r)
+                } else {
+                    Value::Null
+                }
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                let r = right.to_float().unwrap();
+                if r != 0.0 {
+                    Value::Float64(left.to_float().unwrap() / r)
+                } else {
+                    Value::Null
+                }
+            }
+            _ if (left.is_arithmetic_int() && right.is_arithmetic_float()) ||
+                 (left.is_arithmetic_float() && right.is_arithmetic_int()) => {
+                let r = right.to_float().unwrap();
+                if r != 0.0 {
+                    Value::Float64(left.to_float().unwrap() / r)
+                } else {
+                    Value::Null
+                }
+            }
+            _ => Value::Null,
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_modulo(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = match (left, right) {
+            _ if left.is_arithmetic_int() && right.is_arithmetic_int() => {
+                let r = right.to_arithmetic_int().unwrap();
+                if r != 0 {
+                    Value::Int64(left.to_arithmetic_int().unwrap() % r)
+                } else {
+                    Value::Null
+                }
+            }
+            _ if left.is_arithmetic_float() && right.is_arithmetic_float() => {
+                let r = right.to_float().unwrap();
+                if r != 0.0 {
+                    Value::Float64(left.to_float().unwrap() % r)
+                } else {
+                    Value::Null
+                }
+            }
+            _ => Value::Null,
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_bit_and(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+            Value::Int64(left.to_arithmetic_int().unwrap() & right.to_arithmetic_int().unwrap())
+        } else {
+            Value::Null
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_bit_or(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+            Value::Int64(left.to_arithmetic_int().unwrap() | right.to_arithmetic_int().unwrap())
+        } else {
+            Value::Null
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_bit_xor(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+            Value::Int64(left.to_arithmetic_int().unwrap() ^ right.to_arithmetic_int().unwrap())
+        } else {
+            Value::Null
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_bit_not(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        let value = self.get_reg(rs);
+        let result = if value.is_arithmetic_int() {
+            Value::Int64(!value.to_arithmetic_int().unwrap())
+        } else {
+            Value::Null
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_shift_left(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+            let shift = right.to_arithmetic_int().unwrap() as u32;
+            Value::Int64(left.to_arithmetic_int().unwrap().wrapping_shl(shift))
+        } else {
+            Value::Null
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_shift_right(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs1 = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs2 = self.bytecode[self.pc()] as u8;
+        let left = self.get_reg(rs1);
+        let right = self.get_reg(rs2);
+        let result = if left.is_arithmetic_int() && right.is_arithmetic_int() {
+            let shift = right.to_arithmetic_int().unwrap() as u32;
+            Value::Int64(left.to_arithmetic_int().unwrap().wrapping_shr(shift))
+        } else {
+            Value::Null
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_concat(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let count = self.bytecode[self.pc()] as u8;
+
+        let mut result = String::new();
+        for i in 0..count {
+            result.push_str(&self.get_reg(rs_start + i).to_string());
+        }
+        self.set_reg(rd, Value::String(result));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_convert(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let cast_type = self.bytecode[self.pc()];
+
+        let value = self.get_reg(rs).clone();
+        let result = match cast_type {
+            0x01 => {
+                match &value {
+                    Value::Int64(n) => Value::Int64(*n),
+                    Value::Int8(n) => Value::Int64(*n as i64),
+                    Value::Int16(n) => Value::Int64(*n as i64),
+                    Value::Int32(n) => Value::Int64(*n as i64),
+                    Value::UInt8(n) => Value::Int64(*n as i64),
+                    Value::UInt16(n) => Value::Int64(*n as i64),
+                    Value::UInt32(n) => Value::Int64(*n as i64),
+                    Value::UInt64(n) => Value::Int64(*n as i64),
+                    Value::Float64(f) => Value::Int64(*f as i64),
+                    Value::Float32(f) => Value::Int64(*f as i64),
+                    Value::Bool(b) => Value::Int64(if *b { 1 } else { 0 }),
+                    Value::String(s) => {
+                        if let Ok(n) = s.parse::<i64>() {
+                            Value::Int64(n)
+                        } else if let Ok(f) = s.parse::<f64>() {
+                            Value::Int64(f as i64)
+                        } else {
+                            Value::Int64(0)
+                        }
+                    }
+                    _ => Value::Int64(0),
+                }
+            }
+            0x02 => {
+                match &value {
+                    Value::Int64(n) => Value::Float64(*n as f64),
+                    Value::Int8(n) => Value::Float64(*n as f64),
+                    Value::Int16(n) => Value::Float64(*n as f64),
+                    Value::Int32(n) => Value::Float64(*n as f64),
+                    Value::UInt8(n) => Value::Float64(*n as f64),
+                    Value::UInt16(n) => Value::Float64(*n as f64),
+                    Value::UInt32(n) => Value::Float64(*n as f64),
+                    Value::UInt64(n) => Value::Float64(*n as f64),
+                    Value::Float64(f) => Value::Float64(*f),
+                    Value::Float32(f) => Value::Float64(*f as f64),
+                    Value::Bool(b) => Value::Float64(if *b { 1.0 } else { 0.0 }),
+                    Value::String(s) => {
+                        if let Ok(n) = s.parse::<f64>() {
+                            Value::Float64(n)
+                        } else {
+                            Value::Float64(0.0)
+                        }
+                    }
+                    _ => Value::Float64(0.0),
+                }
+            }
+            0x03 => {
+                match &value {
+                    Value::String(s) => Value::String(s.clone()),
+                    _ => Value::String(value.to_string()),
+                }
+            }
+            0x04 => Value::Bool(value.is_truthy()),
+            0x05 => Value::Int8(value.to_i8().unwrap_or(0)),
+            0x06 => Value::UInt8(value.to_u8().unwrap_or(0)),
+            0x07 => Value::Int16(value.to_i16().unwrap_or(0)),
+            0x08 => Value::UInt16(value.to_u16().unwrap_or(0)),
+            0x09 => Value::Int32(value.to_i32().unwrap_or(0)),
+            0x0A => Value::UInt32(value.to_u32().unwrap_or(0)),
+            0x0B => Value::Int64(value.to_i64().unwrap_or(0)),
+            0x0C => Value::UInt64(value.to_u64().unwrap_or(0)),
+            0x0D => Value::Float32(value.to_f32().unwrap_or(0.0)),
+            0x0E => Value::Float64(value.to_f64().unwrap_or(0.0)),
+            _ => value,
+        };
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_array(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let rs_start = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let count = self.bytecode[self.pc()] as u8;
+
+        let mut elements = Vec::new();
+        for i in 0..count {
+            elements.push(self.get_reg(rs_start + i).clone());
+        }
+
+        self.set_reg(rd, Value::Array(Arc::new(Mutex::new(elements))));
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_index(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rd = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let r_obj = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let r_idx = self.bytecode[self.pc()] as u8;
+
+        let obj = self.get_reg(r_obj).clone();
+        let idx_val = self.get_reg(r_idx).clone();
+
+        let result = match obj {
+            Value::Array(arr) => {
+                let idx = idx_val.to_int().unwrap_or(0) as usize;
+                let elements = arr.lock().unwrap();
+                elements.get(idx).cloned().unwrap_or(Value::Null)
+            }
+            Value::String(s) => {
+                let idx = idx_val.to_int().unwrap_or(0) as usize;
+                s.chars().nth(idx).map(|c| Value::String(c.to_string())).unwrap_or(Value::Null)
+            }
+            _ => Value::Null,
+        };
+
+        self.set_reg(rd, result);
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_line(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let line = u16::from_le_bytes([
+            self.bytecode[self.pc()],
+            self.bytecode[self.pc() + 1],
+        ]) as usize;
+        self.set_line(line);
+        self.set_pc(self.pc() + 2);
+
+        if self.is_debugging {
+            if let Some(ref file) = self.source_file {
+                if self.breakpoints.contains(&(file.clone(), line)) {
+                    return Ok(ExecutionResult::Breakpoint);
+                }
+            }
+        }
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_try_start(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let catch_pc = u16::from_le_bytes([
+            self.bytecode[self.pc()],
+            self.bytecode[self.pc() + 1],
+        ]) as usize;
+        self.set_pc(self.pc() + 2);
+        let catch_reg = self.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+
+        self.exception_handlers.push(ExceptionHandler {
+            catch_pc,
+            catch_register: catch_reg as usize,
+            call_stack_depth: self.call_stack.len(),
+        });
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_try_end(&mut self) -> Result<ExecutionResult, Value> {
+        self.exception_handlers.pop();
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_throw(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let rs = self.bytecode[self.pc()] as u8;
+        Err(self.get_reg(rs).clone())
+    }
+
+    #[inline]
+    fn op_breakpoint(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Breakpoint)
+    }
+
+    #[inline]
+    fn op_halt(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_unknown(&mut self) -> Result<ExecutionResult, Value> {
+        let opcode = self.bytecode[self.pc()];
+        Err(Value::String(format!("Unknown opcode: 0x{:02X}", opcode)))
     }
 }
