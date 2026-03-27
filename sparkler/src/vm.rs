@@ -767,10 +767,6 @@ pub struct Context {
     pub call_stack: Vec<CallFrame>,
     /// Exception handlers
     pub exception_handlers: Vec<ExceptionHandler>,
-    /// Source file for the current execution context
-    pub source_file: Option<String>,
-    /// Current line being executed
-    pub current_line: usize,
     /// Pending native result register (for async native callbacks)
     pub pending_native_result: Option<u8>,
     /// Callback for pending native operation
@@ -784,8 +780,6 @@ impl Clone for Context {
             locals: self.locals.clone(),
             call_stack: self.call_stack.clone(),
             exception_handlers: self.exception_handlers.clone(),
-            source_file: self.source_file.clone(),
-            current_line: self.current_line,
             pending_native_result: self.pending_native_result,
             pending_native_callback: None, // Cannot clone the callback
         }
@@ -799,8 +793,6 @@ impl Context {
             locals: HashMap::new(),
             call_stack: Vec::new(),
             exception_handlers: Vec::new(),
-            source_file: None,
-            current_line: 1,
             pending_native_result: None,
             pending_native_callback: None,
         }
@@ -1008,13 +1000,14 @@ impl VM {
         self.context.registers.fill(Value::Null);
 
         // Create initial call frame for module-level code
+        let source_file = self.current_source_file();
         self.context.call_stack = vec![CallFrame::new(
             0,
             0,
             0,
             16,
             "<main>".to_string(),
-            self.context.source_file.clone(),
+            source_file,
             self.program.bytecode.clone(),
             self.program.strings.clone(),
             self.program.functions.clone(),
@@ -1022,7 +1015,6 @@ impl VM {
             None,
         )];
 
-        self.context.current_line = 1;
         Ok(())
     }
 
@@ -1077,23 +1069,36 @@ impl VM {
         self.set_reg(dest, value);
     }
 
+    /// Get the current source file from the top frame
+    #[inline]
+    fn current_source_file(&self) -> Option<String> {
+        self.context.call_stack.last().and_then(|f| f.source_file.clone())
+    }
+
+    /// Get the current line number from the top frame
+    #[inline]
+    fn current_line(&self) -> usize {
+        self.context.call_stack.last().map(|f| f.line_number).unwrap_or(1)
+    }
+
     pub fn set_source_file(&mut self, file: &str) {
-        self.context.source_file = Some(file.to_string());
+        if let Some(frame) = self.context.call_stack.last_mut() {
+            frame.source_file = Some(file.to_string());
+        }
     }
 
     pub fn set_line(&mut self, line: usize) {
-        self.context.current_line = line;
         if let Some(frame) = self.context.call_stack.last_mut() {
             frame.line_number = line;
         }
     }
 
     pub fn get_line(&self) -> usize {
-        self.context.current_line
+        self.current_line()
     }
 
     pub fn get_source_file(&self) -> Option<String> {
-        self.context.source_file.clone()
+        self.current_source_file()
     }
 
     /// Set a breakpoint in a source file at a specific line
@@ -1117,8 +1122,6 @@ impl VM {
             self.program.strings = top.strings.clone();
             self.program.functions = top.functions.clone();
             self.program.classes = top.classes.clone();
-            self.context.current_line = top.line_number;
-            self.context.source_file = top.source_file.clone();
         }
         frame
     }
@@ -1669,7 +1672,7 @@ impl VM {
 
         if function_opt.is_none() {
             if !func_name_raw.contains('.') {
-                if let Some(ref source) = self.context.source_file {
+                if let Some(ref source) = self.current_source_file() {
                     let file_name = std::path::Path::new(source)
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -2167,7 +2170,7 @@ impl VM {
                         arg_count,
                         method.register_count,
                         format!("{}.{}", class_name, name),
-                        self.context.source_file.clone(),
+                        self.current_source_file(),
                         Arc::new(method.bytecode.clone()),
                         self.program.strings.clone(),
                         self.program.functions.clone(),
@@ -2287,7 +2290,7 @@ impl VM {
                     arg_count,
                     method.register_count,
                     format!("{}.{}", class_name, method_name),
-                    self.context.source_file.clone(),
+                    self.current_source_file(),
                     Arc::new(method.bytecode.clone()),
                     self.program.strings.clone(),
                     self.program.functions.clone(),
@@ -2343,7 +2346,7 @@ impl VM {
                         arg_count,
                         method.register_count,
                         format!("{}.{}", iface_name, method_name),
-                        self.context.source_file.clone(),
+                        self.current_source_file(),
                         Arc::new(method.bytecode.clone()),
                         self.program.strings.clone(),
                         self.program.functions.clone(),
@@ -3031,7 +3034,7 @@ impl VM {
         self.set_pc(self.pc() + 2);
 
         if self.is_debugging {
-            if let Some(ref file) = self.context.source_file {
+            if let Some(ref file) = self.current_source_file() {
                 if self.breakpoints.contains(&(file.clone(), line)) {
                     return Ok(ExecutionResult::Breakpoint);
                 }
