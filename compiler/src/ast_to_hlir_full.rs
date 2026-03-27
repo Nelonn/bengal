@@ -14,6 +14,7 @@ pub struct AstToHlirConverter {
     current_return_type: HlirType,
     var_types: std::collections::HashMap<String, HlirType>,
     var_ptrs: std::collections::HashMap<String, HlirValue>,
+    var_classes: std::collections::HashMap<String, String>,
     string_table: Vec<String>,
     module_prefix: String,
 }
@@ -27,6 +28,7 @@ impl AstToHlirConverter {
             current_return_type: HlirType::Void,
             var_types: std::collections::HashMap::new(),
             var_ptrs: std::collections::HashMap::new(),
+            var_classes: std::collections::HashMap::new(),
             string_table: Vec::new(),
             module_prefix: module_name.to_string(),
         }
@@ -117,7 +119,8 @@ impl AstToHlirConverter {
         self.current_return_type = return_ty.clone();
         self.var_types.clear();
         self.var_ptrs.clear();
-        
+        self.var_classes.clear();
+
         self.builder.begin_function(&func.name, params, return_ty.clone());
         self.builder.begin_block("entry");
         
@@ -162,6 +165,7 @@ impl AstToHlirConverter {
         self.current_return_type = return_ty.clone();
         self.var_types.clear();
         self.var_ptrs.clear();
+        self.var_classes.clear();
 
         // Prefix the function name with the module path
         let qualified_name = format!("{}.{}", self.module_prefix, func.name);
@@ -232,6 +236,7 @@ impl AstToHlirConverter {
             self.current_return_type = return_ty.clone();
             self.var_types.clear();
             self.var_ptrs.clear();
+            self.var_classes.clear();
 
             self.builder.begin_function(&method_name, params, return_ty.clone());
             self.builder.begin_block("entry");
@@ -254,17 +259,18 @@ impl AstToHlirConverter {
             let is_empty_body = method.body.is_empty();
 
             if is_constructor && is_empty_body {
-                // Initialize fields with default values
+                // Initialize fields with default values by storing to self
+                let self_val = HlirValue::Param(0);
                 for field in &class.fields {
                     if !field.is_static {
-                        // Store default value (42 for int fields)
+                        // Store default value directly to self.field
                         if field.type_name == "int" {
-                            self.builder.store(HlirValue::IntConst(42), self.var_ptrs[&field.name].clone(), HlirType::I32);
+                            self.builder.set_property(self_val.clone(), &field.name, HlirValue::IntConst(42));
                         }
                     }
                 }
                 // Return self
-                self.builder.ret(Some(HlirValue::Param(0)), HlirType::Pointer(Box::new(HlirType::Unknown)));
+                self.builder.ret(Some(self_val), HlirType::Pointer(Box::new(HlirType::Unknown)));
             } else {
                 // Normal method - compile body statements
                 for stmt in &method.body {
@@ -295,29 +301,28 @@ impl AstToHlirConverter {
         if !has_constructor {
             // Generate default constructor
             let constructor_name = format!("{}_constructor()", class.name);
-            self.builder.begin_function(&constructor_name, vec![], HlirType::Pointer(Box::new(HlirType::Unknown)));
+            // Constructor receives self as the first parameter (the pre-allocated instance)
+            self.builder.begin_function(&constructor_name, vec![
+                ("self".to_string(), HlirType::Pointer(Box::new(HlirType::Unknown)))
+            ], HlirType::Pointer(Box::new(HlirType::Unknown)));
             self.builder.begin_block("entry");
 
-            // self is the first parameter (R0) - the object pointer
+            // self is the first parameter (R1 in bytecode, Param(0) in HLIR)
             let self_val = HlirValue::Param(0);
-            self.var_ptrs.insert("self".to_string(), self_val);
+            self.var_ptrs.insert("self".to_string(), self_val.clone());
 
-            // Initialize fields with default values by storing to self+offset
-            // For simplicity, we store directly to field pointers
+            // Initialize fields with default values by storing to self
             for field in &class.fields {
                 if !field.is_static {
-                    let field_ptr = self.builder.alloca(HlirType::I32, &field.name);
-                    self.var_ptrs.insert(field.name.clone(), field_ptr.clone());
-
-                    // Store default value (42 for int fields)
+                    // Store default value directly to self.field
                     if field.type_name == "int" {
-                        self.builder.store(HlirValue::IntConst(42), field_ptr, HlirType::I32);
+                        self.builder.set_property(self_val.clone(), &field.name, HlirValue::IntConst(42));
                     }
                 }
             }
 
-            // Return self (the object pointer, which is R0/Param(0))
-            self.builder.ret(Some(HlirValue::Param(0)), HlirType::Pointer(Box::new(HlirType::Unknown)));
+            // Return self (the object pointer)
+            self.builder.ret(Some(self_val), HlirType::Pointer(Box::new(HlirType::Unknown)));
             self.builder.end_block();
             self.builder.end_function();
         }
@@ -365,11 +370,20 @@ impl AstToHlirConverter {
                 let ty = type_annotation.as_ref()
                     .map(|t| self.type_from_str(t))
                     .unwrap_or_else(|| self.infer_expr_type(expr));
-                
+
                 let ptr = self.builder.alloca(ty.clone(), name);
                 self.var_types.insert(name.clone(), ty.clone());
                 self.var_ptrs.insert(name.clone(), ptr.clone());
-                
+
+                // If the expression is a constructor call, store the class name
+                if let Expr::Call { callee, .. } = expr {
+                    if let Expr::Variable { name: callee_name, .. } = callee.as_ref() {
+                        if callee_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                            self.var_classes.insert(name.clone(), callee_name.clone());
+                        }
+                    }
+                }
+
                 let value = self.convert_expr(expr);
                 self.builder.store(value, ptr, ty);
             }
@@ -630,6 +644,10 @@ impl AstToHlirConverter {
                     if let HlirValue::Param(_) = ptr {
                         return ptr;
                     }
+                    // For pointer types (class instances), return the pointer directly
+                    if matches!(ty, HlirType::Pointer(_)) {
+                        return ptr;
+                    }
                     self.builder.load(ptr, ty)
                 } else {
                     HlirValue::Local(name.clone())
@@ -735,14 +753,11 @@ impl AstToHlirConverter {
                     call_args.extend(func_args);
 
                     // Get the class name from the object's type
-                    // Try to get class name from the object expression
                     let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
-                        // Look up the variable's type from var_types
-                        if let Some(ty) = self.var_types.get(var_name) {
-                            // Extract class name from type (for class types)
-                            // Since we use HlirType::Unknown for classes, we need another approach
-                            // Use a simple heuristic: convert snake_case to PascalCase
-                            let mut parts = var_name.split('_');
+                        // Look up the class name from var_classes
+                        self.var_classes.get(var_name).cloned().unwrap_or_else(|| {
+                            // Fallback: try to infer from variable name (snake_case to PascalCase)
+                            let parts = var_name.split('_');
                             let mut class = String::new();
                             for part in parts {
                                 if let Some(first) = part.chars().next() {
@@ -751,13 +766,11 @@ impl AstToHlirConverter {
                                 }
                             }
                             class
-                        } else {
-                            "Unknown".to_string()
-                        }
+                        })
                     } else {
                         "Unknown".to_string()
                     };
-                    
+
                     let method_name = format!("{}_{}()", class_name, name);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
@@ -955,12 +968,12 @@ impl AstToHlirConverter {
             }
             Expr::Binary { op, left, .. } => {
                 match op {
-                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | 
+                    BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply |
                     BinaryOp::Divide | BinaryOp::Modulo => {
                         self.infer_expr_type(left)
                     }
-                    BinaryOp::Equal | BinaryOp::NotEqual | 
-                    BinaryOp::Less | BinaryOp::LessEqual | 
+                    BinaryOp::Equal | BinaryOp::NotEqual |
+                    BinaryOp::Less | BinaryOp::LessEqual |
                     BinaryOp::Greater | BinaryOp::GreaterEqual => HlirType::Bool,
                     BinaryOp::And | BinaryOp::Or => HlirType::Bool,
                     BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => HlirType::I32,
@@ -977,7 +990,16 @@ impl AstToHlirConverter {
                     UnaryOp::Not | UnaryOp::BitNot => HlirType::Bool,
                 }
             }
-            Expr::Call { .. } => HlirType::I32,
+            Expr::Call { callee, .. } => {
+                // Check if it's a constructor call (starts with uppercase)
+                if let Expr::Variable { name, .. } = callee.as_ref() {
+                    if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        // Constructor returns a pointer to the class instance
+                        return HlirType::Pointer(Box::new(HlirType::Unknown));
+                    }
+                }
+                HlirType::I32
+            }
             Expr::Cast { target_type, .. } => self.cast_type_to_hlir(target_type),
             Expr::Array { .. } => HlirType::Unknown,
             Expr::ObjectLiteral { .. } => HlirType::Unknown,
