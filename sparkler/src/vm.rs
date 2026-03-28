@@ -1707,12 +1707,36 @@ impl VM {
 
         let base_class_name = extract_base_class_name(&func_name);
         let is_constructor = func_name.contains(".constructor(");
+        
+        // Also check if func_name ends with "()" and matches a class name (e.g., "std.http.HttpClient()")
+        let potential_class = if func_name.ends_with("()") {
+            Some(&func_name[..func_name.len()-2]) // Remove "()"
+        } else {
+            None
+        };
+        let is_class_instantiation = !is_constructor && potential_class.map_or(false, |pc| {
+            eprintln!("DEBUG: Checking class instantiation: potential_class={}, exists={}", pc, self.program.classes.contains_key(pc));
+            self.program.classes.contains_key(pc)
+        });
+        
+        eprintln!("DEBUG: func_name={}, is_constructor={}, is_class_instantiation={}, base_class_name={}", func_name, is_constructor, is_class_instantiation, base_class_name);
 
         // Handle constructor calls (both bytecode and native)
-        if is_constructor {
-            if let Some(class) = self.program.classes.get(base_class_name).cloned() {
+        if is_constructor || is_class_instantiation {
+            let class_name: String = if is_class_instantiation {
+                func_name[..func_name.len()-2].to_string() // Remove "()"
+            } else {
+                base_class_name.to_string()
+            };
+            
+            eprintln!("DEBUG: Looking up class: {}, found={}", class_name, self.program.classes.contains_key(&class_name));
+            
+            if let Some(class) = self.program.classes.get(&class_name).cloned() {
+                eprintln!("DEBUG: class.native_create={:?}", class.native_create.is_some());
+                eprintln!("DEBUG: class.methods.len()={}", class.methods.len());
+                
                 let instance = Value::Instance(Arc::new(Mutex::new(Instance {
-                    class: base_class_name.to_string(),
+                    class: class_name.to_string(),
                     fields: class.fields.clone(),
                     private_fields: class.private_fields.clone(),
                     native_data: Arc::new(Mutex::new(None)),
@@ -1721,6 +1745,7 @@ impl VM {
 
                 // Call native_create if available
                 if let Some(native_create) = class.native_create {
+                    eprintln!("DEBUG: Calling native_create");
                     let mut args = vec![instance.clone()];
                     let _ = native_create(&mut args);
                 }
@@ -1729,6 +1754,7 @@ impl VM {
                 // Extract method name from "ClassName.constructor()" -> "constructor()"
                 if let Some(paren_pos) = func_name.find(".constructor(") {
                     let method_name = &func_name[paren_pos + 1..]; // "constructor()"
+                    eprintln!("DEBUG: Looking for native constructor: {}", method_name);
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
                         let result = native_ctor(&mut args);
@@ -1742,6 +1768,14 @@ impl VM {
                 // For bytecode constructors, continue to function call below
                 // For native-only constructors, we're done
                 if class.native_create.is_some() && class.methods.is_empty() {
+                    eprintln!("DEBUG: Returning early (native_create only, no methods)");
+                    return Ok(ExecutionResult::Continue);
+                }
+
+                // If native_create was called and there's no native constructor method,
+                // we're done (the instance was created by native_create)
+                if class.native_create.is_some() {
+                    eprintln!("DEBUG: Returning early (native_create was called)");
                     return Ok(ExecutionResult::Continue);
                 }
             }

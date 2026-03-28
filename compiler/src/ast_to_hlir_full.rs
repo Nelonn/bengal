@@ -238,7 +238,14 @@ impl AstToHlirConverter {
     fn convert_class(&mut self, class: &parser::ClassDef) {
         // Check if class has a constructor
         let has_constructor = class.methods.iter().any(|m| m.name == "constructor");
-        
+
+        // Qualify class name with module prefix for proper mangling
+        let qualified_class_name = if self.module_prefix.is_empty() {
+            class.name.clone()
+        } else {
+            format!("{}.{}", self.module_prefix, class.name)
+        };
+
         for method in &class.methods {
             // Skip native methods - they're handled at runtime
             if method.is_native {
@@ -265,12 +272,12 @@ impl AstToHlirConverter {
                     .map(|t| t.clone())
                     .unwrap_or_else(|| "Unknown".to_string())
             }).collect();
-            
+
             // Convert to Type for mangle function
             let param_types: Vec<Type> = param_types_str.iter().map(|s| Type::from_str(s)).collect();
 
             // Use mangle function for all methods (e.g., "SomeObject.method(str)")
-            let method_name = types::mangle(None, Some(&class.name), &method.name, &param_types);
+            let method_name = types::mangle(None, Some(&qualified_class_name), &method.name, &param_types);
 
             self.current_return_type = return_ty.clone();
             self.var_types.clear();
@@ -401,7 +408,7 @@ impl AstToHlirConverter {
             .collect();
 
         let hlir_class = HlirClass {
-            name: class.name.clone(),
+            name: qualified_class_name.clone(),
             fields,
             private_fields,
             methods,
@@ -469,7 +476,9 @@ impl AstToHlirConverter {
                 // If the expression is a constructor call, store the class name
                 if let Expr::Call { callee, .. } = expr {
                     if let Expr::Variable { name: callee_name, .. } = callee.as_ref() {
-                        if callee_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        // For qualified names like "std.http.HttpClient", extract the last component "HttpClient"
+                        let class_name = callee_name.split('.').last().unwrap_or(callee_name);
+                        if class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
                             self.var_classes.insert(name.clone(), callee_name.clone());
                         }
                     }
@@ -812,8 +821,10 @@ impl AstToHlirConverter {
                     .collect();
 
                 if let Expr::Variable { name, .. } = callee.as_ref() {
-                    // Check if it's a class constructor call (starts with uppercase)
-                    let func_name = if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    // Check if it's a class constructor call
+                    // For qualified names like "std.http.HttpClient", extract the last component "HttpClient"
+                    let class_name = name.split('.').last().unwrap_or(name);
+                    let func_name = if class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
                         // Mangle constructor name with parameter types using the central mangle function
                         let arg_types: Vec<Type> = args.iter().map(|a| {
                             let ty = self.infer_expr_type(a);

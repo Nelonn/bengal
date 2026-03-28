@@ -292,6 +292,15 @@ impl HlirCompiler {
                                         self.native_functions.insert(func.clone(), true);
                                     }
                                 }
+                                // Also register classes from the imported module
+                                for class in &module_info.classes {
+                                    // Map qualified name
+                                    self.import_map.insert(class.clone(), class.clone());
+                                    // Also map simple name (e.g., "HttpClient" from "std.http.HttpClient")
+                                    if let Some(simple_name) = class.split('.').last() {
+                                        self.import_map.insert(simple_name.to_string(), class.clone());
+                                    }
+                                }
                             }
                         }
                     }
@@ -313,6 +322,12 @@ impl HlirCompiler {
                                             }
                                         }
                                     }
+                                    // Also check for class members
+                                    for class in &module_info.classes {
+                                        if class.ends_with(&format!(".{}", member)) {
+                                            self.import_map.insert(member.clone(), class.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -329,6 +344,12 @@ impl HlirCompiler {
                                         }
                                     }
                                 }
+                                // Also register classes from wildcard imports
+                                for class in &module_info.classes {
+                                    if let Some(simple_name) = class.split('.').last() {
+                                        self.import_map.insert(simple_name.to_string(), class.clone());
+                                    }
+                                }
                             }
                         }
                     }
@@ -342,6 +363,11 @@ impl HlirCompiler {
                                     if module_info.native_functions.contains(func) {
                                         self.native_functions.insert(aliased_name, true);
                                     }
+                                }
+                                // Also register classes with alias
+                                for class in &module_info.classes {
+                                    let aliased_name = format!("{}.{}", alias, class.split('.').last().unwrap_or(""));
+                                    self.import_map.insert(aliased_name.clone(), class.clone());
                                 }
                             }
                         }
@@ -520,10 +546,30 @@ impl HlirCompiler {
         // Type check the code if type checking is enabled
         if self.options.enable_type_checking {
             let mut ctx = TypeContext::new();
-            
+
+            // Collect all class names to exclude them from function registration
+            let mut class_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for (module_name, module_info) in &self.loaded_modules {
+                for stmt in &module_info.statements {
+                    if let Stmt::Class(class) = stmt {
+                        let qualified_name = format!("{}.{}", module_name, class.name);
+                        class_names.insert(qualified_name);
+                        if !class.private {
+                            class_names.insert(class.name.clone());
+                        }
+                    }
+                }
+            }
+
             // Register imported functions in the type context with generic signatures
             // This allows the type checker to recognize them without enforcing strict types
+            // Skip class names - they will be registered separately as classes
             for (qualified_name, _) in &self.import_map {
+                // Skip if this is a class name
+                if class_names.contains(qualified_name) {
+                    continue;
+                }
+                
                 // Register as a native function with generic parameters (allows any arguments)
                 ctx.add_function(qualified_name, crate::types::FunctionSignature {
                     name: qualified_name.clone(),
@@ -541,7 +587,25 @@ impl HlirCompiler {
                     mangled_name: None,
                 });
             }
-            
+
+            // Register imported classes in the type context
+            // We need to register classes from all loaded modules
+            for (module_name, module_info) in &self.loaded_modules {
+                for stmt in &module_info.statements {
+                    if let Stmt::Class(class) = stmt {
+                        // Register the class with its qualified name
+                        let mut class_copy = class.clone();
+                        class_copy.name = format!("{}.{}", module_name, class.name);
+                        ctx.add_class(&class_copy);
+
+                        // Also register with simple name for non-private classes
+                        if !class.private {
+                            ctx.add_class(class);
+                        }
+                    }
+                }
+            }
+
             let mut type_checker = TypeChecker::with_context(ctx);
 
             let result = type_checker.check(&statements);
