@@ -231,7 +231,7 @@ fn format_instruction(instr: &InstructionView) -> String {
     if instr.operands.is_empty() {
         format!("  {} | {}\n", instr.address_hex, instr.opcode_name)
     } else {
-        format!("  {} | {:<18} | {}\n", instr.address_hex, instr.opcode_name, instr.operands)
+        format!("  {} | {} {}\n", instr.address_hex, instr.opcode_name, instr.operands)
     }
 }
 

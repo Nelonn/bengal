@@ -30,8 +30,8 @@ pub enum Opcode {
     Call = 0x40,        // Rd, func_idx, arg_start, arg_count
     CallNative = 0x41,  // Rd, name_idx, arg_start, arg_count
     Invoke = 0x42,      // Rd, method_idx, arg_start, arg_count
-    InvokeInterface = 0x43,  // Rd, method_idx, arg_start, arg_count
-    Return = 0x44,           // Rs
+    InvokeInterface = 0x44,  // Rd, method_idx, arg_start, arg_count
+    Return = 0x43,           // Rs
 
     // Indexed native calls (optimized - uses function index instead of string lookup)
     CallNativeIndexed = 0x45,  // Rd, func_idx (u16), arg_start, arg_count
