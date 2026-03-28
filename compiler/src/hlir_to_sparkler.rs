@@ -68,6 +68,8 @@ pub struct HlirToSparkler {
     native_functions: std::collections::HashSet<String>,
     /// Set of generic function names that should use * for mangling
     generic_functions: std::collections::HashSet<String>,
+    /// Set of interface names for detecting interface method calls
+    interface_names: std::collections::HashSet<String>,
 }
 
 impl HlirToSparkler {
@@ -89,6 +91,7 @@ impl HlirToSparkler {
             reg_to_temps: std::collections::HashMap::new(),
             native_functions: std::collections::HashSet::new(),
             generic_functions: std::collections::HashSet::new(),
+            interface_names: std::collections::HashSet::new(),
         }
     }
 
@@ -111,6 +114,7 @@ impl HlirToSparkler {
             reg_to_temps: std::collections::HashMap::new(),
             native_functions: native_functions.into_iter().collect(),
             generic_functions: generic_functions.into_iter().collect(),
+            interface_names: std::collections::HashSet::new(),
         }
     }
 
@@ -392,6 +396,13 @@ impl HlirToSparkler {
 
     /// Compile an HLIR module to Sparkler bytecode
     pub fn compile_module(&mut self, hlir: &HlirModule) -> CompiledBytecode {
+        // Collect interface names for detecting interface method calls
+        for class in &hlir.classes {
+            if class.is_interface {
+                self.interface_names.insert(class.name.clone());
+            }
+        }
+
         // First pass: collect function info and block offsets
         for func in &hlir.functions {
             let mut offset = self.current_offset();
@@ -478,19 +489,31 @@ impl HlirToSparkler {
         // Generate Class metadata from HLIR class info
         let classes: Vec<Class> = hlir.classes.iter().map(|hlir_class| {
             use std::collections::{HashMap, HashSet};
-            
+
             // Create default field values (Null for all fields)
             let mut fields: HashMap<String, sparkler::vm::Value> = HashMap::new();
             for field_name in &hlir_class.fields {
                 fields.insert(field_name.clone(), sparkler::vm::Value::Null);
             }
-            
+
             let private_fields: HashSet<String> = hlir_class.private_fields.iter().cloned().collect();
+
+            // Populate methods from the functions list
+            // Methods are stored with mangled names like "Circle_print()"
+            let mut methods: HashMap<String, sparkler::vm::Method> = HashMap::new();
+            for method_name in &hlir_class.methods {
+                // Find the corresponding function
+                if let Some(func) = functions.iter().find(|f| &f.name == method_name) {
+                    methods.insert(method_name.clone(), sparkler::vm::Method {
+                        name: method_name.clone(),
+                        bytecode: func.bytecode.clone(),
+                        register_count: func.register_count,
+                    });
+                }
+            }
             
-            // Methods will be filled in by the VM when it loads the bytecode
-            let methods: HashMap<String, sparkler::vm::Method> = HashMap::new();
             let native_methods: HashMap<String, sparkler::vm::NativeFn> = HashMap::new();
-            
+
             Class {
                 name: hlir_class.name.clone(),
                 fields,
@@ -500,8 +523,8 @@ impl HlirToSparkler {
                 native_create: None,
                 native_destroy: None,
                 is_native: hlir_class.is_native,
-                parent_interfaces: Vec::new(),
-                vtable: Vec::new(),
+                parent_interfaces: hlir_class.parent_interfaces.clone(),
+                vtable: hlir_class.vtable.clone(),
                 is_interface: hlir_class.is_interface,
             }
         }).collect();
@@ -796,90 +819,145 @@ impl HlirToSparkler {
                 let dest_reg = dest.map(|d| self.get_reg_for_temp(d)).unwrap_or(0);
 
                 if let HlirValue::Function(name) = func {
-                    // Check if this is a generic function - if so, use * for all argument types
-                    // Extract base name (without mangled suffix)
-                    let base_name = name.split('(').next().unwrap_or(name);
-                    
-                    // Check if the base name matches any generic function
-                    let is_generic = self.generic_functions.iter().any(|gf| {
-                        // Extract base name from generic function (without mangled suffix)
-                        let gf_base = gf.split('(').next().unwrap_or(gf);
-                        // Check for exact match or qualified match
-                        base_name == gf_base || base_name.ends_with(&format!(".{}", gf_base))
-                    });
+                    // Check if this is an interface method call
+                    // Pattern: Interface_method() where Interface is an interface name
+                    // The method name format from ast_to_hlir_full.rs is "Class_method()"
+                    let is_interface_call = if let Some(underscore_pos) = name.find('_') {
+                        let potential_interface = &name[..underscore_pos];
+                        self.interface_names.contains(potential_interface)
+                    } else {
+                        false
+                    };
 
-                    // Step 3: emit the call - use CallNative for native functions
-                    // Check if this is a native function by name (try exact match or prefix match)
-                    let is_native = self.native_functions.contains(name.as_str())
-                        || self.native_functions.iter().any(|nf| {
-                            // Check if name starts with the native function name followed by '('
-                            name.starts_with(nf.as_str()) && name[nf.len()..].starts_with('(')
+                    if is_interface_call && !args.is_empty() {
+                        // This is an interface method call - use InvokeInterface
+                        // Extract interface name and method name
+                        let underscore_pos = name.find('_').unwrap();
+                        let interface_name = &name[..underscore_pos];
+                        let method_with_suffix = &name[underscore_pos + 1..];
+                        let method_name = method_with_suffix.trim_end_matches("()");
+
+                        // Add interface name to strings
+                        let _interface_name_idx = self.add_string(interface_name.to_string());
+
+                        // Find the vtable index for this method (use 0 for now - first method in interface)
+                        let method_vtable_idx = 0u8;
+
+                        // All arguments including self (object)
+                        // args[0] is the object (self), args[1..] are the method arguments
+                        let arg_start = self.alloc_consecutive_regs(args.len());
+                        let mut staging_regs: Vec<u8> = Vec::with_capacity(args.len());
+
+                        for (i, arg_val) in args.iter().enumerate() {
+                            let staging_reg = arg_start + i as u8;
+                            let src_reg = self.get_value_reg(arg_val);
+                            staging_regs.push(staging_reg);
+                            if staging_reg != src_reg {
+                                self.emit_opcode(Opcode::Move);
+                                self.emit(staging_reg);
+                                self.emit(src_reg);
+                            }
+                        }
+
+                        // InvokeInterface: Rd, method_idx, arg_start, arg_count
+                        // The VM will use the object's class vtable to find the actual method
+                        self.emit_opcode(Opcode::InvokeInterface);
+                        self.emit(dest_reg);
+                        self.emit(method_vtable_idx);
+                        self.emit(arg_start);
+                        self.emit(args.len() as u8);
+
+                        // Free staging registers
+                        for reg in staging_regs {
+                            self.reusable_regs.push(reg);
+                        }
+                    } else {
+                        // Regular function/method call - use existing logic
+                        // Check if this is a generic function - if so, use * for all argument types
+                        // Extract base name (without mangled suffix)
+                        let base_name = name.split('(').next().unwrap_or(name);
+
+                        // Check if the base name matches any generic function
+                        let is_generic = self.generic_functions.iter().any(|gf| {
+                            // Extract base name from generic function (without mangled suffix)
+                            let gf_base = gf.split('(').next().unwrap_or(gf);
+                            // Check for exact match or qualified match
+                            base_name == gf_base || base_name.ends_with(&format!(".{}", gf_base))
                         });
 
-                    // Mangle the function name with argument types for proper resolution
-                    let arg_type_list: Vec<Type> = if is_generic {
-                        // For generic functions, use * for all arguments
-                        vec![Type::Unknown; arg_types.len()]
-                    } else if is_native {
-                        // For native functions, try to use concrete types
-                        // If types are Unknown, fall back to * for compatibility
-                        let types: Vec<Type> = arg_types.iter().map(hlir_type_to_type).collect();
-                        if types.iter().all(|t| matches!(t, Type::Unknown)) {
-                            // All types are Unknown, use * for each argument
+                        // Step 3: emit the call - use CallNative for native functions
+                        // Check if this is a native function by name (try exact match or prefix match)
+                        let is_native = self.native_functions.contains(name.as_str())
+                            || self.native_functions.iter().any(|nf| {
+                                // Check if name starts with the native function name followed by '('
+                                name.starts_with(nf.as_str()) && name[nf.len()..].starts_with('(')
+                            });
+
+                        // Mangle the function name with argument types for proper resolution
+                        let arg_type_list: Vec<Type> = if is_generic {
+                            // For generic functions, use * for all arguments
                             vec![Type::Unknown; arg_types.len()]
+                        } else if is_native {
+                            // For native functions, try to use concrete types
+                            // If types are Unknown, fall back to * for compatibility
+                            let types: Vec<Type> = arg_types.iter().map(hlir_type_to_type).collect();
+                            if types.iter().all(|t| matches!(t, Type::Unknown)) {
+                                // All types are Unknown, use * for each argument
+                                vec![Type::Unknown; arg_types.len()]
+                            } else {
+                                types
+                            }
                         } else {
-                            types
+                            // For Bengal functions, use concrete types if available
+                            arg_types.iter().map(hlir_type_to_type).collect()
+                        };
+                        let mangled_name = mangle(None, None, name, &arg_type_list);
+                        let func_idx = self.add_string(mangled_name);
+
+                        // --- FIX: evaluate args into their natural registers first,
+                        // then move into a consecutive staging window, and explicitly
+                        // free every staging register after the Call is emitted. ---
+
+                        // Step 1: resolve each argument to a register.
+                        let src_regs: Vec<u8> = args
+                            .iter()
+                            .map(|arg| self.get_value_reg(arg))
+                            .collect();
+
+                        // Step 2: allocate a consecutive staging window.
+                        let arg_start = self.alloc_consecutive_regs(args.len());
+                        let mut staging_regs: Vec<u8> = Vec::with_capacity(args.len());
+
+                        for (i, &src_reg) in src_regs.iter().enumerate() {
+                            let staging_reg = arg_start + i as u8;
+                            staging_regs.push(staging_reg);
+                            if staging_reg != src_reg {
+                                self.emit_opcode(Opcode::Move);
+                                self.emit(staging_reg);
+                                self.emit(src_reg);
+                            }
                         }
-                    } else {
-                        // For Bengal functions, use concrete types if available
-                        arg_types.iter().map(hlir_type_to_type).collect()
-                    };
-                    let mangled_name = mangle(None, None, name, &arg_type_list);
-                    let func_idx = self.add_string(mangled_name);
 
-                    // --- FIX: evaluate args into their natural registers first,
-                    // then move into a consecutive staging window, and explicitly
-                    // free every staging register after the Call is emitted. ---
-
-                    // Step 1: resolve each argument to a register.
-                    let src_regs: Vec<u8> = args
-                        .iter()
-                        .map(|arg| self.get_value_reg(arg))
-                        .collect();
-
-                    // Step 2: allocate a consecutive staging window.
-                    let arg_start = self.alloc_consecutive_regs(args.len());
-                    let mut staging_regs: Vec<u8> = Vec::with_capacity(args.len());
-
-                    for (i, &src_reg) in src_regs.iter().enumerate() {
-                        let staging_reg = arg_start + i as u8;
-                        staging_regs.push(staging_reg);
-                        if staging_reg != src_reg {
-                            self.emit_opcode(Opcode::Move);
-                            self.emit(staging_reg);
-                            self.emit(src_reg);
+                        if is_native {
+                            self.emit_opcode(Opcode::CallNative);
+                            self.emit(dest_reg);
+                            self.emit(func_idx as u8);
+                            self.emit(arg_start);
+                            self.emit(args.len() as u8);
+                        } else {
+                            self.emit_opcode(Opcode::Call);
+                            self.emit(dest_reg);
+                            self.emit(func_idx as u8);
+                            self.emit(arg_start);
+                            self.emit(args.len() as u8);
                         }
-                    }
 
-                    if is_native {
-                        self.emit_opcode(Opcode::CallNative);
-                        self.emit(dest_reg);
-                        self.emit(func_idx as u8);
-                        self.emit(arg_start);
-                        self.emit(args.len() as u8);
-                    } else {
-                        self.emit_opcode(Opcode::Call);
-                        self.emit(dest_reg);
-                        self.emit(func_idx as u8);
-                        self.emit(arg_start);
-                        self.emit(args.len() as u8);
-                    }
-
-                    // Step 4: FIX — return every staging register to the freelist.
-                    // Without this step each call leaked one register per argument,
-                    // causing 100+ registers on call-heavy code.
-                    for reg in staging_regs {
-                        self.reusable_regs.push(reg);
+                        // Step 4: FIX — return every staging register to the freelist.
+                        // Without this step each call leaked one register per argument,
+                        // causing 100+ registers on call-heavy code.
+                        for reg in staging_regs {
+                            self.reusable_regs.push(reg);
+                        }
                     }
                 }
             }

@@ -15,6 +15,8 @@ pub struct AstToHlirConverter {
     var_types: std::collections::HashMap<String, HlirType>,
     var_ptrs: std::collections::HashMap<String, HlirValue>,
     var_classes: std::collections::HashMap<String, String>,
+    /// Map from variable name to declared type name (for interface dispatch)
+    var_declared_type_names: std::collections::HashMap<String, String>,
     string_table: Vec<String>,
     module_prefix: String,
 }
@@ -29,6 +31,7 @@ impl AstToHlirConverter {
             var_types: std::collections::HashMap::new(),
             var_ptrs: std::collections::HashMap::new(),
             var_classes: std::collections::HashMap::new(),
+            var_declared_type_names: std::collections::HashMap::new(),
             string_table: Vec::new(),
             module_prefix: module_name.to_string(),
         }
@@ -50,6 +53,7 @@ impl AstToHlirConverter {
         let mut module_level_stmts: Vec<&Stmt> = Vec::new();
         let mut functions: Vec<&parser::FunctionDef> = Vec::new();
         let mut classes: Vec<&parser::ClassDef> = Vec::new();
+        let mut interfaces: Vec<&parser::InterfaceDef> = Vec::new();
 
         for stmt in stmts {
             match stmt {
@@ -60,6 +64,7 @@ impl AstToHlirConverter {
                     }
                 }
                 Stmt::Class(class) => classes.push(class),
+                Stmt::Interface(interface) => interfaces.push(interface),
                 Stmt::Import { .. } | Stmt::Module { .. } => {
                     // Skip imports - they're handled at runtime
                 }
@@ -70,6 +75,11 @@ impl AstToHlirConverter {
         // Convert functions with module prefix (only non-native functions)
         for func in functions {
             self.convert_function_with_prefix(func);
+        }
+
+        // Convert interfaces first (so they're available for class interface detection)
+        for interface in interfaces {
+            self.convert_interface(interface);
         }
 
         // Convert classes
@@ -120,6 +130,7 @@ impl AstToHlirConverter {
         self.var_types.clear();
         self.var_ptrs.clear();
         self.var_classes.clear();
+        self.var_declared_type_names.clear();
 
         self.builder.begin_function(&func.name, params, return_ty.clone());
         self.builder.begin_block("entry");
@@ -166,6 +177,7 @@ impl AstToHlirConverter {
         self.var_types.clear();
         self.var_ptrs.clear();
         self.var_classes.clear();
+        self.var_declared_type_names.clear();
 
         // Prefix the function name with the module path
         let qualified_name = format!("{}.{}", self.module_prefix, func.name);
@@ -237,6 +249,7 @@ impl AstToHlirConverter {
             self.var_types.clear();
             self.var_ptrs.clear();
             self.var_classes.clear();
+            self.var_declared_type_names.clear();
 
             self.builder.begin_function(&method_name, params, return_ty.clone());
             self.builder.begin_block("entry");
@@ -352,6 +365,18 @@ impl AstToHlirConverter {
             })
             .collect();
 
+        // Build vtable: methods that override interface methods
+        // The vtable contains base method names (without class prefix) for interface dispatch
+        let vtable: Vec<String> = class.methods.iter()
+            .filter(|m| {
+                // Include all non-constructor methods for classes with interfaces
+                class.parent_interfaces.iter().any(|iface_name| {
+                    m.name != "constructor"
+                })
+            })
+            .map(|m| m.name.clone())  // Just the method name, e.g., "print"
+            .collect();
+
         let hlir_class = HlirClass {
             name: class.name.clone(),
             fields,
@@ -359,6 +384,48 @@ impl AstToHlirConverter {
             methods,
             is_native: class.is_native,
             is_interface: false,
+            parent_interfaces: class.parent_interfaces.clone(),
+            vtable,
+        };
+        self.builder.add_class(hlir_class);
+    }
+
+    /// Convert an interface definition to HLIR class metadata
+    fn convert_interface(&mut self, interface: &parser::InterfaceDef) {
+        // Interfaces have no fields
+        let fields: Vec<String> = Vec::new();
+        let private_fields: Vec<String> = Vec::new();
+
+        // Collect interface method names
+        let methods: Vec<String> = interface.methods.iter()
+            .map(|m| {
+                let param_types: Vec<String> = m.params.iter().map(|p| {
+                    p.type_name.as_ref()
+                        .map(|t| t.clone())
+                        .unwrap_or_else(|| "Unknown".to_string())
+                }).collect();
+                if param_types.is_empty() {
+                    format!("{}_{}()", interface.name, m.name)
+                } else {
+                    format!("{}_{}({})", interface.name, m.name, param_types.join(","))
+                }
+            })
+            .collect();
+
+        // Interface vtable contains all method names (base names without mangling)
+        let vtable: Vec<String> = interface.methods.iter()
+            .map(|m| m.name.clone())
+            .collect();
+
+        let hlir_class = HlirClass {
+            name: interface.name.clone(),
+            fields,
+            private_fields,
+            methods,
+            is_native: false,
+            is_interface: true,
+            parent_interfaces: interface.parent_interfaces.clone(),
+            vtable,
         };
         self.builder.add_class(hlir_class);
     }
@@ -374,6 +441,11 @@ impl AstToHlirConverter {
                 let ptr = self.builder.alloca(ty.clone(), name);
                 self.var_types.insert(name.clone(), ty.clone());
                 self.var_ptrs.insert(name.clone(), ptr.clone());
+
+                // Store the declared type name for interface dispatch
+                if let Some(type_ann) = type_annotation {
+                    self.var_declared_type_names.insert(name.clone(), type_ann.clone());
+                }
 
                 // If the expression is a constructor call, store the class name
                 if let Expr::Call { callee, .. } = expr {
@@ -611,9 +683,8 @@ impl AstToHlirConverter {
                 let value = self.convert_expr(expr);
                 self.builder.throw(value);
             }
-            
-            Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | 
-            Stmt::Interface(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
+
+            Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Interface(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
         }
     }
     
@@ -712,6 +783,11 @@ impl AstToHlirConverter {
             }
             
             Expr::Call { callee, args, .. } => {
+                let callee_type = match callee.as_ref() {
+                    Expr::Variable { name, .. } => format!("Variable({})", name),
+                    Expr::Get { object: _, name, .. } => format!("Get(method={})", name),
+                    _ => "Other".to_string(),
+                };
                 let mut func_args: Vec<HlirValue> = args.iter()
                     .map(|a| self.convert_expr(a))
                     .collect();
@@ -752,11 +828,23 @@ impl AstToHlirConverter {
                     let mut call_args = vec![obj_val];
                     call_args.extend(func_args);
 
-                    // Get the class name from the object's type
+                    // Get the class/interface name from the object's declared type (preferred) or inferred type
                     let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
-                        // Look up the class name from var_classes
-                        self.var_classes.get(var_name).cloned().unwrap_or_else(|| {
-                            // Fallback: try to infer from variable name (snake_case to PascalCase)
+                        eprintln!("DEBUG: Method call on variable '{}', method '{}'", var_name, name);
+                        eprintln!("DEBUG: var_declared_type_names: {:?}", self.var_declared_type_names);
+                        eprintln!("DEBUG: var_classes: {:?}", self.var_classes);
+                        // First check if we have a declared type name (e.g., from type annotation)
+                        // This is important for interface-typed variables
+                        if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
+                            eprintln!("DEBUG: Using declared type: {}", declared_type_name);
+                            declared_type_name.clone()
+                        } else if let Some(concrete_class) = self.var_classes.get(var_name) {
+                            eprintln!("DEBUG: Using concrete class: {}", concrete_class);
+                            // Fall back to concrete class from constructor
+                            concrete_class.clone()
+                        } else {
+                            eprintln!("DEBUG: Inferring class name from variable name");
+                            // Last resort: infer from variable name (snake_case to PascalCase)
                             let parts = var_name.split('_');
                             let mut class = String::new();
                             for part in parts {
@@ -766,12 +854,14 @@ impl AstToHlirConverter {
                                 }
                             }
                             class
-                        })
+                        }
                     } else {
+                        eprintln!("DEBUG: Object is not a variable expression");
                         "Unknown".to_string()
                     };
 
                     let method_name = format!("{}_{}()", class_name, name);
+                    eprintln!("DEBUG: Generated method name: {}", method_name);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call(func, call_args, return_ty)
@@ -1085,10 +1175,36 @@ impl AstToHlirConverter {
                     let func = HlirValue::Function(name.clone());
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call_discard(func, func_args, return_ty);
-                } else if let Expr::Get { object: _, name, .. } = callee.as_ref() {
-                    let func = HlirValue::Function(name.clone());
+                } else if let Expr::Get { object, name, .. } = callee.as_ref() {
+                    // Method call - use Class_method() pattern with interface support
+                    let obj_val = self.convert_expr(object);
+                    // Prepend self to arguments
+                    let mut call_args = vec![obj_val];
+                    call_args.extend(func_args);
+                    
+                    let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
+                        if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
+                            declared_type_name.clone()
+                        } else if let Some(concrete_class) = self.var_classes.get(var_name) {
+                            concrete_class.clone()
+                        } else {
+                            let parts = var_name.split('_');
+                            let mut class = String::new();
+                            for part in parts {
+                                if let Some(first) = part.chars().next() {
+                                    class.push(first.to_ascii_uppercase());
+                                    class.push_str(&part[1..]);
+                                }
+                            }
+                            class
+                        }
+                    } else {
+                        "Unknown".to_string()
+                    };
+                    let method_name = format!("{}_{}()", class_name, name);
+                    let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
-                    self.builder.call_discard(func, func_args, return_ty);
+                    self.builder.call_discard(func, call_args, return_ty);
                 }
             }
             Expr::Get { object, .. } => { self.convert_expr_discard(object); }
@@ -1217,10 +1333,36 @@ mod tests {
                     let func = HlirValue::Function(name.clone());
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call_discard(func, func_args, return_ty);
-                } else if let Expr::Get { object: _, name, .. } = callee.as_ref() {
-                    let func = HlirValue::Function(name.clone());
+                } else if let Expr::Get { object, name, .. } = callee.as_ref() {
+                    // Method call - use Class_method() pattern with interface support
+                    let obj_val = self.convert_expr(object);
+                    // Prepend self to arguments
+                    let mut call_args = vec![obj_val];
+                    call_args.extend(func_args);
+                    
+                    let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
+                        if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
+                            declared_type_name.clone()
+                        } else if let Some(concrete_class) = self.var_classes.get(var_name) {
+                            concrete_class.clone()
+                        } else {
+                            let parts = var_name.split('_');
+                            let mut class = String::new();
+                            for part in parts {
+                                if let Some(first) = part.chars().next() {
+                                    class.push(first.to_ascii_uppercase());
+                                    class.push_str(&part[1..]);
+                                }
+                            }
+                            class
+                        }
+                    } else {
+                        "Unknown".to_string()
+                    };
+                    let method_name = format!("{}_{}()", class_name, name);
+                    let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
-                    self.builder.call_discard(func, func_args, return_ty);
+                    self.builder.call_discard(func, call_args, return_ty);
                 }
             }
             Expr::Get { object, .. } => { self.convert_expr_discard(object); }

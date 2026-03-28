@@ -1713,7 +1713,7 @@ impl VM {
 
         if let Some(class) = self.program.classes.get(base_class_name).cloned() {
             let instance = Value::Instance(Arc::new(Mutex::new(Instance {
-                class: func_name.clone(),
+                class: base_class_name.to_string(),
                 fields: class.fields.clone(),
                 private_fields: class.private_fields.clone(),
                 native_data: Arc::new(Mutex::new(None)),
@@ -2271,12 +2271,23 @@ impl VM {
                     "Vtable method index {} out of range for class '{}' (vtable size: {})",
                     method_idx, class_name, class.vtable.len()
                 )))?;
-
+            
             let method_opt = class.methods.get(method_name)
                 .or_else(|| {
+                    // Try to find a method that matches the vtable entry
+                    // Methods are stored as "Class_method(params)" but vtable has "method"
                     class.methods.iter().find(|(k, _)| {
-                        if let Some(paren_pos) = k.find('(') {
-                            &k[..paren_pos] == method_name
+                        // Extract the method name part after the underscore
+                        if let Some(underscore_pos) = k.find('_') {
+                            let method_part = &k[underscore_pos + 1..];
+                            // Remove parentheses and parameters to get base method name
+                            let base_method = if let Some(paren_pos) = method_part.find('(') {
+                                &method_part[..paren_pos]
+                            } else {
+                                method_part
+                            };
+                            // Compare base method names
+                            base_method == method_name
                         } else {
                             k.as_str() == method_name
                         }

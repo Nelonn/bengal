@@ -323,6 +323,8 @@ pub struct HlirClass {
     pub methods: Vec<String>,
     pub is_native: bool,
     pub is_interface: bool,
+    pub parent_interfaces: Vec<String>,
+    pub vtable: Vec<String>,
 }
 
 impl HlirModule {
