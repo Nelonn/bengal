@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 mod repl;
+mod dap;
 
 async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = match fs::read_to_string(source_file) {
@@ -155,6 +156,18 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
+    /// Start DAP server for debugging
+    #[arg(long)]
+    dap: bool,
+
+    /// Host for DAP server (default: 127.0.0.1)
+    #[arg(long, default_value = "127.0.0.1")]
+    dap_host: String,
+
+    /// Port for DAP server (default: 4711)
+    #[arg(long, default_value = "4711")]
+    dap_port: u16,
+
     /// Arguments to pass to the script
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     script_args: Vec<String>,
@@ -167,6 +180,26 @@ async fn main() {
     if let Some(test_path) = args.test {
         if let Err(e) = run_tests(&test_path).await {
             eprintln!("Testing error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // DAP server mode
+    if args.dap {
+        let source_file = args.source_file.clone();
+        if source_file.is_none() {
+            eprintln!("DAP mode requires a source file to debug");
+            std::process::exit(1);
+        }
+        
+        println!("Starting DAP server on {}:{}", args.dap_host, args.dap_port);
+        if let Err(e) = dap::server::run_dap_server_with_source(
+            &args.dap_host,
+            args.dap_port,
+            &source_file.unwrap(),
+        ).await {
+            eprintln!("DAP server error: {}", e);
             std::process::exit(1);
         }
         return;
