@@ -54,9 +54,14 @@ impl AstToHlirConverter {
         let mut functions: Vec<&parser::FunctionDef> = Vec::new();
         let mut classes: Vec<&parser::ClassDef> = Vec::new();
         let mut interfaces: Vec<&parser::InterfaceDef> = Vec::new();
+        let mut module_path: Option<String> = None;
 
         for stmt in stmts {
             match stmt {
+                Stmt::Module { path, .. } => {
+                    // Extract module path from "module x.y.z" declaration
+                    module_path = Some(path.join("."));
+                }
                 Stmt::Function(func) => {
                     // Skip native functions - they're handled at runtime
                     if !func.is_native {
@@ -65,11 +70,18 @@ impl AstToHlirConverter {
                 }
                 Stmt::Class(class) => classes.push(class),
                 Stmt::Interface(interface) => interfaces.push(interface),
-                Stmt::Import { .. } | Stmt::Module { .. } => {
+                Stmt::Import { .. } => {
                     // Skip imports - they're handled at runtime
                 }
                 _ => module_level_stmts.push(stmt),
             }
+        }
+
+        // Use module path from declaration, or empty string if not declared
+        if let Some(path) = module_path {
+            self.module_prefix = path;
+        } else {
+            self.module_prefix = String::new();
         }
 
         // Convert functions with module prefix (only non-native functions)
@@ -88,7 +100,7 @@ impl AstToHlirConverter {
         }
 
         // ALWAYS create module wrapper function - this is the module entry point
-        let func_name = if self.module_prefix == "main" {
+        let func_name = if self.module_prefix.is_empty() {
             "main".to_string()
         } else {
             format!("{}.main", self.module_prefix)
@@ -188,11 +200,9 @@ impl AstToHlirConverter {
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown)
         }).collect();
-        
-        // fn main() stays as "main" (no module prefix) but gets mangled with params
-        // All other functions get module prefix
-        let qualified_name = if func.name == "main" {
-            mangle(None, None, "main", &param_types)
+
+        let qualified_name = if self.module_prefix.is_empty() {
+            mangle(None, None, &func.name, &param_types)
         } else {
             mangle(Some(&self.module_prefix), None, &func.name, &param_types)
         };
