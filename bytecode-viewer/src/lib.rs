@@ -6,181 +6,233 @@
 /// - Clean address | opcode | operands format
 
 use sparkler::Bytecode;
-use sparkler::Function;
-use sparkler::Method;
 use sparkler::Opcode;
 
-/// Display bytecode in Godbolt-style format
-pub fn display_bytecode(bytecode: &Bytecode) {
-    println!("# Bytecode Viewer - Bengal");
-    println!();
-
-    // Display .data section (constants)
-    display_data_section(bytecode);
-
-    // Display module-level (root) code
-    display_root_code(bytecode);
-
-    // Display functions
-    display_functions(bytecode);
-
-    // Display class methods (including constructors)
-    display_class_methods(bytecode);
+/// Represents a single instruction in the bytecode
+#[derive(Debug, Clone)]
+pub struct InstructionView {
+    pub address: usize,
+    pub address_hex: String,
+    pub opcode: Opcode,
+    pub opcode_name: String,
+    pub operands: String,
+    pub operand_count: usize,
 }
 
-/// Display the .data section (constant pool)
-fn display_data_section(bytecode: &Bytecode) {
-    println!(".data");
+/// Represents a function or method in the bytecode
+#[derive(Debug, Clone)]
+pub struct FunctionView {
+    pub name: String,
+    pub register_count: u8,
+    pub source_file: Option<String>,
+    pub instructions: Vec<InstructionView>,
+}
+
+/// Represents the root/module-level code
+#[derive(Debug, Clone)]
+pub struct RootView {
+    pub instructions: Vec<InstructionView>,
+}
+
+/// Represents a class field
+#[derive(Debug, Clone)]
+pub struct ClassFieldView {
+    pub name: String,
+    pub value: String,
+}
+
+/// Represents a class in the bytecode
+#[derive(Debug, Clone)]
+pub struct ClassView {
+    pub name: String,
+    pub fields: Vec<ClassFieldView>,
+}
+
+/// Represents a string constant
+#[derive(Debug, Clone)]
+pub struct StringConstantView {
+    pub index: usize,
+    pub value: String,
+}
+
+/// Represents the .data section
+#[derive(Debug, Clone)]
+pub struct DataView {
+    pub strings: Vec<StringConstantView>,
+    pub classes: Vec<ClassView>,
+}
+
+/// Complete view of the bytecode
+#[derive(Debug, Clone)]
+pub struct BytecodeView {
+    pub data: DataView,
+    pub root: Option<RootView>,
+    pub functions: Vec<FunctionView>,
+}
+
+/// Convert bytecode to a structured view for programmatic consumption
+pub fn view_bytecode(bytecode: &Bytecode) -> BytecodeView {
+    BytecodeView {
+        data: view_data_section(bytecode),
+        root: view_root_code(bytecode),
+        functions: view_functions(bytecode),
+    }
+}
+
+/// View the .data section (constant pool)
+fn view_data_section(bytecode: &Bytecode) -> DataView {
+    let strings = bytecode.strings.iter().enumerate().map(|(i, s)| {
+        StringConstantView {
+            index: i,
+            value: s.clone(),
+        }
+    }).collect();
+
+    let classes = bytecode.classes.iter().map(|class| {
+        let fields = class.fields.iter().map(|(name, value)| {
+            ClassFieldView {
+                name: name.clone(),
+                value: format!("{:?}", value),
+            }
+        }).collect();
+
+        ClassView {
+            name: class.name.clone(),
+            fields,
+        }
+    }).collect();
+
+    DataView { strings, classes }
+}
+
+/// View module-level (root) code
+fn view_root_code(bytecode: &Bytecode) -> Option<RootView> {
+    if bytecode.data.is_empty() {
+        return None;
+    }
+
+    let instructions = decode_instructions(&bytecode.data, bytecode, 0);
+    Some(RootView { instructions })
+}
+
+/// View all functions
+fn view_functions(bytecode: &Bytecode) -> Vec<FunctionView> {
+    bytecode.functions.iter().map(|function| {
+        let instructions = decode_instructions(&function.bytecode, bytecode, 0);
+        FunctionView {
+            name: function.name.clone(),
+            register_count: function.register_count,
+            source_file: function.source_file.clone(),
+            instructions,
+        }
+    }).collect()
+}
+
+/// Decode all instructions from bytecode data
+fn decode_instructions(data: &[u8], bytecode: &Bytecode, start_offset: usize) -> Vec<InstructionView> {
+    let mut instructions = Vec::new();
+    let mut pc = 0;
+
+    while pc < data.len() {
+        let opcode_byte = data[pc];
+        let opcode = opcode_from_byte(opcode_byte);
+        let address = pc;
+        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
+
+        instructions.push(InstructionView {
+            address: address + start_offset,
+            address_hex: format!("{:04x}", address),
+            opcode,
+            opcode_name,
+            operands,
+            operand_count,
+        });
+
+        pc += 1 + operand_count;
+    }
+
+    instructions
+}
+
+/// Display bytecode in Godbolt-style format (prints to console)
+pub fn display_bytecode(bytecode: &Bytecode) {
+    let view = view_bytecode(bytecode);
+    println!("{}", format_bytecode(&view));
+}
+
+/// Format bytecode as a string for display
+pub fn format_bytecode(view: &BytecodeView) -> String {
+    let mut output = String::new();
+
+    output.push_str("# Bytecode Viewer - Bengal\n");
+    output.push('\n');
+
+    // Display .data section
+    output.push_str(&format_data_section(&view.data));
+
+    // Display root code
+    if let Some(root) = &view.root {
+        output.push_str(".root:\n");
+        output.push_str("# module-level code\n");
+        for instr in &root.instructions {
+            output.push_str(&format_instruction(instr));
+        }
+        output.push('\n');
+    }
+
+    // Display functions
+    for function in &view.functions {
+        output.push_str(&format_function(function));
+    }
+
+    output
+}
+
+/// Format the .data section
+fn format_data_section(data: &DataView) -> String {
+    let mut output = String::new();
+
+    output.push_str(".data\n");
 
     // Display string constants
-    for (i, s) in bytecode.strings.iter().enumerate() {
-        println!("  str.{:<4} = \"{}\"", i, escape_string(s));
+    for s in &data.strings {
+        output.push_str(&format!("  str.{:<4} = \"{}\"\n", s.index, escape_string(&s.value)));
     }
 
     // Display class information
-    for class in &bytecode.classes {
-        println!("  class.{} =", class.name);
-        for (field_name, field_value) in &class.fields {
-            println!("    .{} = {:?}", field_name, field_value);
+    for class in &data.classes {
+        output.push_str(&format!("  class.{} =\n", class.name));
+        for field in &class.fields {
+            output.push_str(&format!("    .{} = {}\n", field.name, field.value));
         }
     }
 
-    println!();
+    output.push('\n');
+    output
 }
 
-/// Display all functions
-fn display_functions(bytecode: &Bytecode) {
-    for function in &bytecode.functions {
-        display_function(function, bytecode);
-    }
-}
+/// Format a single function
+fn format_function(function: &FunctionView) -> String {
+    let mut output = String::new();
 
-/// Display class methods (including constructors)
-fn display_class_methods(bytecode: &Bytecode) {
-    for class in &bytecode.classes {
-        if !class.methods.is_empty() {
-            println!("// Class: {}", class.name);
-            let mut methods: Vec<_> = class.methods.values().collect();
-            methods.sort_by(|a, b| a.name.cmp(&b.name));
-            for method in methods {
-                display_method(&class.name, method, bytecode);
-            }
-        }
-    }
-}
+    output.push_str(&format!("{}:\n", function.name));
+    output.push_str(&format!("# registers: {}, source: {:?}\n", function.register_count, function.source_file));
 
-/// Display a single method's bytecode
-fn display_method(class_name: &str, method: &Method, bytecode: &Bytecode) {
-    println!("{}.{}:", class_name, method.name);
-    println!("  # registers: {}", method.register_count);
-
-    let mut pc = 0;
-    let data = &method.bytecode;
-
-    while pc < data.len() {
-        let opcode_byte = data[pc];
-        let opcode = opcode_from_byte(opcode_byte);
-
-        let address = format!("{:04x}", pc);
-
-        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
-
-        if operands.is_empty() {
-            println!("  {} | {}", address, opcode_name);
-        } else {
-            println!("  {} | {:<18} | {}", address, opcode_name, operands);
-        }
-
-        pc += 1 + operand_count;
+    for instr in &function.instructions {
+        output.push_str(&format_instruction(instr));
     }
 
-    println!();
+    output.push('\n');
+    output
 }
 
-/// Resolve function name from index (for CALL instruction)
-/// The CALL instruction uses a string index, not a function table index
-fn resolve_function_name(bytecode: &Bytecode, func_idx: usize) -> String {
-    bytecode.strings.get(func_idx)
-        .map(|s| s.clone())
-        .unwrap_or_else(|| format!("func_{}", func_idx))
-}
-
-/// Resolve method name from index (for INVOKE instruction)
-/// The INVOKE instruction uses a string index, not a method table index
-fn resolve_method_name(bytecode: &Bytecode, method_idx: usize) -> String {
-    bytecode.strings.get(method_idx)
-        .map(|s| s.clone())
-        .unwrap_or_else(|| format!("method_{}", method_idx))
-}
-
-/// Resolve method name from vtable index (for INVOKE_INTERFACE)
-/// The method_idx is an index into the class's vtable
-fn resolve_vtable_method_name(_bytecode: &Bytecode, vtable_idx: usize, method_idx: usize) -> String {
-    // For INVOKE_INTERFACE, we need to find which class the vtable belongs to
-    // and then look up the method name from the vtable
-    // Since we don't have the instance at compile time, we'll show the vtable index
-    // and method index for debugging purposes
-    format!("vtable_{}.method_{}", vtable_idx, method_idx)
-}
-
-/// Display module-level (root) code
-fn display_root_code(bytecode: &Bytecode) {
-    if bytecode.data.is_empty() {
-        return;
+/// Format a single instruction
+fn format_instruction(instr: &InstructionView) -> String {
+    if instr.operands.is_empty() {
+        format!("  {} | {}\n", instr.address_hex, instr.opcode_name)
+    } else {
+        format!("  {} | {:<18} | {}\n", instr.address_hex, instr.opcode_name, instr.operands)
     }
-
-    println!(".root:");
-    println!("# module-level code");
-
-    let mut pc = 0;
-    let data = &bytecode.data;
-
-    while pc < data.len() {
-        let opcode_byte = data[pc];
-        let opcode = opcode_from_byte(opcode_byte);
-
-        let address = format!("{:04x}", pc);
-
-        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
-
-        if operands.is_empty() {
-            println!("  {} | {}", address, opcode_name);
-        } else {
-            println!("  {} | {:<18} | {}", address, opcode_name, operands);
-        }
-
-        pc += 1 + operand_count;
-    }
-
-    println!();
-}
-
-/// Display a single function's bytecode
-fn display_function(function: &Function, bytecode: &Bytecode) {
-    println!("{}:", function.name);
-    println!("# registers: {}, source: {:?}", function.register_count, function.source_file);
-
-    let mut pc = 0;
-    let data = &function.bytecode;
-
-    while pc < data.len() {
-        let opcode_byte = data[pc];
-        let opcode = opcode_from_byte(opcode_byte);
-
-        let address = format!("{:04x}", pc);
-
-        let (opcode_name, operands, operand_count) = decode_instruction(data, pc, opcode, bytecode);
-
-        if operands.is_empty() {
-            println!("  {} | {}", address, opcode_name);
-        } else {
-            println!("  {} | {:<18} | {}", address, opcode_name, operands);
-        }
-
-        pc += 1 + operand_count;
-    }
-
-    println!();
 }
 
 /// Decode instruction and return (name, operands_string, operand_byte_count)
@@ -379,7 +431,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
                     let arg_end = arg_start + arg_count - 1;
                     format!("args=[R{}..R{}]", arg_start, arg_end)
                 };
-                let method_name = resolve_vtable_method_name(bytecode, vtable_idx, arg_start as usize);
+                let method_name = resolve_vtable_method_name(vtable_idx, arg_start as usize);
                 let operands = format!("R{}, {}, {}",
                     data[pc + 1], method_name, args_str);
                 (format!("INVOKE_INTERFACE"), operands, 4)
@@ -717,6 +769,25 @@ fn opcode_from_byte(byte: u8) -> Opcode {
         0xFF => Opcode::Halt,
         _ => Opcode::Nop, // Unknown opcode treated as NOP
     }
+}
+
+/// Resolve function name from index (for CALL instruction)
+fn resolve_function_name(bytecode: &Bytecode, func_idx: usize) -> String {
+    bytecode.strings.get(func_idx)
+        .map(|s| s.clone())
+        .unwrap_or_else(|| format!("func_{}", func_idx))
+}
+
+/// Resolve method name from index (for INVOKE instruction)
+fn resolve_method_name(bytecode: &Bytecode, method_idx: usize) -> String {
+    bytecode.strings.get(method_idx)
+        .map(|s| s.clone())
+        .unwrap_or_else(|| format!("method_{}", method_idx))
+}
+
+/// Resolve method name from vtable index (for INVOKE_INTERFACE)
+fn resolve_vtable_method_name(vtable_idx: usize, method_idx: usize) -> String {
+    format!("vtable_{}.method_{}", vtable_idx, method_idx)
 }
 
 /// Escape special characters in strings for display
