@@ -449,6 +449,7 @@ pub type AsyncCallback = Box<dyn FnOnce(Result<Value, Value>) + Send + 'static>;
 
 pub type NativeFn = fn(&mut Vec<Value>) -> NativeResult;
 pub type NativeFnAsync = fn(&mut Vec<Value>, AsyncCallback) -> NativeResult;
+pub type NativeFallbackFn = fn(&str, &mut Vec<Value>) -> NativeResult;
 
 pub struct NativeFunctionBuilder {
     name: String,
@@ -954,8 +955,8 @@ impl VM {
         module.register(self);
     }
 
-    pub fn register_fallback(&mut self, f: NativeFn) {
-        self.program.fallback_native = Some(crate::linker::NativeFnType::Sync(f));
+    pub fn register_fallback(&mut self, f: NativeFallbackFn) {
+        self.program.fallback_native = Some(crate::linker::NativeFnType::Fallback(f));
         self.program.native_registry.set_fallback(f);
     }
 
@@ -1793,6 +1794,7 @@ impl VM {
                 let result = match func_type {
                     crate::linker::NativeFnType::Sync(f) => f(&mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                    crate::linker::NativeFnType::Fallback(f) => f(&func_name, &mut args),
                 };
                 match result {
                     NativeResult::Ready(val) => {
@@ -1960,6 +1962,7 @@ impl VM {
                 match func_type {
                     crate::linker::NativeFnType::Sync(f) => f(&mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                    crate::linker::NativeFnType::Fallback(f) => f(&name, &mut args),
                 }
             }
             None => {
@@ -1968,6 +1971,7 @@ impl VM {
                         match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),
                             crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                            crate::linker::NativeFnType::Fallback(f) => f(&name, &mut args),
                         }
                     }
                     None => {
@@ -2015,6 +2019,12 @@ impl VM {
                 match func_type {
                     crate::linker::NativeFnType::Sync(f) => f(&mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                    crate::linker::NativeFnType::Fallback(f) => {
+                        // For indexed calls, try to get the function name from the registry
+                        let name = self.program.native_registry.get_name_by_index(func_index)
+                            .unwrap_or_else(|| format!("unknown@{}", func_index));
+                        f(&name, &mut args)
+                    },
                 }
             }
             None => {
@@ -2023,6 +2033,12 @@ impl VM {
                         match func_type {
                             crate::linker::NativeFnType::Sync(f) => f(&mut args),
                             crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
+                            crate::linker::NativeFnType::Fallback(f) => {
+                                // For indexed calls, try to get the function name from the registry
+                                let name = self.program.native_registry.get_name_by_index(func_index)
+                                    .unwrap_or_else(|| format!("unknown@{}", func_index));
+                                f(&name, &mut args)
+                            },
                         }
                     }
                     None => {

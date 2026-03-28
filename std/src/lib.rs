@@ -12,7 +12,7 @@ pub mod str;
 pub mod sys;
 pub mod test;
 
-use sparkler::{NativeModule, NativeResult, Value, VM};
+use sparkler::{NativeFallbackFn, NativeModule, NativeResult, Value, VM};
 
 pub fn register_all(vm: &mut VM) {
     NativeModule::new("std.io")
@@ -194,9 +194,9 @@ pub fn register_all(vm: &mut VM) {
         .function("assertSame", test::native_assert_same)
         .register(vm);
 
-    vm.register_fallback(|_args| {
+    vm.register_fallback(|name, _args| {
         NativeResult::Ready(Value::String(
-            "Native method not available or disabled by runtime".to_string(),
+            format!("Native method not available or disabled by runtime: {}", name),
         ))
     });
 }

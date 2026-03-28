@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use crate::vm::{NativeFn, NativeFnAsync};
+use crate::vm::{NativeFn, NativeFnAsync, NativeFallbackFn};
 
 /// Maximum number of native functions that can be registered
 pub const MAX_NATIVE_FUNCTIONS: usize = 65535;  // u16::MAX
@@ -16,6 +16,7 @@ pub const MAX_NATIVE_FUNCTIONS: usize = 65535;  // u16::MAX
 pub enum NativeFnType {
     Sync(NativeFn),
     Async(NativeFnAsync),
+    Fallback(NativeFallbackFn),
 }
 
 impl Clone for NativeFnType {
@@ -23,6 +24,7 @@ impl Clone for NativeFnType {
         match self {
             NativeFnType::Sync(f) => NativeFnType::Sync(*f),
             NativeFnType::Async(f) => NativeFnType::Async(*f),
+            NativeFnType::Fallback(f) => NativeFnType::Fallback(*f),
         }
     }
 }
@@ -206,6 +208,11 @@ impl NativeFunctionRegistry {
         self.functions.get(index as usize).and_then(|e| e.as_ref())
     }
 
+    /// Get the name for a function by index (for error messages)
+    pub fn get_name_by_index(&self, index: u16) -> Option<String> {
+        self.get_entry(index).map(|e| e.name.clone())
+    }
+
     /// Get the index for a function name (for linking phase)
     pub fn get_index(&self, name: &str) -> Option<u16> {
         self.name_to_index.get(name).copied()
@@ -237,8 +244,8 @@ impl NativeFunctionRegistry {
     }
 
     /// Set the fallback function
-    pub fn set_fallback(&mut self, func: NativeFn) {
-        self.fallback = Some(NativeFnType::Sync(func));
+    pub fn set_fallback(&mut self, func: NativeFallbackFn) {
+        self.fallback = Some(NativeFnType::Fallback(func));
     }
 
     /// Get the fallback function
@@ -379,7 +386,7 @@ impl RuntimeLinker {
     }
 
     /// Set the fallback function
-    pub fn set_fallback(&mut self, func: NativeFn) {
+    pub fn set_fallback(&mut self, func: NativeFallbackFn) {
         let mut registry = self.registry.write().unwrap();
         registry.set_fallback(func);
     }

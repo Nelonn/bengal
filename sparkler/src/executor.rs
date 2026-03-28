@@ -1,4 +1,4 @@
-use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, set_async_callback_sender};
+use crate::vm::{VM, Value, NativeFn, NativeFallbackFn, Class, Function, RunResult, set_async_callback_sender};
 use crate::{debug_vm, Opcode};
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use std::sync::{Arc, RwLock};
@@ -85,7 +85,7 @@ impl Executor {
         }
     }
 
-    pub fn register_fallback(&mut self, f: NativeFn) {
+    pub fn register_fallback(&mut self, f: NativeFallbackFn) {
         // Register fallback with linker if it exists
         if let Some(ref mut linker) = self.linker {
             let registry = linker.registry();
