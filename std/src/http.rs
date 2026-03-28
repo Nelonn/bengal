@@ -370,7 +370,7 @@ pub fn native_http_client_constructor(_args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-/// Helper function to get or create HttpClientState from instance's native_data
+/// Helper function to get HttpClientState from instance's native_data
 fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientState>>, Value> {
     if args.is_empty() {
         return Err(Value::String(
@@ -383,30 +383,12 @@ fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientSt
         let native_data = instance_lock.native_data.clone();
         drop(instance_lock);
 
-        // Try to get existing state
-        let existing = {
-            let data = native_data.lock().unwrap();
-            if let Some(boxed) = data.as_ref() {
-                if let Some(state) = boxed.downcast_ref::<Arc<Mutex<HttpClientState>>>() {
-                    Some(state.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
+        let data = native_data.lock().unwrap();
+        if let Some(boxed) = data.as_ref() {
+            if let Some(state) = boxed.downcast_ref::<Arc<Mutex<HttpClientState>>>() {
+                return Ok(state.clone());
             }
-        };
-
-        if let Some(state) = existing {
-            return Ok(state);
         }
-
-        // Create new state if not exists
-        let state = Arc::new(Mutex::new(HttpClientState::default()));
-        let mut data = native_data.lock().unwrap();
-        // Store the state in native_data by boxing and casting to dyn Any
-        *data = Some(Box::new(state.clone()) as Box<dyn Any + Send + Sync>);
-        return Ok(state);
     }
 
     Err(Value::String("Expected HttpClient instance".to_string()))
@@ -484,7 +466,7 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
 
     // Get the callback sender from sparkler
     let callback_tx = get_async_callback_sender();
-    
+
     if let Some(tx) = callback_tx {
         let url_clone = url.clone();
         std::thread::spawn(move || {

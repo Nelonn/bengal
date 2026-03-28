@@ -1793,10 +1793,8 @@ impl VM {
                     let method_name = &func_name[paren_pos + 1..]; // "constructor()"
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
-                        let result = native_ctor(&mut args);
-                        if let NativeResult::Ready(val) = result {
-                            self.set_reg(rd, val);
-                        }
+                        let _ = native_ctor(&mut args);
+                        // Don't overwrite rd - it already has the instance
                         return Ok(ExecutionResult::Continue);
                     }
                 }
@@ -1951,8 +1949,9 @@ impl VM {
                     // Look for bytecode method
                     if let Some(method) = class.methods.get(method_name_with_args) {
                         // Create call frame for bytecode method
-                        let mut args = vec![self.get_reg(rd).clone()]; // self
-                        for i in 0..arg_count {
+                        // Get self from arg_start (first argument is the instance)
+                        let mut args = vec![self.get_reg(arg_start).clone()]; // self
+                        for i in 1..arg_count {
                             args.push(self.get_reg(arg_start + i).clone());
                         }
 
@@ -2043,19 +2042,53 @@ impl VM {
                 });
 
             if let Some(class) = class_opt {
-                if let Some(native_method) = class.native_methods.get(method_name) {
-                    // Get self from rd (instance was created by previous call or constructor)
-                    let instance = self.get_reg(rd).clone();
-                    let mut args = vec![instance];
-                    for i in 0..arg_count {
-                        args.push(self.get_reg(arg_start + i).clone());
+                // Special handling for constructor - it should create the instance
+                if method_name.starts_with("constructor(") {
+                    // Create the instance
+                    let instance = Value::Instance(Arc::new(Mutex::new(Instance {
+                        class: class_name.to_string(),
+                        fields: class.fields.clone(),
+                        private_fields: class.private_fields.clone(),
+                        native_data: Arc::new(Mutex::new(None)),
+                    })));
+                    self.set_reg(rd, instance.clone());
+
+                    // Call native_create if available
+                    if let Some(native_create) = class.native_create {
+                        let mut args = vec![instance.clone()];
+                        let _ = native_create(&mut args);
                     }
-                    let result = native_method(&mut args);
-                    if let NativeResult::Ready(val) = result {
-                        self.set_reg(rd, val);
+
+                    // Call the native constructor method if available
+                    if let Some(native_ctor) = class.native_methods.get(method_name) {
+                        let mut args = vec![instance];
+                        let _ = native_ctor(&mut args);
+                        // Don't overwrite rd - it already has the instance
                     }
                     self.set_pc(self.pc() + 1);
                     return Ok(ExecutionResult::Continue);
+                }
+
+                if let Some(native_method) = class.native_methods.get(method_name) {
+                    // Get self from arg_start (first argument is the instance)
+                    let instance = self.get_reg(arg_start).clone();
+                    let mut args = vec![instance];
+                    for i in 1..arg_count {
+                        args.push(self.get_reg(arg_start + i).clone());
+                    }
+                    let result = native_method(&mut args);
+                    match result {
+                        NativeResult::Ready(val) => {
+                            self.set_reg(rd, val);
+                            self.set_pc(self.pc() + 1);
+                            return Ok(ExecutionResult::Continue);
+                        }
+                        NativeResult::Pending => {
+                            self.context.pending_native_result = Some(rd);
+                            self.set_pc(self.pc() + 1);
+                            return Ok(ExecutionResult::Suspended);
+                        }
+                    }
                 }
             }
         }
