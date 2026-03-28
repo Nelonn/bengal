@@ -73,7 +73,7 @@ impl AstToHlirConverter {
         }
 
         // Convert functions with module prefix (only non-native functions)
-        for func in functions {
+        for func in &functions {
             self.convert_function_with_prefix(func);
         }
 
@@ -87,24 +87,45 @@ impl AstToHlirConverter {
             self.convert_class(class);
         }
 
-        // Wrap module-level statements in a function
+        // Wrap module-level statements in a function (module wrapper)
         if !module_level_stmts.is_empty() {
             let func_name = if self.module_prefix == "main" {
                 "main".to_string()
             } else {
                 format!("{}.main", self.module_prefix)
             };
-            self.builder.begin_function(&func_name, vec![], HlirType::Void);
-            self.builder.begin_block("entry");
-            self.current_return_type = HlirType::Void;
 
-            for stmt in module_level_stmts {
-                self.convert_stmt(stmt);
+            // Check if a function named "main()" already exists (user-defined fn main())
+            let main_function_exists = functions.iter().any(|f| f.name == "main()");
+
+            if main_function_exists {
+                // A main function exists - create module wrapper that CALLs it
+                self.builder.begin_function(&func_name, vec![], HlirType::Void);
+                self.builder.begin_block("entry");
+                self.current_return_type = HlirType::Void;
+
+                // Convert module-level statements (includes the main() call)
+                for stmt in module_level_stmts {
+                    self.convert_stmt(stmt);
+                }
+
+                self.builder.ret(None, HlirType::Void);
+                self.builder.end_block();
+                self.builder.end_function();
+            } else {
+                // No main function - create wrapper for module-level statements
+                self.builder.begin_function(&func_name, vec![], HlirType::Void);
+                self.builder.begin_block("entry");
+                self.current_return_type = HlirType::Void;
+
+                for stmt in module_level_stmts {
+                    self.convert_stmt(stmt);
+                }
+
+                self.builder.ret(None, HlirType::Void);
+                self.builder.end_block();
+                self.builder.end_function();
             }
-
-            self.builder.ret(None, HlirType::Void);
-            self.builder.end_block();
-            self.builder.end_function();
         }
 
         self.builder.clone().build()
@@ -160,6 +181,8 @@ impl AstToHlirConverter {
 
     /// Convert a function definition with module prefix
     fn convert_function_with_prefix(&mut self, func: &parser::FunctionDef) {
+        use crate::types::{mangle, Type};
+        
         let params: Vec<(String, HlirType)> = func.params.iter()
             .map(|p| {
                 let ty = p.type_name.as_ref()
@@ -179,8 +202,21 @@ impl AstToHlirConverter {
         self.var_classes.clear();
         self.var_declared_type_names.clear();
 
-        // Prefix the function name with the module path
-        let qualified_name = format!("{}.{}", self.module_prefix, func.name);
+        // Build parameter types for mangling
+        let param_types: Vec<Type> = func.params.iter().map(|p| {
+            p.type_name.as_ref()
+                .map(|t| Type::from_str(t))
+                .unwrap_or(Type::Unknown)
+        }).collect();
+        
+        // fn main() stays as "main" (no module prefix) but gets mangled with params
+        // All other functions get module prefix
+        let qualified_name = if func.name == "main" {
+            mangle(None, None, "main", &param_types)
+        } else {
+            mangle(Some(&self.module_prefix), None, &func.name, &param_types)
+        };
+        
         self.builder.begin_function(&qualified_name, params, return_ty.clone());
         self.builder.begin_block("entry");
 
