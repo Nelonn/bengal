@@ -842,14 +842,31 @@ impl HlirToSparkler {
 
                         // All arguments including self (object)
                         // args[0] is the object (self), args[1..] are the method arguments
-                        let arg_start = self.alloc_consecutive_regs(args.len());
-                        let mut staging_regs: Vec<u8> = Vec::with_capacity(args.len());
+                        // Step 1: resolve each argument to a register
+                        let src_regs: Vec<u8> = args
+                            .iter()
+                            .map(|arg| self.get_value_reg(arg))
+                            .collect();
 
-                        for (i, arg_val) in args.iter().enumerate() {
-                            let staging_reg = arg_start + i as u8;
-                            let src_reg = self.get_value_reg(arg_val);
-                            staging_regs.push(staging_reg);
-                            if staging_reg != src_reg {
+                        // Step 2: Check if source registers are already consecutive
+                        let (arg_start, staging_regs, needs_moves) = if args.is_empty() {
+                            (0, vec![], false)
+                        } else if args.len() == 1 {
+                            (src_regs[0], vec![src_regs[0]], false)
+                        } else if src_regs.windows(2).all(|w| w[1] == w[0] + 1) {
+                            (src_regs[0], src_regs.clone(), false)
+                        } else {
+                            let arg_start = self.alloc_consecutive_regs(args.len());
+                            let staging_regs: Vec<u8> = (0..args.len())
+                                .map(|i| arg_start + i as u8)
+                                .collect();
+                            (arg_start, staging_regs, true)
+                        };
+
+                        // Emit MOVEs only if source registers weren't consecutive
+                        if needs_moves {
+                            for (i, &src_reg) in src_regs.iter().enumerate() {
+                                let staging_reg = staging_regs[i];
                                 self.emit_opcode(Opcode::Move);
                                 self.emit(staging_reg);
                                 self.emit(src_reg);
@@ -857,16 +874,17 @@ impl HlirToSparkler {
                         }
 
                         // InvokeInterface: Rd, method_idx, arg_start, arg_count
-                        // The VM will use the object's class vtable to find the actual method
                         self.emit_opcode(Opcode::InvokeInterface);
                         self.emit(dest_reg);
                         self.emit(method_vtable_idx);
                         self.emit(arg_start);
                         self.emit(args.len() as u8);
 
-                        // Free staging registers
-                        for reg in staging_regs {
-                            self.reusable_regs.push(reg);
+                        // Free staging registers (only if we allocated them)
+                        if needs_moves {
+                            for reg in staging_regs {
+                                self.reusable_regs.push(reg);
+                            }
                         }
                     } else {
                         // Regular function/method call - use existing logic
@@ -911,30 +929,44 @@ impl HlirToSparkler {
                         let mangled_name = mangle(None, None, name, &arg_type_list);
                         let func_idx = self.add_string(mangled_name);
 
-                        // --- FIX: evaluate args into their natural registers first,
-                        // then move into a consecutive staging window, and explicitly
-                        // free every staging register after the Call is emitted. ---
-
+                        // --- Optimized call argument handling ---
                         // Step 1: resolve each argument to a register.
                         let src_regs: Vec<u8> = args
                             .iter()
                             .map(|arg| self.get_value_reg(arg))
                             .collect();
 
-                        // Step 2: allocate a consecutive staging window.
-                        let arg_start = self.alloc_consecutive_regs(args.len());
-                        let mut staging_regs: Vec<u8> = Vec::with_capacity(args.len());
+                        // Step 2: Check if source registers are already consecutive.
+                        // If yes, reuse them directly without MOVEs.
+                        let (arg_start, staging_regs, needs_moves) = if args.is_empty() {
+                            // No arguments: use R0 as arg_start
+                            (0, vec![], false)
+                        } else if args.len() == 1 {
+                            // Single argument: use its register directly
+                            (src_regs[0], vec![src_regs[0]], false)
+                        } else if src_regs.windows(2).all(|w| w[1] == w[0] + 1) {
+                            // All registers are consecutive: use them directly
+                            (src_regs[0], src_regs.clone(), false)
+                        } else {
+                            // Not consecutive: allocate staging window and emit MOVEs
+                            let arg_start = self.alloc_consecutive_regs(args.len());
+                            let staging_regs: Vec<u8> = (0..args.len())
+                                .map(|i| arg_start + i as u8)
+                                .collect();
+                            (arg_start, staging_regs, true)
+                        };
 
-                        for (i, &src_reg) in src_regs.iter().enumerate() {
-                            let staging_reg = arg_start + i as u8;
-                            staging_regs.push(staging_reg);
-                            if staging_reg != src_reg {
+                        // Emit MOVEs only if source registers weren't consecutive
+                        if needs_moves {
+                            for (i, &src_reg) in src_regs.iter().enumerate() {
+                                let staging_reg = staging_regs[i];
                                 self.emit_opcode(Opcode::Move);
                                 self.emit(staging_reg);
                                 self.emit(src_reg);
                             }
                         }
 
+                        // Step 3: emit the call
                         if is_native {
                             self.emit_opcode(Opcode::CallNative);
                             self.emit(dest_reg);
@@ -949,11 +981,11 @@ impl HlirToSparkler {
                             self.emit(args.len() as u8);
                         }
 
-                        // Step 4: FIX — return every staging register to the freelist.
-                        // Without this step each call leaked one register per argument,
-                        // causing 100+ registers on call-heavy code.
-                        for reg in staging_regs {
-                            self.reusable_regs.push(reg);
+                        // Step 4: return staging registers to freelist (only if we allocated them)
+                        if needs_moves {
+                            for reg in staging_regs {
+                                self.reusable_regs.push(reg);
+                            }
                         }
                     }
                 }
