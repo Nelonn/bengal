@@ -446,12 +446,18 @@ impl HlirToSparkler {
         }
 
         // Generate root section that calls the module wrapper
-        // Root ALWAYS calls "<module_name>.main" - the module entry point
+        // Root ALWAYS calls "<module_name>._main" - the module entry point
+        // For main module (no module prefix), the function is just "_main"
         let main_function_name = {
-            let expected_wrapper_name = format!("{}.main", hlir.name);
+            let expected_wrapper_name = format!("{}._main", hlir.name);
+            // First try with module prefix (e.g., "std.io._main")
             hlir.functions.iter()
                 .find(|f| f.name == expected_wrapper_name)
                 .map(|f| f.name.clone())
+                // Fall back to just "_main" for main module (when module_prefix is empty)
+                .or_else(|| hlir.functions.iter()
+                    .find(|f| f.name == "_main")
+                    .map(|f| f.name.clone()))
         };
 
         let root_bytecode = if let Some(main_name) = main_function_name {

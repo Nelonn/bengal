@@ -34,18 +34,18 @@ pub fn get_async_callback_sender() -> Option<std::sync::mpsc::Sender<Result<Valu
 }
 
 /// Extract base class name from generic type syntax (e.g., "Array<int>" -> "Array")
-/// or from constructor names (e.g., "SomeObject_constructor(str)" -> "SomeObject")
+/// or from constructor names (e.g., "SomeObject.constructor(str)" -> "SomeObject")
 fn extract_base_class_name(name: &str) -> &str {
     // Handle generic types like Array<T>
     if let Some(angle_pos) = name.find('<') {
         return &name[..angle_pos];
     }
-    
-    // Handle constructor names like SomeObject_constructor(str)
-    if let Some(constructor_pos) = name.find("_constructor(") {
+
+    // Handle constructor names like SomeObject.constructor(str)
+    if let Some(constructor_pos) = name.find(".constructor(") {
         return &name[..constructor_pos];
     }
-    
+
     name
 }
 
@@ -565,7 +565,7 @@ impl NativeModule {
     }
 
     /// Start defining a native class with fluent API
-    /// 
+    ///
     /// # Example
     /// ```ignore
     /// NativeModule::new("std.sys")
@@ -579,12 +579,8 @@ impl NativeModule {
     ///     .register(vm);
     /// ```
     pub fn class(self, class_name: &str) -> NativeClassBuilder {
-        let full_class_name = if class_name.contains('.') {
-            class_name.to_string()
-        } else {
-            format!("{}.{}", self.name, class_name)
-        };
-        NativeClassBuilder::new(full_class_name, self)
+        // Class names are not prefixed with module name - they are global
+        NativeClassBuilder::new(class_name.to_string(), self)
     }
 
     /// Register a pre-built NativeClass
@@ -1710,19 +1706,44 @@ impl VM {
         };
 
         let base_class_name = extract_base_class_name(&func_name);
+        let is_constructor = func_name.contains(".constructor(");
 
-        if let Some(class) = self.program.classes.get(base_class_name).cloned() {
-            let instance = Value::Instance(Arc::new(Mutex::new(Instance {
-                class: base_class_name.to_string(),
-                fields: class.fields.clone(),
-                private_fields: class.private_fields.clone(),
-                native_data: Arc::new(Mutex::new(None)),
-            })));
-            self.set_reg(rd, instance.clone());
+        // Handle constructor calls (both bytecode and native)
+        if is_constructor {
+            if let Some(class) = self.program.classes.get(base_class_name).cloned() {
+                let instance = Value::Instance(Arc::new(Mutex::new(Instance {
+                    class: base_class_name.to_string(),
+                    fields: class.fields.clone(),
+                    private_fields: class.private_fields.clone(),
+                    native_data: Arc::new(Mutex::new(None)),
+                })));
+                self.set_reg(rd, instance.clone());
 
-            if let Some(native_create) = class.native_create {
-                let mut args = vec![instance];
-                let _ = native_create(&mut args);
+                // Call native_create if available
+                if let Some(native_create) = class.native_create {
+                    let mut args = vec![instance.clone()];
+                    let _ = native_create(&mut args);
+                }
+
+                // Check for native constructor method
+                // Extract method name from "ClassName.constructor()" -> "constructor()"
+                if let Some(paren_pos) = func_name.find(".constructor(") {
+                    let method_name = &func_name[paren_pos + 1..]; // "constructor()"
+                    if let Some(native_ctor) = class.native_methods.get(method_name) {
+                        let mut args = vec![instance];
+                        let result = native_ctor(&mut args);
+                        if let NativeResult::Ready(val) = result {
+                            self.set_reg(rd, val);
+                        }
+                        return Ok(ExecutionResult::Continue);
+                    }
+                }
+
+                // For bytecode constructors, continue to function call below
+                // For native-only constructors, we're done
+                if class.native_create.is_some() && class.methods.is_empty() {
+                    return Ok(ExecutionResult::Continue);
+                }
             }
         }
 
@@ -1756,7 +1777,6 @@ impl VM {
 
         if let Some(function) = function_opt {
             let mut args = Vec::new();
-            let is_constructor = func_name.contains("_constructor(");
 
             // For constructors, the instance is created by the VM and stored in rd
             // For instance methods, self is passed as the first argument from the caller
@@ -1802,6 +1822,79 @@ impl VM {
 
             return Ok(ExecutionResult::Continue);
         } else {
+            // Check if this is a method call in the format "Class.method(args)" (new)
+            // or "Class_method(args)" (old format for backward compatibility)
+            let (potential_class_name, method_name_with_args) = 
+                if let Some(dot_pos) = func_name_raw.find('.') {
+                    // New format: Class.method(args)
+                    (&func_name_raw[..dot_pos], &func_name_raw[dot_pos + 1..])
+                } else if let Some(underscore_pos) = func_name_raw.find('_') {
+                    // Old format: Class_method(args)
+                    (&func_name_raw[..underscore_pos], &func_name_raw[underscore_pos + 1..])
+                } else {
+                    ("", func_name_raw.as_str())
+                };
+
+            // Check if this looks like a class method call (class name starts with uppercase)
+            if !potential_class_name.is_empty() && potential_class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                if let Some(class) = self.program.classes.get(potential_class_name).cloned() {
+                    // Look for native method
+                    if let Some(native_method) = class.native_methods.get(method_name_with_args) {
+                        // Get self from rd (instance was created by previous call or constructor)
+                        let instance = self.get_reg(rd).clone();
+                        let mut args = vec![instance];
+                        for i in 0..arg_count {
+                            args.push(self.get_reg(arg_start + i).clone());
+                        }
+                        let result = native_method(&mut args);
+                        if let NativeResult::Ready(val) = result {
+                            self.set_reg(rd, val);
+                        }
+                        return Ok(ExecutionResult::Continue);
+                    }
+
+                    // Look for bytecode method
+                    if let Some(method) = class.methods.get(method_name_with_args) {
+                        // Create call frame for bytecode method
+                        let mut args = vec![self.get_reg(rd).clone()]; // self
+                        for i in 0..arg_count {
+                            args.push(self.get_reg(arg_start + i).clone());
+                        }
+
+                        let caller_frame = self.context.call_stack.last().unwrap();
+                        let new_frame_base = caller_frame.frame_base + caller_frame.register_count as usize;
+
+                        if new_frame_base + method.register_count as usize > self.context.registers.len() {
+                            return Err(Value::String("Register overflow: too many nested calls".to_string()));
+                        }
+
+                        // Method doesn't have param_count or source_file, use defaults
+                        let new_frame = CallFrame::new(
+                            0,
+                            new_frame_base,
+                            arg_count + 1, // self + args
+                            method.register_count,
+                            func_name_raw.clone(),
+                            None,
+                            Arc::new(method.bytecode.clone()),
+                            self.program.strings.clone(),
+                            self.program.functions.clone(),
+                            self.program.classes.clone(),
+                            Some(rd),
+                        );
+
+                        self.push_frame(new_frame);
+
+                        // Set up arguments
+                        for (i, arg) in args.iter().enumerate() {
+                            self.set_reg((i + 1) as u8, arg.clone());
+                        }
+
+                        return Ok(ExecutionResult::Continue);
+                    }
+                }
+            }
+
             return Err(Value::String(format!("Function not found: {}", func_name)));
         }
     }

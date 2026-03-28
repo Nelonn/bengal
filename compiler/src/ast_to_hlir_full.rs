@@ -1,10 +1,11 @@
 //! Complete AST to HLIR Converter - FULLY FUNCTIONAL
-//! 
+//!
 //! This module converts Bengal AST to HLIR (High-Level IR).
 //! Supports ALL Bengal language features.
 
 use crate::parser::{self, Expr, Stmt, BinaryOp, UnaryOp, Literal, CastType, InterpPart};
 use crate::hlir::{HlirBuilder, HlirModule, HlirType, HlirValue, HlirBinOp, HlirUnaryOp, HlirCastKind, HlirClass};
+use crate::types::{self, Type};
 
 /// AST to HLIR converter
 pub struct AstToHlirConverter {
@@ -259,17 +260,17 @@ impl AstToHlirConverter {
                 .unwrap_or(HlirType::Void);
 
             // Build mangled method name with parameter types for overloading support
-            let param_types: Vec<String> = method.params.iter().map(|p| {
+            let param_types_str: Vec<String> = method.params.iter().map(|p| {
                 p.type_name.as_ref()
                     .map(|t| t.clone())
                     .unwrap_or_else(|| "Unknown".to_string())
             }).collect();
             
-            let method_name = if param_types.is_empty() {
-                format!("{}_{}()", class.name, method.name)
-            } else {
-                format!("{}_{}({})", class.name, method.name, param_types.join(","))
-            };
+            // Convert to Type for mangle function
+            let param_types: Vec<Type> = param_types_str.iter().map(|s| Type::from_str(s)).collect();
+
+            // Use mangle function for all methods (e.g., "SomeObject.method(str)")
+            let method_name = types::mangle(None, Some(&class.name), &method.name, &param_types);
 
             self.current_return_type = return_ty.clone();
             self.var_types.clear();
@@ -338,8 +339,8 @@ impl AstToHlirConverter {
 
         // Generate default constructor only if one doesn't already exist
         if !has_constructor {
-            // Generate default constructor
-            let constructor_name = format!("{}_constructor()", class.name);
+            // Generate default constructor using the central mangle function
+            let constructor_name = types::mangle(None, Some(&class.name), "constructor", &[]);
             // Constructor receives self as the first parameter (the pre-allocated instance)
             self.builder.begin_function(&constructor_name, vec![
                 ("self".to_string(), HlirType::Pointer(Box::new(HlirType::Unknown)))
@@ -821,26 +822,23 @@ impl AstToHlirConverter {
                 if let Expr::Variable { name, .. } = callee.as_ref() {
                     // Check if it's a class constructor call (starts with uppercase)
                     let func_name = if name.chars().next().map_or(false, |c| c.is_uppercase()) {
-                        // Mangle constructor name with parameter types
-                        let arg_types: Vec<String> = args.iter().map(|a| {
+                        // Mangle constructor name with parameter types using the central mangle function
+                        let arg_types: Vec<Type> = args.iter().map(|a| {
                             let ty = self.infer_expr_type(a);
-                            // Convert HlirType to string for mangling
+                            // Convert HlirType to Type for mangling
                             match ty {
-                                HlirType::I8 => "int8".to_string(),
-                                HlirType::I32 => "int".to_string(),
-                                HlirType::I64 => "Int64".to_string(),
-                                HlirType::F32 => "Float32".to_string(),
-                                HlirType::F64 => "float".to_string(),
-                                HlirType::Bool => "bool".to_string(),
-                                HlirType::String => "str".to_string(),
-                                _ => "Unknown".to_string(),
+                                HlirType::I8 => Type::Int8,
+                                HlirType::I32 => Type::Int,
+                                HlirType::I64 => Type::Int64,
+                                HlirType::F32 => Type::Float32,
+                                HlirType::F64 => Type::Float64,
+                                HlirType::Bool => Type::Bool,
+                                HlirType::String => Type::Str,
+                                _ => Type::Unknown,
                             }
                         }).collect();
-                        if arg_types.is_empty() {
-                            format!("{}_constructor()", name)
-                        } else {
-                            format!("{}_constructor({})", name, arg_types.join(","))
-                        }
+                        // Use the central mangle function for constructor names
+                        types::mangle(None, Some(name), "constructor", &arg_types)
                     } else {
                         name.clone()
                     };
@@ -856,20 +854,14 @@ impl AstToHlirConverter {
 
                     // Get the class/interface name from the object's declared type (preferred) or inferred type
                     let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
-                        eprintln!("DEBUG: Method call on variable '{}', method '{}'", var_name, name);
-                        eprintln!("DEBUG: var_declared_type_names: {:?}", self.var_declared_type_names);
-                        eprintln!("DEBUG: var_classes: {:?}", self.var_classes);
                         // First check if we have a declared type name (e.g., from type annotation)
                         // This is important for interface-typed variables
                         if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
-                            eprintln!("DEBUG: Using declared type: {}", declared_type_name);
                             declared_type_name.clone()
                         } else if let Some(concrete_class) = self.var_classes.get(var_name) {
-                            eprintln!("DEBUG: Using concrete class: {}", concrete_class);
                             // Fall back to concrete class from constructor
                             concrete_class.clone()
                         } else {
-                            eprintln!("DEBUG: Inferring class name from variable name");
                             // Last resort: infer from variable name (snake_case to PascalCase)
                             let parts = var_name.split('_');
                             let mut class = String::new();
@@ -882,12 +874,26 @@ impl AstToHlirConverter {
                             class
                         }
                     } else {
-                        eprintln!("DEBUG: Object is not a variable expression");
                         "Unknown".to_string()
                     };
 
-                    let method_name = format!("{}_{}()", class_name, name);
-                    eprintln!("DEBUG: Generated method name: {}", method_name);
+                    // Build argument types for mangling (only actual method args, not self)
+                    let arg_types: Vec<Type> = args.iter().map(|a| {
+                        let ty = self.infer_expr_type(a);
+                        match ty {
+                            HlirType::I8 => Type::Int8,
+                            HlirType::I32 => Type::Int,
+                            HlirType::I64 => Type::Int64,
+                            HlirType::F32 => Type::Float32,
+                            HlirType::F64 => Type::Float64,
+                            HlirType::Bool => Type::Bool,
+                            HlirType::String => Type::Str,
+                            _ => Type::Unknown,
+                        }
+                    }).collect();
+
+                    // Use mangle function for method names (e.g., "SomeObject.method(str)")
+                    let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call(func, call_args, return_ty)
@@ -1202,12 +1208,12 @@ impl AstToHlirConverter {
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call_discard(func, func_args, return_ty);
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
-                    // Method call - use Class_method() pattern with interface support
+                    // Method call - use Class.method() pattern with interface support
                     let obj_val = self.convert_expr(object);
                     // Prepend self to arguments
                     let mut call_args = vec![obj_val];
                     call_args.extend(func_args);
-                    
+
                     let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
                         if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
                             declared_type_name.clone()
@@ -1227,7 +1233,23 @@ impl AstToHlirConverter {
                     } else {
                         "Unknown".to_string()
                     };
-                    let method_name = format!("{}_{}()", class_name, name);
+                    
+                    // Build argument types for mangling (only actual method args, not self)
+                    let arg_types: Vec<Type> = args.iter().map(|a| {
+                        let ty = self.infer_expr_type(a);
+                        match ty {
+                            HlirType::I8 => Type::Int8,
+                            HlirType::I32 => Type::Int,
+                            HlirType::I64 => Type::Int64,
+                            HlirType::F32 => Type::Float32,
+                            HlirType::F64 => Type::Float64,
+                            HlirType::Bool => Type::Bool,
+                            HlirType::String => Type::Str,
+                            _ => Type::Unknown,
+                        }
+                    }).collect();
+                    
+                    let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call_discard(func, call_args, return_ty);
@@ -1360,12 +1382,12 @@ mod tests {
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call_discard(func, func_args, return_ty);
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
-                    // Method call - use Class_method() pattern with interface support
+                    // Method call - use Class.method() pattern with interface support
                     let obj_val = self.convert_expr(object);
                     // Prepend self to arguments
                     let mut call_args = vec![obj_val];
                     call_args.extend(func_args);
-                    
+
                     let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
                         if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
                             declared_type_name.clone()
@@ -1385,7 +1407,23 @@ mod tests {
                     } else {
                         "Unknown".to_string()
                     };
-                    let method_name = format!("{}_{}()", class_name, name);
+                    
+                    // Build argument types for mangling (only actual method args, not self)
+                    let arg_types: Vec<Type> = args.iter().map(|a| {
+                        let ty = self.infer_expr_type(a);
+                        match ty {
+                            HlirType::I8 => Type::Int8,
+                            HlirType::I32 => Type::Int,
+                            HlirType::I64 => Type::Int64,
+                            HlirType::F32 => Type::Float32,
+                            HlirType::F64 => Type::Float64,
+                            HlirType::Bool => Type::Bool,
+                            HlirType::String => Type::Str,
+                            _ => Type::Unknown,
+                        }
+                    }).collect();
+                    
+                    let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
                     self.builder.call_discard(func, call_args, return_ty);

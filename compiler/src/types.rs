@@ -354,38 +354,71 @@ pub struct ParamSignature {
 /// * `class` - Optional class name for methods (e.g., "MyClass")
 /// * `name` - The base function/method name (e.g., "println" or "Test_constructor()")
 /// * `args` - Parameter types for mangling (e.g., [Type::Str, Type::Int])
-/// 
+///
 /// # Examples
 /// - mangle(Some("std.io"), None, "println", &[Type::Str]) -> "std.io.println(str)"
 /// - mangle(None, Some("MyClass"), "method", &[Type::Int]) -> "MyClass.method(int)"
 /// - mangle(Some("std"), Some("io"), "print", &[Type::Str]) -> "std.io.print(str)"
 /// - mangle(None, None, "main", &[]) -> "main()"
-/// - mangle(None, None, "Test_constructor()", &[]) -> "Test_constructor()"
+/// - mangle(None, Some("Test"), "constructor", &[]) -> "Test.constructor()"
+/// - mangle(None, Some("Test"), "constructor", &[Type::Str]) -> "Test.constructor(str)"
 pub fn mangle(package: Option<&str>, class: Option<&str>, name: &str, args: &[Type]) -> String {
     let mut mangled = String::new();
-    
+
     // Add package prefix if present
     if let Some(pkg) = package {
         mangled.push_str(pkg);
         mangled.push('.');
     }
-    
+
     // Add class prefix if present
     if let Some(cls) = class {
         mangled.push_str(cls);
         mangled.push('.');
     }
-    
+
+    // Handle constructor names specially: convert "constructor" or "constructor()" to ".constructor()" format
+    if name == "constructor" || name.starts_with("constructor(") {
+        // Extract args from "constructor(args)" if present, otherwise use provided args
+        let constructor_args = if name.starts_with("constructor(") && name.ends_with(')') {
+            // Parse args from the name itself
+            let args_str = &name[12..name.len()-1]; // Extract content between "constructor(" and ")"
+            if args_str.is_empty() {
+                Vec::new()
+            } else {
+                args_str.split(',').map(|s| Type::from_str(s.trim())).collect()
+            }
+        } else {
+            args.to_vec()
+        };
+        
+        mangled.push_str("constructor");
+        mangled.push('(');
+        for (i, ty) in constructor_args.iter().enumerate() {
+            if i > 0 {
+                mangled.push(',');
+            }
+            mangled.push_str(&ty.to_mangle_str());
+        }
+        mangled.push(')');
+        return mangled;
+    }
+
     // Check if name already has a signature (ends with ))
     if name.ends_with(')') {
-        // Name already has signature (e.g., "Test_constructor()" or "method(int)")
+        // Name already has signature (e.g., "method(int)" or "_constructor()")
+        // Convert old _constructor() format to new .constructor() format
+        if name.contains("_constructor()") {
+            let base_name = name.replace("_constructor()", "");
+            return format!("{}{}.constructor()", mangled, base_name);
+        }
         // Use as-is without additional mangling
         return format!("{}{}", mangled, name);
     }
-    
+
     // Add base name
     mangled.push_str(name);
-    
+
     // Add argument signature
     mangled.push('(');
     for (i, ty) in args.iter().enumerate() {
@@ -395,7 +428,7 @@ pub fn mangle(package: Option<&str>, class: Option<&str>, name: &str, args: &[Ty
         mangled.push_str(&ty.to_mangle_str());
     }
     mangled.push(')');
-    
+
     mangled
 }
 
