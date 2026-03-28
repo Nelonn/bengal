@@ -135,6 +135,16 @@ pub enum HlirInstr {
         arg_types: Vec<HlirType>,  // Argument types for mangling
     },
 
+    /// Native function call: dest = call_native func(args)
+    /// Used for calling native (Rust-implemented) functions
+    CallNative {
+        func: HlirValue,
+        args: Vec<HlirValue>,
+        dest: Option<usize>,
+        return_ty: HlirType,
+        arg_types: Vec<HlirType>,
+    },
+
     /// String concatenation: dest = concat(values[0], values[1], ...)
     /// Optimized for interpolated strings with multiple parts
     StringConcat {
@@ -526,6 +536,22 @@ impl HlirBuilder {
         self.emit(instr);
     }
 
+    /// Generate a native function call
+    pub fn call_native(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) -> HlirValue {
+        let dest = self.new_temp();
+        let arg_types: Vec<HlirType> = args.iter().map(|a| self.get_value_type(a)).collect();
+        let instr = HlirInstr::CallNative { func, args, dest: Some(dest), return_ty: return_ty.clone(), arg_types };
+        self.emit(instr);
+        HlirValue::Temp(dest)
+    }
+
+    /// Generate a native function call, discarding the return value
+    pub fn call_native_discard(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) {
+        let arg_types: Vec<HlirType> = args.iter().map(|a| self.get_value_type(a)).collect();
+        let instr = HlirInstr::CallNative { func, args, dest: None, return_ty: return_ty.clone(), arg_types };
+        self.emit(instr);
+    }
+
     /// Generate a string concatenation with multiple operands (optimized for interpolated strings)
     pub fn string_concat(&mut self, values: Vec<HlirValue>) -> HlirValue {
         let dest = self.new_temp();
@@ -809,6 +835,10 @@ fn lower_single_instr_to_llvm(hlir_instr: &HlirInstr) -> Option<crate::llvm::Llv
             } else {
                 None  // Call without destination - skip LLVM IR generation
             }
+        }
+        HlirInstr::CallNative { .. } => {
+            // Native calls are handled at runtime, not in LLVM IR
+            None
         }
         HlirInstr::Cmp { op, lhs, rhs, dest: _, ty } => {
             let llvm_op = hlir_to_llvm_cmp(op);

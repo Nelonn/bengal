@@ -18,6 +18,8 @@ pub struct AstToHlirConverter {
     var_classes: std::collections::HashMap<String, String>,
     /// Map from variable name to declared type name (for interface dispatch)
     var_declared_type_names: std::collections::HashMap<String, String>,
+    /// Map from class name to whether it's native
+    native_classes: std::collections::HashMap<String, bool>,
     string_table: Vec<String>,
     module_prefix: String,
 }
@@ -33,8 +35,16 @@ impl AstToHlirConverter {
             var_ptrs: std::collections::HashMap::new(),
             var_classes: std::collections::HashMap::new(),
             var_declared_type_names: std::collections::HashMap::new(),
+            native_classes: std::collections::HashMap::new(),
             string_table: Vec::new(),
             module_prefix: module_name.to_string(),
+        }
+    }
+
+    /// Set native classes for this module (from imported modules)
+    pub fn set_native_classes(&mut self, native_classes: &[String]) {
+        for class in native_classes {
+            self.native_classes.insert(class.clone(), true);
         }
     }
     
@@ -245,6 +255,11 @@ impl AstToHlirConverter {
         } else {
             format!("{}.{}", self.module_prefix, class.name)
         };
+
+        // Track if this class is native
+        if class.is_native {
+            self.native_classes.insert(qualified_class_name.clone(), true);
+        }
 
         for method in &class.methods {
             // Skip native methods - they're handled at runtime
@@ -847,7 +862,14 @@ impl AstToHlirConverter {
                     };
                     let func = HlirValue::Function(func_name);
                     let return_ty = self.infer_expr_type(expr);
-                    self.builder.call(func, func_args, return_ty)
+                    
+                    // Check if this is a native class constructor
+                    let is_native_class = self.native_classes.get(name).copied().unwrap_or(false);
+                    if is_native_class {
+                        self.builder.call_native(func, func_args, return_ty)
+                    } else {
+                        self.builder.call(func, func_args, return_ty)
+                    }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
                     // Method call: mangle to Class_method(self, args)
                     let obj_val = self.convert_expr(object);
@@ -899,7 +921,14 @@ impl AstToHlirConverter {
                     let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
-                    self.builder.call(func, call_args, return_ty)
+                    
+                    // Check if this is a native class method
+                    let is_native_class = self.native_classes.get(&class_name).copied().unwrap_or(false);
+                    if is_native_class {
+                        self.builder.call_native(func, call_args, return_ty)
+                    } else {
+                        self.builder.call(func, call_args, return_ty)
+                    }
                 } else {
                     HlirValue::IntConst(0)
                 }
@@ -1236,7 +1265,7 @@ impl AstToHlirConverter {
                     } else {
                         "Unknown".to_string()
                     };
-                    
+
                     // Build argument types for mangling (only actual method args, not self)
                     let arg_types: Vec<Type> = args.iter().map(|a| {
                         let ty = self.infer_expr_type(a);
@@ -1251,11 +1280,18 @@ impl AstToHlirConverter {
                             _ => Type::Unknown,
                         }
                     }).collect();
-                    
+
                     let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
-                    self.builder.call_discard(func, call_args, return_ty);
+                    
+                    // Check if this is a native class method
+                    let is_native_class = self.native_classes.get(&class_name).copied().unwrap_or(false);
+                    if is_native_class {
+                        self.builder.call_native_discard(func, call_args, return_ty);
+                    } else {
+                        self.builder.call_discard(func, call_args, return_ty);
+                    }
                 }
             }
             Expr::Get { object, .. } => { self.convert_expr_discard(object); }
@@ -1317,8 +1353,9 @@ impl AstToHlirConverter {
 }
 
 /// Convert AST to HLIR module
-pub fn ast_to_hlir(module_name: &str, stmts: &[Stmt]) -> HlirModule {
+pub fn ast_to_hlir(module_name: &str, stmts: &[Stmt], native_classes: &[String]) -> HlirModule {
     let mut converter = AstToHlirConverter::new(module_name);
+    converter.set_native_classes(native_classes);
     converter.convert_module(stmts)
 }
 
@@ -1341,7 +1378,7 @@ mod tests {
     return a + b;
 }"#;
         let stmts = parse_source(source);
-        let hlir = ast_to_hlir("test", &stmts);
+        let hlir = ast_to_hlir("test", &stmts, &[]);
         let ir = crate::hlir::generate_llvm_ir_from_hlir(&hlir);
         
         assert!(ir.contains("define i32 @add"));
@@ -1410,7 +1447,7 @@ mod tests {
                     } else {
                         "Unknown".to_string()
                     };
-                    
+
                     // Build argument types for mangling (only actual method args, not self)
                     let arg_types: Vec<Type> = args.iter().map(|a| {
                         let ty = self.infer_expr_type(a);
@@ -1425,11 +1462,18 @@ mod tests {
                             _ => Type::Unknown,
                         }
                     }).collect();
-                    
+
                     let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
-                    self.builder.call_discard(func, call_args, return_ty);
+                    
+                    // Check if this is a native class method
+                    let is_native_class = self.native_classes.get(&class_name).copied().unwrap_or(false);
+                    if is_native_class {
+                        self.builder.call_native_discard(func, call_args, return_ty);
+                    } else {
+                        self.builder.call_discard(func, call_args, return_ty);
+                    }
                 }
             }
             Expr::Get { object, .. } => { self.convert_expr_discard(object); }

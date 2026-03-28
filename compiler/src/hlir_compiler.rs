@@ -53,6 +53,7 @@ struct ModuleInfo {
     native_functions: Vec<String>,  // Track which functions are native
     generic_functions: Vec<String>, // Track which functions are generic
     classes: Vec<String>,
+    native_classes: Vec<String>,    // Track which classes are native
 }
 
 /// Bengal Compiler using HLIR with full module support
@@ -235,6 +236,7 @@ impl HlirCompiler {
         let mut native_functions = Vec::new();
         let mut generic_functions = Vec::new();
         let mut classes = Vec::new();
+        let mut native_classes = Vec::new();
 
         for stmt in &statements {
             match stmt {
@@ -249,7 +251,11 @@ impl HlirCompiler {
                     }
                 }
                 Stmt::Class(class) => {
-                    classes.push(format!("{}.{}", actual_module_path, class.name));
+                    let qualified_name = format!("{}.{}", actual_module_path, class.name);
+                    classes.push(qualified_name.clone());
+                    if class.is_native {
+                        native_classes.push(qualified_name);
+                    }
                 }
                 _ => {}
             }
@@ -264,6 +270,7 @@ impl HlirCompiler {
             native_functions,
             generic_functions,
             classes,
+            native_classes,
         };
         
         self.loaded_modules.insert(actual_module_path.clone(), module_info);
@@ -651,10 +658,13 @@ impl HlirCompiler {
             .collect();
         // Collect all generic function names from loaded modules
         let mut main_generic_functions: Vec<String> = Vec::new();
+        // Collect all native class names from loaded modules
+        let mut main_native_classes: Vec<String> = Vec::new();
         for module_info in self.loaded_modules.values() {
             main_generic_functions.extend(module_info.generic_functions.clone());
+            main_native_classes.extend(module_info.native_classes.clone());
         }
-        let main_hlir = ast_to_hlir(&module_name, &statements);
+        let main_hlir = ast_to_hlir(&module_name, &statements, &main_native_classes);
         let main_compiled = compile_hlir_to_sparkler_with_natives(&main_hlir, main_native_functions, main_generic_functions);
 
         let mut all_strings: Vec<String> = Vec::new();
@@ -693,8 +703,9 @@ impl HlirCompiler {
             let imported_stmts = module_info.statements.clone();
             let module_native_functions = module_info.native_functions.clone();
             let module_generic_functions = module_info.generic_functions.clone();
+            let module_native_classes = module_info.native_classes.clone();
 
-            let imported_hlir = ast_to_hlir(&module_info.module_path, &imported_stmts);
+            let imported_hlir = ast_to_hlir(&module_info.module_path, &imported_stmts, &module_native_classes);
             let imported_compiled = compile_hlir_to_sparkler_with_natives(&imported_hlir, module_native_functions, module_generic_functions);
 
             let string_offset = all_strings.len();
