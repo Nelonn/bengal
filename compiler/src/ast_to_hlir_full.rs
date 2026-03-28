@@ -101,9 +101,9 @@ impl AstToHlirConverter {
 
         // ALWAYS create module wrapper function - this is the module entry point
         let func_name = if self.module_prefix.is_empty() {
-            "main".to_string()
+            "_main".to_string()
         } else {
-            format!("{}.main", self.module_prefix)
+            format!("{}._main", self.module_prefix)
         };
         
         self.builder.begin_function(&func_name, vec![], HlirType::Void);
