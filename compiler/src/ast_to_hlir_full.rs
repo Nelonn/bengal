@@ -87,46 +87,26 @@ impl AstToHlirConverter {
             self.convert_class(class);
         }
 
-        // Wrap module-level statements in a function (module wrapper)
-        if !module_level_stmts.is_empty() {
-            let func_name = if self.module_prefix == "main" {
-                "main".to_string()
-            } else {
-                format!("{}.main", self.module_prefix)
-            };
+        // ALWAYS create module wrapper function - this is the module entry point
+        let func_name = if self.module_prefix == "main" {
+            "main".to_string()
+        } else {
+            format!("{}.main", self.module_prefix)
+        };
+        
+        self.builder.begin_function(&func_name, vec![], HlirType::Void);
+        self.builder.begin_block("entry");
+        self.current_return_type = HlirType::Void;
 
-            // Check if a function named "main()" already exists (user-defined fn main())
-            let main_function_exists = functions.iter().any(|f| f.name == "main()");
-
-            if main_function_exists {
-                // A main function exists - create module wrapper that CALLs it
-                self.builder.begin_function(&func_name, vec![], HlirType::Void);
-                self.builder.begin_block("entry");
-                self.current_return_type = HlirType::Void;
-
-                // Convert module-level statements (includes the main() call)
-                for stmt in module_level_stmts {
-                    self.convert_stmt(stmt);
-                }
-
-                self.builder.ret(None, HlirType::Void);
-                self.builder.end_block();
-                self.builder.end_function();
-            } else {
-                // No main function - create wrapper for module-level statements
-                self.builder.begin_function(&func_name, vec![], HlirType::Void);
-                self.builder.begin_block("entry");
-                self.current_return_type = HlirType::Void;
-
-                for stmt in module_level_stmts {
-                    self.convert_stmt(stmt);
-                }
-
-                self.builder.ret(None, HlirType::Void);
-                self.builder.end_block();
-                self.builder.end_function();
-            }
+        // Convert module-level statements (if any)
+        // main() is just a regular function - no automatic calls
+        for stmt in module_level_stmts {
+            self.convert_stmt(stmt);
         }
+
+        self.builder.ret(None, HlirType::Void);
+        self.builder.end_block();
+        self.builder.end_function();
 
         self.builder.clone().build()
     }

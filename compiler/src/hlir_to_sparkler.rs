@@ -445,18 +445,14 @@ impl HlirToSparkler {
             });
         }
 
-        // Generate root section that calls the main function
-        // Look for module wrapper "<module_name>.main" first, then fall back to "main()"
-        let expected_wrapper_name = format!("{}.main", hlir.name);
-        let main_function_name = hlir.functions.iter()
-            .find(|f| f.name == expected_wrapper_name)
-            .map(|f| f.name.clone())
-            .or_else(|| {
-                // Fall back to mangled "main()" if no wrapper exists
-                hlir.functions.iter()
-                    .find(|f| f.name == "main()")
-                    .map(|f| f.name.clone())
-            });
+        // Generate root section that calls the module wrapper
+        // Root ALWAYS calls "<module_name>.main" - the module entry point
+        let main_function_name = {
+            let expected_wrapper_name = format!("{}.main", hlir.name);
+            hlir.functions.iter()
+                .find(|f| f.name == expected_wrapper_name)
+                .map(|f| f.name.clone())
+        };
 
         let root_bytecode = if let Some(main_name) = main_function_name {
             // Generate CALL instruction to call main function
