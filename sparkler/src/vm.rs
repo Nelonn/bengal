@@ -527,20 +527,30 @@ impl NativeClass {
     /// Register this class with the VM
     pub fn register(self, vm: &mut VM) {
         let class_name = self.class_name.clone();
-        
+
         // Register native_create if provided
         if let Some(func) = self.native_create {
             vm.register_class_native_create(&class_name, func);
         }
-        
+
         // Register native_destroy if provided
         if let Some(func) = self.native_destroy {
             vm.register_class_native_destroy(&class_name, func);
         }
+
+        // Register all methods under the full class name
+        for (method_name, func) in &self.methods {
+            vm.register_native_method(&class_name, method_name, *func);
+        }
         
-        // Register all methods
-        for (method_name, func) in self.methods {
-            vm.register_native_method(&class_name, &method_name, func);
+        // Also register methods under the simple class name (last component)
+        // This allows bytecode that uses simple names to find the native methods
+        if let Some(simple_name) = class_name.split('.').last() {
+            if simple_name != class_name {
+                for (method_name, func) in &self.methods {
+                    vm.register_native_method(simple_name, method_name, *func);
+                }
+            }
         }
     }
 }
@@ -968,17 +978,52 @@ impl VM {
 
         let mut classes_map = HashMap::new();
         for mut class in classes {
+            // Try to find pending native methods by exact class name first
+            let mut methods_added = false;
             if let Some(methods) = self.pending_native_methods.get(&class.name) {
                 for (method_name, func) in methods {
                     class.native_methods.insert(method_name.clone(), *func);
                 }
+                methods_added = true;
             }
+            
+            // If not found, try to find by simple class name (last component)
+            // This handles the case where native classes are registered with simple names
+            // but bytecode uses qualified names
+            if !methods_added {
+                if let Some(simple_name) = class.name.split('.').last() {
+                    if simple_name != class.name {
+                        if let Some(methods) = self.pending_native_methods.get(simple_name) {
+                            for (method_name, func) in methods {
+                                class.native_methods.insert(method_name.clone(), *func);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Try to find native_create by exact class name first
             if let Some(on_init) = self.pending_class_native_create.get(&class.name) {
                 class.native_create = Some(*on_init);
+            } else if let Some(simple_name) = class.name.split('.').last() {
+                if simple_name != class.name {
+                    if let Some(on_init) = self.pending_class_native_create.get(simple_name) {
+                        class.native_create = Some(*on_init);
+                    }
+                }
             }
+            
+            // Try to find native_destroy by exact class name first
             if let Some(on_destroy) = self.pending_class_native_destroy.get(&class.name) {
                 class.native_destroy = Some(*on_destroy);
+            } else if let Some(simple_name) = class.name.split('.').last() {
+                if simple_name != class.name {
+                    if let Some(on_destroy) = self.pending_class_native_destroy.get(simple_name) {
+                        class.native_destroy = Some(*on_destroy);
+                    }
+                }
             }
+            
             classes_map.insert(class.name.clone(), class);
         }
         self.program.classes = Arc::new(classes_map);
@@ -1716,11 +1761,8 @@ impl VM {
             None
         };
         let is_class_instantiation = !is_constructor && potential_class.map_or(false, |pc| {
-            eprintln!("DEBUG: Checking class instantiation: potential_class={}, exists={}", pc, self.program.classes.contains_key(pc));
             self.program.classes.contains_key(pc)
         });
-        
-        eprintln!("DEBUG: func_name={}, is_constructor={}, is_class_instantiation={}, base_class_name={}", func_name, is_constructor, is_class_instantiation, base_class_name);
 
         // Handle constructor calls (both bytecode and native)
         if is_constructor || is_class_instantiation {
@@ -1729,13 +1771,8 @@ impl VM {
             } else {
                 base_class_name.to_string()
             };
-            
-            eprintln!("DEBUG: Looking up class: {}, found={}", class_name, self.program.classes.contains_key(&class_name));
-            
+
             if let Some(class) = self.program.classes.get(&class_name).cloned() {
-                eprintln!("DEBUG: class.native_create={:?}", class.native_create.is_some());
-                eprintln!("DEBUG: class.methods.len()={}", class.methods.len());
-                
                 let instance = Value::Instance(Arc::new(Mutex::new(Instance {
                     class: class_name.to_string(),
                     fields: class.fields.clone(),
@@ -1746,7 +1783,6 @@ impl VM {
 
                 // Call native_create if available
                 if let Some(native_create) = class.native_create {
-                    eprintln!("DEBUG: Calling native_create");
                     let mut args = vec![instance.clone()];
                     let _ = native_create(&mut args);
                 }
@@ -1755,7 +1791,6 @@ impl VM {
                 // Extract method name from "ClassName.constructor()" -> "constructor()"
                 if let Some(paren_pos) = func_name.find(".constructor(") {
                     let method_name = &func_name[paren_pos + 1..]; // "constructor()"
-                    eprintln!("DEBUG: Looking for native constructor: {}", method_name);
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
                         let result = native_ctor(&mut args);
@@ -1769,14 +1804,12 @@ impl VM {
                 // For bytecode constructors, continue to function call below
                 // For native-only constructors, we're done
                 if class.native_create.is_some() && class.methods.is_empty() {
-                    eprintln!("DEBUG: Returning early (native_create only, no methods)");
                     return Ok(ExecutionResult::Continue);
                 }
 
                 // If native_create was called and there's no native constructor method,
                 // we're done (the instance was created by native_create)
                 if class.native_create.is_some() {
-                    eprintln!("DEBUG: Returning early (native_create was called)");
                     return Ok(ExecutionResult::Continue);
                 }
             }
@@ -1860,10 +1893,24 @@ impl VM {
         } else {
             // Check if this is a method call in the format "Class.method(args)" (new)
             // or "Class_method(args)" (old format for backward compatibility)
-            let (potential_class_name, method_name_with_args) = 
-                if let Some(dot_pos) = func_name_raw.find('.') {
-                    // New format: Class.method(args)
-                    (&func_name_raw[..dot_pos], &func_name_raw[dot_pos + 1..])
+            // For qualified class names like "std.http.HttpClient.get(str)", we need to find
+            // the last dot before the method name (which starts with a lowercase letter)
+            let (potential_class_name, method_name_with_args) =
+                if let Some(paren_pos) = func_name_raw.find('(') {
+                    // Find the last dot before the opening parenthesis
+                    let before_paren = &func_name_raw[..paren_pos];
+                    if let Some(dot_pos) = before_paren.rfind('.') {
+                        // Check if what follows the dot looks like a method name (starts with lowercase)
+                        let after_dot = &func_name_raw[dot_pos + 1..];
+                        if after_dot.chars().next().map_or(false, |c| c.is_lowercase()) {
+                            // Format: Class.method(args)
+                            (&func_name_raw[..dot_pos], &func_name_raw[dot_pos + 1..])
+                        } else {
+                            ("", func_name_raw.as_str())
+                        }
+                    } else {
+                        ("", func_name_raw.as_str())
+                    }
                 } else if let Some(underscore_pos) = func_name_raw.find('_') {
                     // Old format: Class_method(args)
                     (&func_name_raw[..underscore_pos], &func_name_raw[underscore_pos + 1..])
@@ -1871,9 +1918,21 @@ impl VM {
                     ("", func_name_raw.as_str())
                 };
 
-            // Check if this looks like a class method call (class name starts with uppercase)
-            if !potential_class_name.is_empty() && potential_class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
-                if let Some(class) = self.program.classes.get(potential_class_name).cloned() {
+            // Check if this looks like a class method call (last component of class name starts with uppercase)
+            let looks_like_class = potential_class_name.split('.').last()
+                .map_or(false, |last| last.chars().next().map_or(false, |c| c.is_uppercase()));
+            
+            if !potential_class_name.is_empty() && looks_like_class {
+                // First try direct lookup (for simple class names or when using fully qualified name)
+                // If not found, try to find a class that ends with the simple name (e.g., "HttpClient" matches "std.http.HttpClient")
+                let class_opt = self.program.classes.get(potential_class_name).cloned()
+                    .or_else(|| {
+                        self.program.classes.iter()
+                            .find(|(name, _)| name.ends_with(&format!(".{}", potential_class_name)))
+                            .map(|(_, class)| class.clone())
+                    });
+
+                if let Some(class) = class_opt {
                     // Look for native method
                     if let Some(native_method) = class.native_methods.get(method_name_with_args) {
                         // Get self from rd (instance was created by previous call or constructor)
@@ -1949,6 +2008,57 @@ impl VM {
         let name = self.program.strings.get(name_idx)
             .ok_or_else(|| Value::String(format!("Invalid native name index: {}", name_idx)))?
             .clone();
+
+        // Check if this is a class method call in the format "Class.method(args)"
+        // For qualified class names like "std.http.HttpClient.get(str)", we need to find
+        // the last dot before the method name (which starts with a lowercase letter)
+        let (class_name, method_name) = if let Some(paren_pos) = name.find('(') {
+            let before_paren = &name[..paren_pos];
+            if let Some(dot_pos) = before_paren.rfind('.') {
+                let after_dot = &name[dot_pos + 1..];
+                if after_dot.chars().next().map_or(false, |c| c.is_lowercase()) {
+                    (&name[..dot_pos], &name[dot_pos + 1..])
+                } else {
+                    ("", name.as_str())
+                }
+            } else {
+                ("", name.as_str())
+            }
+        } else {
+            ("", name.as_str())
+        };
+
+        // Try class method lookup first
+        // Check if class_name looks like a class (last component starts with uppercase)
+        let looks_like_class = class_name.split('.').last()
+            .map_or(false, |last| last.chars().next().map_or(false, |c| c.is_uppercase()));
+        
+        if !class_name.is_empty() && looks_like_class {
+            // First try direct lookup, then try to find a class that ends with the class name
+            let class_opt = self.program.classes.get(class_name).cloned()
+                .or_else(|| {
+                    self.program.classes.iter()
+                        .find(|(n, _)| n.ends_with(&format!(".{}", class_name)))
+                        .map(|(_, class)| class.clone())
+                });
+
+            if let Some(class) = class_opt {
+                if let Some(native_method) = class.native_methods.get(method_name) {
+                    // Get self from rd (instance was created by previous call or constructor)
+                    let instance = self.get_reg(rd).clone();
+                    let mut args = vec![instance];
+                    for i in 0..arg_count {
+                        args.push(self.get_reg(arg_start + i).clone());
+                    }
+                    let result = native_method(&mut args);
+                    if let NativeResult::Ready(val) = result {
+                        self.set_reg(rd, val);
+                    }
+                    self.set_pc(self.pc() + 1);
+                    return Ok(ExecutionResult::Continue);
+                }
+            }
+        }
 
         let mut args = Vec::new();
         for i in 0..arg_count {

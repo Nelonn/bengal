@@ -254,7 +254,10 @@ impl HlirCompiler {
                     let qualified_name = format!("{}.{}", actual_module_path, class.name);
                     classes.push(qualified_name.clone());
                     if class.is_native {
+                        // Add both qualified and simple names for native classes
+                        // This allows the compiler to recognize native classes when using simple names
                         native_classes.push(qualified_name);
+                        native_classes.push(class.name.clone());
                     }
                 }
                 _ => {}
