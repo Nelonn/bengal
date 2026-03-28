@@ -379,16 +379,12 @@ impl AstToHlirConverter {
         let methods: Vec<String> = class.methods.iter()
             .filter(|m| !m.is_native)
             .map(|m| {
-                let param_types: Vec<String> = m.params.iter().map(|p| {
+                let param_types: Vec<crate::types::Type> = m.params.iter().map(|p| {
                     p.type_name.as_ref()
-                        .map(|t| t.clone())
-                        .unwrap_or_else(|| "Unknown".to_string())
+                        .map(|t| crate::types::Type::from_str(t))
+                        .unwrap_or_else(|| crate::types::Type::Unknown)
                 }).collect();
-                if param_types.is_empty() {
-                    format!("{}_{}()", class.name, m.name)
-                } else {
-                    format!("{}_{}({})", class.name, m.name, param_types.join(","))
-                }
+                types::mangle(None, Some(&class.name), &m.name, &param_types)
             })
             .collect();
 
@@ -426,16 +422,12 @@ impl AstToHlirConverter {
         // Collect interface method names
         let methods: Vec<String> = interface.methods.iter()
             .map(|m| {
-                let param_types: Vec<String> = m.params.iter().map(|p| {
+                let param_types: Vec<crate::types::Type> = m.params.iter().map(|p| {
                     p.type_name.as_ref()
-                        .map(|t| t.clone())
-                        .unwrap_or_else(|| "Unknown".to_string())
+                        .map(|t| crate::types::Type::from_str(t))
+                        .unwrap_or_else(|| crate::types::Type::Unknown)
                 }).collect();
-                if param_types.is_empty() {
-                    format!("{}_{}()", interface.name, m.name)
-                } else {
-                    format!("{}_{}({})", interface.name, m.name, param_types.join(","))
-                }
+                types::mangle(None, Some(&interface.name), &m.name, &param_types)
             })
             .collect();
 

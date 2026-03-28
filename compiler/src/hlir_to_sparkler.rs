@@ -70,6 +70,8 @@ pub struct HlirToSparkler {
     generic_functions: std::collections::HashSet<String>,
     /// Set of interface names for detecting interface method calls
     interface_names: std::collections::HashSet<String>,
+    /// Map from class name to its vtable (method names in order)
+    vtables: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl HlirToSparkler {
@@ -92,6 +94,7 @@ impl HlirToSparkler {
             native_functions: std::collections::HashSet::new(),
             generic_functions: std::collections::HashSet::new(),
             interface_names: std::collections::HashSet::new(),
+            vtables: std::collections::HashMap::new(),
         }
     }
 
@@ -115,6 +118,7 @@ impl HlirToSparkler {
             native_functions: native_functions.into_iter().collect(),
             generic_functions: generic_functions.into_iter().collect(),
             interface_names: std::collections::HashSet::new(),
+            vtables: std::collections::HashMap::new(),
         }
     }
 
@@ -400,6 +404,10 @@ impl HlirToSparkler {
         for class in &hlir.classes {
             if class.is_interface {
                 self.interface_names.insert(class.name.clone());
+            }
+            // Store vtable for all classes (not just interfaces) that implement interfaces
+            if !class.vtable.is_empty() {
+                self.vtables.insert(class.name.clone(), class.vtable.clone());
             }
         }
 
@@ -817,10 +825,10 @@ impl HlirToSparkler {
 
                 if let HlirValue::Function(name) = func {
                     // Check if this is an interface method call
-                    // Pattern: Interface_method() where Interface is an interface name
-                    // The method name format from ast_to_hlir_full.rs is "Class_method()"
-                    let is_interface_call = if let Some(underscore_pos) = name.find('_') {
-                        let potential_interface = &name[..underscore_pos];
+                    // Pattern: Interface.method(args) where Interface is an interface name
+                    // The method name format from ast_to_hlir_full.rs is "Class.method(args)"
+                    let is_interface_call = if let Some(dot_pos) = name.find('.') {
+                        let potential_interface = &name[..dot_pos];
                         self.interface_names.contains(potential_interface)
                     } else {
                         false
@@ -829,16 +837,22 @@ impl HlirToSparkler {
                     if is_interface_call && !args.is_empty() {
                         // This is an interface method call - use InvokeInterface
                         // Extract interface name and method name
-                        let underscore_pos = name.find('_').unwrap();
-                        let interface_name = &name[..underscore_pos];
-                        let method_with_suffix = &name[underscore_pos + 1..];
-                        let method_name = method_with_suffix.trim_end_matches("()");
+                        let dot_pos = name.find('.').unwrap();
+                        let interface_name = &name[..dot_pos];
+                        let method_with_suffix = &name[dot_pos + 1..];
+                        // Extract base method name (without parameters)
+                        let method_name = if let Some(paren_pos) = method_with_suffix.find('(') {
+                            method_with_suffix[..paren_pos].to_string()
+                        } else {
+                            method_with_suffix.to_string()
+                        };
 
-                        // Add interface name to strings
-                        let _interface_name_idx = self.add_string(interface_name.to_string());
-
-                        // Find the vtable index for this method (use 0 for now - first method in interface)
-                        let method_vtable_idx = 0u8;
+                        // Find the vtable index for this method in the interface's vtable
+                        let method_vtable_idx = if let Some(vtable) = self.vtables.get(interface_name) {
+                            vtable.iter().position(|m| m == &method_name).unwrap_or(0) as u8
+                        } else {
+                            0u8
+                        };
 
                         // All arguments including self (object)
                         // args[0] is the object (self), args[1..] are the method arguments

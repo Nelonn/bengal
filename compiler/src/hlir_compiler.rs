@@ -8,6 +8,7 @@ use crate::parser::{Parser, Stmt, ImportKind, Span};
 use crate::hlir::HlirModule;
 use crate::ast_to_hlir_full::ast_to_hlir;
 use crate::hlir_to_sparkler::{compile_hlir_to_sparkler, compile_hlir_to_sparkler_with_natives, CompiledBytecode};
+use crate::types::{TypeChecker, TypeContext};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -515,6 +516,63 @@ impl HlirCompiler {
 
         // Rewrite function calls to use fully qualified names
         Self::rewrite_calls(&mut statements, &self.import_map);
+
+        // Type check the code if type checking is enabled
+        if self.options.enable_type_checking {
+            let mut ctx = TypeContext::new();
+            
+            // Register imported functions in the type context with generic signatures
+            // This allows the type checker to recognize them without enforcing strict types
+            for (qualified_name, _) in &self.import_map {
+                // Register as a native function with generic parameters (allows any arguments)
+                ctx.add_function(qualified_name, crate::types::FunctionSignature {
+                    name: qualified_name.clone(),
+                    params: vec![crate::types::ParamSignature {
+                        name: "args".to_string(),
+                        type_name: Some(crate::types::Type::Any),
+                        default: false,
+                    }],
+                    return_type: Some(crate::types::Type::Any),
+                    return_optional: false,
+                    is_method: false,
+                    is_native: true,
+                    private: false,
+                    type_params: Vec::new(),
+                    mangled_name: None,
+                });
+            }
+            
+            let mut type_checker = TypeChecker::with_context(ctx);
+
+            let result = type_checker.check(&statements);
+            if let Err(errors) = result {
+                let mut error_msg = String::new();
+                let source_lines: Vec<&str> = self.source.lines().collect();
+
+                for mut error in errors {
+                    // Extract source line if we have line number
+                    if error.source_line.is_none() && error.line > 0 && error.line <= source_lines.len() {
+                        error.source_line = Some(source_lines[error.line - 1].to_string());
+                    }
+
+                    let location = if let Some(ref file) = error.source_file {
+                        format!("{}:{}:{}", file, error.line, error.column)
+                    } else {
+                        format!("{}:{}", error.line, error.column)
+                    };
+
+                    error_msg.push_str(&format!("{}: error: {}\n", location, error.message));
+                    if let Some(ref line) = error.source_line {
+                        error_msg.push_str(&format!("  {}\n", line));
+                        let caret_pos = error.column.saturating_sub(1);
+                        let caret_line: String = " ".repeat(caret_pos) + "^";
+                        error_msg.push_str(&format!("  {}\n", caret_line));
+                    }
+                }
+
+                return Err(error_msg);
+            }
+        }
 
         let module_name = self.source_path
             .as_ref()

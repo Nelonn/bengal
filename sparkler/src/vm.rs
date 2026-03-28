@@ -2368,11 +2368,11 @@ impl VM {
             let method_opt = class.methods.get(method_name)
                 .or_else(|| {
                     // Try to find a method that matches the vtable entry
-                    // Methods are stored as "Class_method(params)" but vtable has "method"
+                    // Methods are stored as "Class.method(args)" but vtable has "method"
                     class.methods.iter().find(|(k, _)| {
-                        // Extract the method name part after the underscore
-                        if let Some(underscore_pos) = k.find('_') {
-                            let method_part = &k[underscore_pos + 1..];
+                        // Extract the method name part after the dot
+                        if let Some(dot_pos) = k.rfind('.') {
+                            let method_part = &k[dot_pos + 1..];
                             // Remove parentheses and parameters to get base method name
                             let base_method = if let Some(paren_pos) = method_part.find('(') {
                                 &method_part[..paren_pos]
