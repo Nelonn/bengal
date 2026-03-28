@@ -1,3 +1,5 @@
+import std.io
+
 interface Printable {
   fn print(text: str)
   fn log(text: str) {
@@ -13,6 +15,7 @@ class Circle : Drawable {
   constructor() {}
 
   fn print(text: str) {
+    println(text)
   }
   fn draw(text: str) {
   }

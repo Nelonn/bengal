@@ -849,16 +849,16 @@ mod tests {
     fn test_loop_compilation() {
         let source = r#"fn sum(n: int): int {
     let result = 0;
-    for (i in range(0, n)) {
+    for (i in 0..n) {
         result = result + i;
     }
     return result;
 }"#;
-        
+
         let options = CompilerOptions::default();
         let mut compiler = HlirCompiler::with_options(source, options);
         let result = compiler.compile().unwrap();
-        
+
         assert!(result.sparkler_bytecode.is_some());
     }
     

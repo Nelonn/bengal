@@ -698,8 +698,8 @@ impl TypeContext {
 
         self.import_paths.push("std.reflect".to_string());
 
-        // std.io functions (print, println) are registered only when std.io is explicitly imported
-        // See ModuleResolver::register_std_io_import() in resolver.rs
+        // std.io functions (print, println) are defined in std/io.bl and become available
+        // when std.io is explicitly imported (handled through normal import mechanism)
 
         // Built-in types methods
         // str methods

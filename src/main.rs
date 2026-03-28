@@ -194,12 +194,12 @@ async fn main() {
         };
 
         let options = CompilerOptions {
-            enable_type_checking: false,
+            enable_type_checking: true,  // Type checking is ALWAYS enabled
             search_paths: vec!["std".to_string()],
             emit_llvm_ir: false,
             emit_sparkler_bytecode: true,
         };
-        
+
         let mut compiler = HlirCompiler::with_path_and_options(&source, &source_file, options);
         let result = match compiler.compile() {
             Ok(r) => r,
@@ -208,7 +208,7 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        
+
         let bytecode = sparkler_to_bytecode(
             result.sparkler_bytecode.unwrap()
         );
