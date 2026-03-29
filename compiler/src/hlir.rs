@@ -221,6 +221,11 @@ pub enum HlirInstr {
     /// Exception handling: end of try block
     TryEnd,
 
+    /// Line number for debugging
+    Line {
+        line: usize,
+    },
+
     /// Throw exception
     Throw {
         value: HlirValue,
@@ -264,6 +269,7 @@ pub struct HlirBasicBlock {
     pub name: String,
     pub instructions: Vec<HlirInstr>,
     pub terminator: Option<HlirInstr>,
+    pub line_number: usize,  // Line number for debugging
 }
 
 impl HlirBasicBlock {
@@ -272,7 +278,13 @@ impl HlirBasicBlock {
             name,
             instructions: Vec::new(),
             terminator: None,
+            line_number: 1,
         }
+    }
+
+    pub fn with_line_number(mut self, line: usize) -> Self {
+        self.line_number = line;
+        self
     }
 }
 
@@ -285,6 +297,7 @@ pub struct HlirFunction {
     pub blocks: Vec<HlirBasicBlock>,
     pub is_external: bool,
     pub is_variadic: bool,
+    pub line_number: usize,  // Starting line number for debugging
 }
 
 impl HlirFunction {
@@ -296,9 +309,15 @@ impl HlirFunction {
             blocks: Vec::new(),
             is_external: false,
             is_variadic: false,
+            line_number: 1,
         }
     }
-    
+
+    pub fn with_line_number(mut self, line: usize) -> Self {
+        self.line_number = line;
+        self
+    }
+
     pub fn external(name: String, params: Vec<(String, HlirType)>, return_type: HlirType) -> Self {
         let mut f = Self::new(name, params, return_type);
         f.is_external = true;
@@ -386,13 +405,14 @@ impl HlirBuilder {
     }
     
     /// Start building a function
-    pub fn begin_function(&mut self, name: &str, params: Vec<(String, HlirType)>, return_type: HlirType) {
-        let func = HlirFunction::new(name.to_string(), params, return_type);
+    pub fn begin_function(&mut self, name: &str, params: Vec<(String, HlirType)>, return_type: HlirType, line_number: usize) {
+        let mut func = HlirFunction::new(name.to_string(), params, return_type);
+        func.line_number = line_number;
         self.module.add_function(func);
         self.current_function = Some(name.to_string());
         self.next_temp = 0;
         self.variables.clear();
-        
+
         // Register parameters as variables
         for (i, (param_name, _)) in self.module.functions.last().unwrap().params.iter().enumerate() {
             self.variables.insert(param_name.clone(), i);
@@ -404,19 +424,19 @@ impl HlirBuilder {
         self.current_function = None;
         self.current_block = None;
     }
-    
+
     /// Begin a basic block
-    pub fn begin_block(&mut self, name: &str) {
+    pub fn begin_block(&mut self, name: &str, line_number: usize) {
         self.current_block = Some(name.to_string());
         if let Some(func_name) = &self.current_function {
             let func_idx = self.module.functions.iter()
                 .position(|f| &f.name == func_name)
                 .unwrap();
-            let block = HlirBasicBlock::new(name.to_string());
+            let block = HlirBasicBlock::new(name.to_string()).with_line_number(line_number);
             self.module.functions[func_idx].blocks.push(block);
         }
     }
-    
+
     /// End the current block
     pub fn end_block(&mut self) {
         self.current_block = None;
@@ -622,7 +642,13 @@ impl HlirBuilder {
         let instr = HlirInstr::Throw { value };
         self.emit(instr);
     }
-    
+
+    /// Emit line number for debugging
+    pub fn line(&mut self, line: usize) {
+        let instr = HlirInstr::Line { line };
+        self.emit(instr);
+    }
+
     fn emit(&mut self, instr: HlirInstr) {
         if let Some(func_name) = &self.current_function {
             if let Some(func_idx) = self.module.functions.iter().position(|f| &f.name == func_name) {

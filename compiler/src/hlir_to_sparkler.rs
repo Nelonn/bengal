@@ -589,6 +589,11 @@ impl HlirToSparkler {
         // Record the start offset of this function's bytecode for relative jump calculations
         let func_start_offset = self.current_offset();
 
+        // Emit Line opcode at function entry for debugging
+        self.emit_opcode(Opcode::Line);
+        let line_num = func.line_number as u16;
+        self.emit_u16(line_num);
+
         // Compile blocks
         for block in &func.blocks {
             self.compile_block(block, func);
@@ -621,6 +626,10 @@ impl HlirToSparkler {
         let block_key = format!("{}:{}", func.name, block.name);
         let block_start = self.current_offset();
         self.block_offsets.insert(block_key, block_start);
+
+        // Emit Line opcode at block start if line number changed
+        self.emit_opcode(Opcode::Line);
+        self.emit_u16(block.line_number as u16);
 
         for instr in &block.instructions {
             self.release_dead_temps();
@@ -809,6 +818,11 @@ impl HlirToSparkler {
 
                 // Store the pending try_start to patch later (uses absolute offset)
                 self.pending_try_starts.push((placeholder, catch_block.clone()));
+            }
+
+            HlirInstr::Line { line } => {
+                self.emit_opcode(Opcode::Line);
+                self.emit_u16(*line as u16);
             }
 
             HlirInstr::TryEnd => {

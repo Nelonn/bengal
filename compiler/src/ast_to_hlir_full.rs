@@ -22,6 +22,7 @@ pub struct AstToHlirConverter {
     native_classes: std::collections::HashMap<String, bool>,
     string_table: Vec<String>,
     module_prefix: String,
+    current_line: usize,
 }
 
 impl AstToHlirConverter {
@@ -38,6 +39,7 @@ impl AstToHlirConverter {
             native_classes: std::collections::HashMap::new(),
             string_table: Vec::new(),
             module_prefix: module_name.to_string(),
+            current_line: 1,
         }
     }
 
@@ -47,7 +49,15 @@ impl AstToHlirConverter {
             self.native_classes.insert(class.clone(), true);
         }
     }
-    
+
+    /// Set the current line number and emit a line instruction if changed
+    fn set_line(&mut self, line: usize) {
+        if line != self.current_line {
+            self.current_line = line;
+            self.builder.line(line);
+        }
+    }
+
     fn add_string(&mut self, s: String) -> usize {
         if let Some(idx) = self.string_table.iter().position(|existing| *existing == s) {
             idx
@@ -116,9 +126,9 @@ impl AstToHlirConverter {
         } else {
             format!("{}._main", self.module_prefix)
         };
-        
-        self.builder.begin_function(&func_name, vec![], HlirType::Void);
-        self.builder.begin_block("entry");
+
+        self.builder.begin_function(&func_name, vec![], HlirType::Void, 1);
+        self.builder.begin_block("entry", 1);
         self.current_return_type = HlirType::Void;
 
         // Convert module-level statements (if any)
@@ -156,8 +166,8 @@ impl AstToHlirConverter {
         self.var_classes.clear();
         self.var_declared_type_names.clear();
 
-        self.builder.begin_function(&func.name, params, return_ty.clone());
-        self.builder.begin_block("entry");
+        self.builder.begin_function(&func.name, params, return_ty.clone(), func.span.line);
+        self.builder.begin_block("entry", func.span.line);
         
         for stmt in &func.body {
             self.convert_stmt(stmt);
@@ -217,9 +227,9 @@ impl AstToHlirConverter {
         } else {
             mangle(Some(&self.module_prefix), None, &func.name, &param_types)
         };
-        
-        self.builder.begin_function(&qualified_name, params, return_ty.clone());
-        self.builder.begin_block("entry");
+
+        self.builder.begin_function(&qualified_name, params, return_ty.clone(), func.span.line);
+        self.builder.begin_block("entry", func.span.line);
 
         for stmt in &func.body {
             self.convert_stmt(stmt);
@@ -300,8 +310,8 @@ impl AstToHlirConverter {
             self.var_classes.clear();
             self.var_declared_type_names.clear();
 
-            self.builder.begin_function(&method_name, params, return_ty.clone());
-            self.builder.begin_block("entry");
+            self.builder.begin_function(&method_name, params, return_ty.clone(), method.span.line);
+            self.builder.begin_block("entry", method.span.line);
 
             // self is the first parameter (R0)
             let self_val = HlirValue::Param(0);
@@ -366,8 +376,8 @@ impl AstToHlirConverter {
             // Constructor receives self as the first parameter (the pre-allocated instance)
             self.builder.begin_function(&constructor_name, vec![
                 ("self".to_string(), HlirType::Pointer(Box::new(HlirType::Unknown)))
-            ], HlirType::Pointer(Box::new(HlirType::Unknown)));
-            self.builder.begin_block("entry");
+            ], HlirType::Pointer(Box::new(HlirType::Unknown)), 1);
+            self.builder.begin_block("entry", 1);
 
             // self is the first parameter (R1 in bytecode, Param(0) in HLIR)
             let self_val = HlirValue::Param(0);
@@ -474,7 +484,8 @@ impl AstToHlirConverter {
     /// Convert a statement
     fn convert_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, expr, type_annotation, .. } => {
+            Stmt::Let { name, expr, type_annotation, span, .. } => {
+                self.set_line(span.line);
                 let ty = type_annotation.as_ref()
                     .map(|t| self.type_from_str(t))
                     .unwrap_or_else(|| self.infer_expr_type(expr));
@@ -503,7 +514,8 @@ impl AstToHlirConverter {
                 self.builder.store(value, ptr, ty);
             }
             
-            Stmt::Assign { name, expr, .. } => {
+            Stmt::Assign { name, expr, span } => {
+                self.set_line(span.line);
                 let ty = self.var_types.get(name)
                     .cloned()
                     .unwrap_or_else(|| self.infer_expr_type(expr));
@@ -549,7 +561,8 @@ impl AstToHlirConverter {
                 }
             }
             
-            Stmt::Return { expr, .. } => {
+            Stmt::Return { expr, span } => {
+                self.set_line(span.line);
                 if let Some(e) = expr {
                     let value = self.convert_expr(e);
                     let ty = self.infer_expr_type(e);
@@ -562,11 +575,35 @@ impl AstToHlirConverter {
             Stmt::Expr(expr) => {
                 // For expression statements, we don't need the result temp
                 // Convert the expression but discard the result
+                let line = match expr {
+                    Expr::Call { span, .. } => span.line,
+                    Expr::Variable { span, .. } => span.line,
+                    Expr::Binary { span, .. } => span.line,
+                    Expr::Unary { span, .. } => span.line,
+                    Expr::Get { span, .. } => span.line,
+                    Expr::Set { span, .. } => span.line,
+                    Expr::Index { span, .. } => span.line,
+                    Expr::Array { span, .. } => span.line,
+                    Expr::Literal(lit) => match lit {
+                        Literal::String(_, span) => span.line,
+                        Literal::Int(_, span) => span.line,
+                        Literal::Float(_, span) => span.line,
+                        Literal::Bool(_, span) => span.line,
+                        Literal::Null(span) => span.line,
+                    },
+                    Expr::Interpolated { span, .. } => span.line,
+                    Expr::Range { span, .. } => span.line,
+                    Expr::Cast { span, .. } => span.line,
+                    Expr::Lambda { span, .. } => span.line,
+                    _ => 1,
+                };
+                self.set_line(line);
                 self.convert_expr_discard(expr);
             }
             
-            Stmt::If { condition, then_branch, else_branch, .. } => {
+            Stmt::If { condition, then_branch, else_branch, span } => {
                 let cond = self.convert_expr(condition);
+                let line = span.line;
 
                 let then_label = format!("if_then_{}", self.builder.new_temp());
                 let else_label = format!("if_else_{}", self.builder.new_temp());
@@ -575,7 +612,7 @@ impl AstToHlirConverter {
                 if else_branch.is_some() {
                     self.builder.cond_br(cond, &then_label, &else_label);
 
-                    self.builder.begin_block(&then_label);
+                    self.builder.begin_block(&then_label, line);
                     for stmt in then_branch {
                         self.convert_stmt(stmt);
                     }
@@ -584,7 +621,7 @@ impl AstToHlirConverter {
                         self.builder.br(&end_label);
                     }
 
-                    self.builder.begin_block(&else_label);
+                    self.builder.begin_block(&else_label, line);
                     for stmt in else_branch.as_ref().unwrap() {
                         self.convert_stmt(stmt);
                     }
@@ -593,11 +630,11 @@ impl AstToHlirConverter {
                         self.builder.br(&end_label);
                     }
 
-                    self.builder.begin_block(&end_label);
+                    self.builder.begin_block(&end_label, line);
                 } else {
                     self.builder.cond_br(cond, &then_label, &end_label);
 
-                    self.builder.begin_block(&then_label);
+                    self.builder.begin_block(&then_label, line);
                     for stmt in then_branch {
                         self.convert_stmt(stmt);
                     }
@@ -606,78 +643,80 @@ impl AstToHlirConverter {
                         self.builder.br(&end_label);
                     }
 
-                    self.builder.begin_block(&end_label);
+                    self.builder.begin_block(&end_label, line);
                 }
             }
             
-            Stmt::For { var_name, range, body, .. } => {
+            Stmt::For { var_name, range, body, span } => {
                 if let Expr::Range { start, end, .. } = range.as_ref() {
                     let start_val = self.convert_expr(start);
                     let end_val = self.convert_expr(end);
-                    
+                    let line = span.line;
+
                     let loop_label = format!("for_loop_{}", self.builder.new_temp());
                     let body_label = format!("for_body_{}", self.builder.new_temp());
                     let end_label = format!("for_end_{}", self.builder.new_temp());
-                    
+
                     let i_ptr = self.builder.alloca(HlirType::I32, var_name);
                     self.var_types.insert(var_name.clone(), HlirType::I32);
                     self.var_ptrs.insert(var_name.clone(), i_ptr.clone());
                     self.builder.store(start_val, i_ptr.clone(), HlirType::I32);
-                    
+
                     self.builder.br(&loop_label);
-                    
-                    self.builder.begin_block(&loop_label);
+
+                    self.builder.begin_block(&loop_label, line);
                     let i_val = self.builder.load(i_ptr.clone(), HlirType::I32);
                     let cond = self.builder.bin_op(HlirBinOp::Slt, i_val.clone(), end_val.clone(), HlirType::I32);
                     self.builder.cond_br(cond, &body_label, &end_label);
-                    
-                    self.builder.begin_block(&body_label);
+
+                    self.builder.begin_block(&body_label, line);
                     self.break_targets.push(end_label.clone());
                     self.continue_targets.push(loop_label.clone());
-                    
+
                     for stmt in body {
                         self.convert_stmt(stmt);
                     }
-                    
+
                     self.break_targets.pop();
                     self.continue_targets.pop();
-                    
+
                     let one = HlirValue::IntConst(1);
                     let i_val = self.builder.load(i_ptr.clone(), HlirType::I32);
                     let i_new = self.builder.bin_op(HlirBinOp::Add, i_val, one, HlirType::I32);
                     self.builder.store(i_new, i_ptr, HlirType::I32);
-                    
+
                     self.builder.br(&loop_label);
-                    
-                    self.builder.begin_block(&end_label);
+
+                    self.builder.begin_block(&end_label, line);
                 }
             }
-            
-            Stmt::While { condition, body, .. } => {
+
+            Stmt::While { condition, body, span } => {
                 let loop_label = format!("while_loop_{}", self.builder.new_temp());
                 let body_label = format!("while_body_{}", self.builder.new_temp());
                 let end_label = format!("while_end_{}", self.builder.new_temp());
-                
+                let line = span.line;
+
                 self.builder.br(&loop_label);
-                
-                self.builder.begin_block(&loop_label);
+
+                self.builder.begin_block(&loop_label, line);
                 let cond = self.convert_expr(condition);
                 self.builder.cond_br(cond, &body_label, &end_label);
-                
-                self.builder.begin_block(&body_label);
+
+                self.builder.begin_block(&body_label, line);
                 self.break_targets.push(end_label.clone());
                 self.continue_targets.push(loop_label.clone());
-                
+
                 for stmt in body {
                     self.convert_stmt(stmt);
                 }
-                
+
                 self.break_targets.pop();
                 self.continue_targets.pop();
-                
+
                 self.builder.br(&loop_label);
-                
-                self.builder.begin_block(&end_label);
+
+                self.builder.begin_block(&end_label, line);
             }
             
             Stmt::Break(_) => {
@@ -692,9 +731,10 @@ impl AstToHlirConverter {
                 }
             }
             
-            Stmt::TryCatch { try_block, catch_var, catch_block, .. } => {
+            Stmt::TryCatch { try_block, catch_var, catch_block, span } => {
                 let catch_label = format!("catch_{}", self.builder.new_temp());
                 let end_label = format!("try_end_{}", self.builder.new_temp());
+                let line = span.line;
 
                 // Emit TryStart instruction at the current position (don't create a new block for try)
                 let catch_reg = self.builder.new_temp();
@@ -707,7 +747,7 @@ impl AstToHlirConverter {
                 self.builder.try_end();
                 self.builder.br(&end_label);
 
-                self.builder.begin_block(&catch_label);
+                self.builder.begin_block(&catch_label, line);
                 self.var_types.insert(catch_var.clone(), HlirType::String);
                 let exc_ptr = self.builder.alloca(HlirType::String, catch_var);
                 self.var_ptrs.insert(catch_var.clone(), exc_ptr.clone());
@@ -719,10 +759,11 @@ impl AstToHlirConverter {
                 }
                 self.builder.br(&end_label);
 
-                self.builder.begin_block(&end_label);
+                self.builder.begin_block(&end_label, line);
             }
 
-            Stmt::Throw { expr, .. } => {
+            Stmt::Throw { expr, span } => {
+                self.set_line(span.line);
                 let value = self.convert_expr(expr);
                 self.builder.throw(value);
             }
@@ -1070,7 +1111,7 @@ impl AstToHlirConverter {
                 }
             }
             
-            Expr::Lambda { params, return_type, body, .. } => {
+            Expr::Lambda { params, return_type, body, span } => {
                 let func_params: Vec<(String, HlirType)> = params.iter()
                     .map(|p| {
                         let ty = p.type_name.as_ref()
@@ -1079,14 +1120,14 @@ impl AstToHlirConverter {
                         (p.name.clone(), ty)
                     })
                     .collect();
-                
+
                 let func_name = format!("lambda_{}", self.builder.new_temp());
                 let ret_ty = return_type.as_ref()
                     .map(|t| self.type_from_str(t))
                     .unwrap_or(HlirType::Unknown);
-                
-                self.builder.begin_function(&func_name, func_params, ret_ty.clone());
-                self.builder.begin_block("entry");
+
+                self.builder.begin_function(&func_name, func_params, ret_ty.clone(), span.line);
+                self.builder.begin_block("entry", span.line);
                 
                 for stmt in body {
                     self.convert_stmt(stmt);
