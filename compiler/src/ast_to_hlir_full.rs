@@ -839,9 +839,54 @@ impl AstToHlirConverter {
                 self.builder.bin_op(hlir_op, lhs, rhs, ty)
             }
             
-            Expr::Unary { op, expr, .. } => {
-                let value = self.convert_expr(expr);
+            Expr::Unary { op, expr, span } => {
                 let ty = self.infer_expr_type(expr);
+                
+                // Check if this is increment/decrement on a class field
+                let is_inc_dec = matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement 
+                                         | UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement | UnaryOp::Decrement);
+                
+                if is_inc_dec {
+                    if let Expr::Get { object, name, .. } = expr.as_ref() {
+                        // Handle class field increment/decrement: obj.field++ or ++obj.field
+                        let object_val = self.convert_expr(object);
+
+                        // Get the current field value
+                        let field_val = self.builder.get_property(object_val.clone(), name);
+
+                        // Compute the delta
+                        let delta = match ty {
+                            HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                            _ => HlirValue::IntConst(1),
+                        };
+
+                        // For postfix: save original value before modification
+                        let original_val = if matches!(op, UnaryOp::PostfixIncrement | UnaryOp::PostfixDecrement) {
+                            field_val.clone()
+                        } else {
+                            HlirValue::Null
+                        };
+
+                        // Compute new value
+                        let new_val = if matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement) {
+                            self.builder.bin_op(HlirBinOp::Add, field_val, delta, ty.clone())
+                        } else {
+                            self.builder.bin_op(HlirBinOp::Sub, field_val, delta, ty.clone())
+                        };
+
+                        // Store back to the field
+                        self.builder.set_property(object_val, name, new_val.clone());
+
+                        // Return appropriate value
+                        if matches!(op, UnaryOp::PostfixIncrement | UnaryOp::PostfixDecrement) {
+                            return original_val;
+                        } else {
+                            return new_val;
+                        }
+                    }
+                }
+                
+                let value = self.convert_expr(expr);
                 
                 let hlir_op = match op {
                     UnaryOp::Not => HlirUnaryOp::LNot,
@@ -862,7 +907,7 @@ impl AstToHlirConverter {
                         return self.builder.bin_op(HlirBinOp::Sub, value, one, ty);
                     }
                 };
-                
+
                 self.builder.unary_op(hlir_op, value, ty)
             }
             
@@ -1017,27 +1062,8 @@ impl AstToHlirConverter {
                 // Get the object value
                 let object_val = self.convert_expr(object);
 
-                // Check if this is a self.field access
-                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
-                    if obj_name == "self" {
-                        // Use GetProperty for self.field access
-                        self.builder.get_property(object_val, name)
-                    } else {
-                        // For other object.field access, use field pointer
-                        if let Some(field_ptr) = self.var_ptrs.get(&name.clone()).cloned() {
-                            self.builder.load(field_ptr, HlirType::I32)
-                        } else {
-                            HlirValue::IntConst(0)
-                        }
-                    }
-                } else {
-                    // For complex object expressions, use field pointer
-                    if let Some(field_ptr) = self.var_ptrs.get(&name.clone()).cloned() {
-                        self.builder.load(field_ptr, HlirType::I32)
-                    } else {
-                        HlirValue::IntConst(0)
-                    }
-                }
+                // Use GetProperty for all object.field access
+                self.builder.get_property(object_val, name)
             }
             
             Expr::Set { object, name, value, span } => {
@@ -1047,25 +1073,8 @@ impl AstToHlirConverter {
                 // Convert the value
                 let value = self.convert_expr(value);
 
-                // Check if this is a self.field assignment
-                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
-                    if obj_name == "self" {
-                        // Use SetProperty for self.field assignments
-                        self.builder.set_property(object_val, name, value);
-                    } else {
-                        // For other object.field assignments, use the field pointer approach
-                        let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
-                        if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
-                            self.builder.store(value, field_ptr, value_ty);
-                        }
-                    }
-                } else {
-                    // For complex object expressions, use the field pointer approach
-                    let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
-                    if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
-                        self.builder.store(value, field_ptr, value_ty);
-                    }
-                }
+                // Use SetProperty for all object.field assignments
+                self.builder.set_property(object_val, name, value);
 
                 HlirValue::IntConst(0)
             }
@@ -1254,8 +1263,40 @@ impl AstToHlirConverter {
                 self.convert_expr_discard(right);
             }
             Expr::Unary { op, expr, .. } => {
-                let value = self.convert_expr(expr);
                 let ty = self.infer_expr_type(expr);
+                
+                // Check if this is increment/decrement on a class field
+                let is_inc_dec = matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement 
+                                         | UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement | UnaryOp::Decrement);
+                
+                if is_inc_dec {
+                    if let Expr::Get { object, name, .. } = expr.as_ref() {
+                        // Handle class field increment/decrement: obj.field++ or ++obj.field
+                        let object_val = self.convert_expr(object);
+
+                        // Get the current field value
+                        let field_val = self.builder.get_property(object_val.clone(), name);
+
+                        // Compute the delta
+                        let delta = match ty {
+                            HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                            _ => HlirValue::IntConst(1),
+                        };
+
+                        // Compute new value
+                        let new_val = if matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement) {
+                            self.builder.bin_op(HlirBinOp::Add, field_val, delta, ty.clone())
+                        } else {
+                            self.builder.bin_op(HlirBinOp::Sub, field_val, delta, ty.clone())
+                        };
+
+                        // Store back to the field
+                        self.builder.set_property(object_val, name, new_val.clone());
+                        return;
+                    }
+                }
+                
+                let value = self.convert_expr(expr);
                 match op {
                     UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement => {
                         let one = match ty {
@@ -1341,25 +1382,8 @@ impl AstToHlirConverter {
                 let object_val = self.convert_expr(object);
                 let value = self.convert_expr(value);
 
-                // Check if this is a self.field assignment
-                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
-                    if obj_name == "self" {
-                        // Use SetProperty for self.field assignments
-                        self.builder.set_property(object_val, name, value);
-                    } else {
-                        // For other object.field assignments, use the field pointer approach
-                        let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
-                        if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
-                            self.builder.store(value, field_ptr, value_ty);
-                        }
-                    }
-                } else {
-                    // For complex object expressions, use the field pointer approach
-                    let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
-                    if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
-                        self.builder.store(value, field_ptr, value_ty);
-                    }
-                }
+                // Use SetProperty for all object.field assignments
+                self.builder.set_property(object_val, name, value);
             }
             Expr::Array { elements, .. } => {
                 for elem in elements { self.convert_expr_discard(elem); }
@@ -1523,25 +1547,8 @@ mod tests {
                 let object_val = self.convert_expr(object);
                 let value = self.convert_expr(value);
 
-                // Check if this is a self.field assignment
-                if let Expr::Variable { name: obj_name, .. } = object.as_ref() {
-                    if obj_name == "self" {
-                        // Use SetProperty for self.field assignments
-                        self.builder.set_property(object_val, name, value);
-                    } else {
-                        // For other object.field assignments, use the field pointer approach
-                        let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
-                        if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
-                            self.builder.store(value, field_ptr, value_ty);
-                        }
-                    }
-                } else {
-                    // For complex object expressions, use the field pointer approach
-                    let value_ty = self.infer_expr_type(&Expr::Variable { name: name.clone(), span: span.clone() });
-                    if let Some(field_ptr) = self.var_ptrs.get(name).cloned() {
-                        self.builder.store(value, field_ptr, value_ty);
-                    }
-                }
+                // Use SetProperty for all object.field assignments
+                self.builder.set_property(object_val, name, value);
             }
             Expr::Array { elements, .. } => {
                 for elem in elements { self.convert_expr_discard(elem); }
@@ -1624,3 +1631,5 @@ mod tests {
         assert!(ir.contains("if_else"));
     }
 }
+
+
