@@ -66,6 +66,8 @@ pub struct HlirToSparkler {
     reg_to_temps: std::collections::HashMap<u8, std::collections::HashSet<usize>>,
     /// Set of native function names that should use CallNative opcode
     native_functions: std::collections::HashSet<String>,
+    /// Source file path for debugging
+    source_file: Option<String>,
     /// Set of generic function names that should use * for mangling
     generic_functions: std::collections::HashSet<String>,
     /// Set of interface names for detecting interface method calls
@@ -95,6 +97,7 @@ impl HlirToSparkler {
             generic_functions: std::collections::HashSet::new(),
             interface_names: std::collections::HashSet::new(),
             vtables: std::collections::HashMap::new(),
+            source_file: None,
         }
     }
 
@@ -119,7 +122,14 @@ impl HlirToSparkler {
             generic_functions: generic_functions.into_iter().collect(),
             interface_names: std::collections::HashSet::new(),
             vtables: std::collections::HashMap::new(),
+            source_file: None,
         }
+    }
+
+    /// Set the source file path for debugging
+    pub fn with_source_file(mut self, source_file: Option<String>) -> Self {
+        self.source_file = source_file;
+        self
     }
 
     /// Allocate a new Sparkler register for a temp
@@ -457,7 +467,7 @@ impl HlirToSparkler {
                 bytecode: func_bytecode,
                 param_count: func.params.len() as u8,
                 register_count: self.max_reg as u8 + 1,
-                source_file: None,
+                source_file: self.source_file.clone(),
             });
         }
 
@@ -1297,8 +1307,9 @@ pub fn compile_hlir_to_sparkler(hlir: &HlirModule) -> CompiledBytecode {
 }
 
 /// Compile HLIR module to Sparkler bytecode with native function information
-pub fn compile_hlir_to_sparkler_with_natives(hlir: &HlirModule, native_functions: Vec<String>, generic_functions: Vec<String>) -> CompiledBytecode {
-    let mut compiler = HlirToSparkler::with_native_and_generic_functions(native_functions, generic_functions);
+pub fn compile_hlir_to_sparkler_with_natives(hlir: &HlirModule, native_functions: Vec<String>, generic_functions: Vec<String>, source_file: Option<String>) -> CompiledBytecode {
+    let mut compiler = HlirToSparkler::with_native_and_generic_functions(native_functions, generic_functions)
+        .with_source_file(source_file);
     compiler.compile_module(hlir)
 }
 

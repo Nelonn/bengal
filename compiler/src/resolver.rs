@@ -218,8 +218,10 @@ impl ModuleResolver {
                 // Determine the alias and module path for the import entry
                 let (alias, module_path) = match kind {
                     ImportKind::Module => {
-                        // import std -> module_path = "std", alias = None
-                        (None, module_name.clone())
+                        // import std -> module_path = "std", alias = Some("std")
+                        // This allows access via std.xxx (e.g., std.io.println)
+                        let alias = path.last().cloned();
+                        (alias, module_name.clone())
                     }
                     ImportKind::Simple => {
                         // import std.io -> module_path = "std.io", alias = Some("io")

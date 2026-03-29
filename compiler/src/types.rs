@@ -3112,6 +3112,14 @@ impl TypeChecker {
                     // Variable not found in global/function context - check if it's a module alias
                     let mut is_module_alias = false;
                     for import_entry in &self.context.imports {
+                        // Check the alias field first
+                        if let Some(ref alias) = import_entry.alias {
+                            if alias == name {
+                                is_module_alias = true;
+                                break;
+                            }
+                        }
+                        // Also check module_path for backwards compatibility
                         if let Some(last_dot) = import_entry.module_path.rfind('.') {
                             let import_alias = &import_entry.module_path[last_dot + 1..];
                             if import_alias == name {

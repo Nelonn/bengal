@@ -315,7 +315,29 @@ impl HlirCompiler {
                         }
                     }
                     ImportKind::Module => {
-                        let _ = self.load_module(path);
+                        // import std - allows access via std.xxx (e.g., std.io.println)
+                        if let Ok(module_name) = self.load_module(path) {
+                            if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                                // Register the module alias for qualified access
+                                // e.g., for "import helper", register "helper" -> "helper"
+                                if let Some(module_alias) = path.last() {
+                                    // Register all functions from the module with the alias prefix
+                                    for func in &module_info.functions {
+                                        let aliased_name = format!("{}.{}", module_alias, func.split('.').last().unwrap_or(""));
+                                        self.import_map.insert(aliased_name.clone(), func.clone());
+                                        // Track if this function is native
+                                        if module_info.native_functions.contains(func) {
+                                            self.native_functions.insert(aliased_name, true);
+                                        }
+                                    }
+                                    // Also register classes with alias
+                                    for class in &module_info.classes {
+                                        let aliased_name = format!("{}.{}", module_alias, class.split('.').last().unwrap_or(""));
+                                        self.import_map.insert(aliased_name.clone(), class.clone());
+                                    }
+                                }
+                            }
+                        }
                     }
                     ImportKind::Member => {
                         if path.len() >= 2 {
@@ -571,31 +593,42 @@ impl HlirCompiler {
                 }
             }
 
-            // Register imported functions in the type context with generic signatures
-            // This allows the type checker to recognize them without enforcing strict types
-            // Skip class names - they will be registered separately as classes
-            for (qualified_name, _) in &self.import_map {
-                // Skip if this is a class name
-                if class_names.contains(qualified_name) {
-                    continue;
+            // Register imported functions in the type context with their actual signatures
+            // This allows the type checker to properly check function calls
+            for (module_name, module_info) in &self.loaded_modules {
+                for stmt in &module_info.statements {
+                    if let Stmt::Function(func) = stmt {
+                        // Skip private functions from other modules
+                        if func.private {
+                            continue;
+                        }
+
+                        let qualified_name = format!("{}.{}", module_name, func.name);
+
+                        // Build parameter signatures
+                        let params: Vec<crate::types::ParamSignature> = func.params.iter().map(|p| {
+                            crate::types::ParamSignature {
+                                name: p.name.clone(),
+                                type_name: p.type_name.as_ref().map(|t| crate::types::Type::from_str(t)),
+                                default: p.default.is_some(),
+                            }
+                        }).collect();
+
+                        let sig = crate::types::FunctionSignature {
+                            name: qualified_name.clone(),
+                            params,
+                            return_type: func.return_type.as_ref().map(|t| crate::types::Type::from_str(t)),
+                            return_optional: func.return_optional,
+                            is_method: false,
+                            is_native: func.is_native,
+                            private: func.private,
+                            type_params: func.type_params.clone(),
+                            mangled_name: None,
+                        };
+
+                        ctx.add_function(&qualified_name, sig);
+                    }
                 }
-                
-                // Register as a native function with generic parameters (allows any arguments)
-                ctx.add_function(qualified_name, crate::types::FunctionSignature {
-                    name: qualified_name.clone(),
-                    params: vec![crate::types::ParamSignature {
-                        name: "args".to_string(),
-                        type_name: Some(crate::types::Type::Any),
-                        default: false,
-                    }],
-                    return_type: Some(crate::types::Type::Any),
-                    return_optional: false,
-                    is_method: false,
-                    is_native: true,
-                    private: false,
-                    type_params: Vec::new(),
-                    mangled_name: None,
-                });
             }
 
             // Register imported classes in the type context
@@ -668,7 +701,7 @@ impl HlirCompiler {
             main_native_classes.extend(module_info.native_classes.clone());
         }
         let main_hlir = ast_to_hlir(&module_name, &statements, &main_native_classes);
-        let main_compiled = compile_hlir_to_sparkler_with_natives(&main_hlir, main_native_functions, main_generic_functions);
+        let main_compiled = compile_hlir_to_sparkler_with_natives(&main_hlir, main_native_functions, main_generic_functions, self.source_path.clone());
 
         let mut all_strings: Vec<String> = Vec::new();
         let mut all_data: Vec<u8> = Vec::new();
@@ -709,7 +742,7 @@ impl HlirCompiler {
             let module_native_classes = module_info.native_classes.clone();
 
             let imported_hlir = ast_to_hlir(&module_info.module_path, &imported_stmts, &module_native_classes);
-            let imported_compiled = compile_hlir_to_sparkler_with_natives(&imported_hlir, module_native_functions, module_generic_functions);
+            let imported_compiled = compile_hlir_to_sparkler_with_natives(&imported_hlir, module_native_functions, module_generic_functions, Some(module_info.path.to_string_lossy().to_string()));
 
             let string_offset = all_strings.len();
             for s in &imported_compiled.strings {
