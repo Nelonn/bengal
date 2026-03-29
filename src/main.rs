@@ -1,4 +1,4 @@
-use bengal_compiler::Compiler;
+use bengal_compiler::{HlirCompiler, CompilerOptions, sparkler_to_bytecode};
 use sparkler::Executor;
 use bytecode_viewer;
 use std::fs;
@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 mod repl;
+mod dap;
 
-async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let source = match fs::read_to_string(source_file) {
         Ok(content) => content,
         Err(e) => {
@@ -15,17 +16,35 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
         }
     };
 
-    let mut compiler = Compiler::with_path_and_options(&source, source_file, unsafe_fast);
-    compiler.enable_type_checking = true;
-    let bytecode = match compiler.compile() {
-        Ok(bc) => bc,
+    let options = CompilerOptions {
+        enable_type_checking: true,
+        search_paths: vec!["std".to_string()],
+        emit_llvm_ir: false,
+        emit_sparkler_bytecode: true,
+    };
+
+    let mut compiler = HlirCompiler::with_path_and_options(&source, source_file, options);
+    let result = match compiler.compile() {
+        Ok(r) => r,
         Err(e) => {
             return Err(format!("Compilation error: {}", e).into());
         }
     };
 
-    let mut executor = Executor::new();
+    let bytecode = sparkler_to_bytecode(
+        result.sparkler_bytecode.ok_or("Bytecode generation failed")?
+    );
+
+    let mut executor = Executor::with_linker();
     bengal_std::register_all(&mut executor.vm);
+
+    // Sync the linker's registry with the VM's registry
+    // This is needed because register_all registers with the VM directly,
+    // but the linker needs to have the same registry for bytecode linking
+    if let Some(linker) = executor.linker.as_mut() {
+        let registry = linker.registry();
+        *registry.write().unwrap() = executor.vm.program.native_registry.clone();
+    }
 
     // Pass arguments to the script as ARGV
     use std::sync::{Arc, Mutex};
@@ -48,7 +67,7 @@ async fn run_file(source_file: &str, debug: bool, unsafe_fast: bool, script_args
     Ok(())
 }
 
-async fn run_tests(test_path: &str, unsafe_fast: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_tests(test_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(test_path);
     let mut files_to_test = Vec::new();
 
@@ -74,7 +93,7 @@ async fn run_tests(test_path: &str, unsafe_fast: bool) -> Result<(), Box<dyn std
         print!("Testing: {}... ", file_name);
         std::io::Write::flush(&mut std::io::stdout())?;
 
-        match run_file(&file_name, false, unsafe_fast, Vec::new()).await {
+        match run_file(&file_name, false, Vec::new()).await {
             Ok(_) => {
                 println!("PASS");
                 passed += 1;
@@ -137,9 +156,17 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
-    /// Disable safety checks (overflow, division by zero) for faster execution
+    /// Start DAP server for debugging
     #[arg(long)]
-    unsafe_fast: bool,
+    dap: bool,
+
+    /// Host for DAP server (default: 127.0.0.1)
+    #[arg(long, default_value = "127.0.0.1")]
+    dap_host: String,
+
+    /// Port for DAP server (default: 4711)
+    #[arg(long, default_value = "4711")]
+    dap_port: u16,
 
     /// Arguments to pass to the script
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -151,8 +178,28 @@ async fn main() {
     let args = Args::parse();
 
     if let Some(test_path) = args.test {
-        if let Err(e) = run_tests(&test_path, args.unsafe_fast).await {
+        if let Err(e) = run_tests(&test_path).await {
             eprintln!("Testing error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // DAP server mode
+    if args.dap {
+        let source_file = args.source_file.clone();
+        if source_file.is_none() {
+            eprintln!("DAP mode requires a source file to debug");
+            std::process::exit(1);
+        }
+        
+        println!("Starting DAP server on {}:{}", args.dap_host, args.dap_port);
+        if let Err(e) = dap::server::run_dap_server_with_source(
+            &args.dap_host,
+            args.dap_port,
+            &source_file.unwrap(),
+        ).await {
+            eprintln!("DAP server error: {}", e);
             std::process::exit(1);
         }
         return;
@@ -179,21 +226,31 @@ async fn main() {
             }
         };
 
-        let mut compiler = Compiler::with_path_and_options(&source, &source_file, args.unsafe_fast);
-        compiler.enable_type_checking = false;
-        let bytecode = match compiler.compile() {
-            Ok(bc) => bc,
+        let options = CompilerOptions {
+            enable_type_checking: true,  // Type checking is ALWAYS enabled
+            search_paths: vec!["std".to_string()],
+            emit_llvm_ir: false,
+            emit_sparkler_bytecode: true,
+        };
+
+        let mut compiler = HlirCompiler::with_path_and_options(&source, &source_file, options);
+        let result = match compiler.compile() {
+            Ok(r) => r,
             Err(e) => {
                 eprintln!("Compilation error: {}", e);
                 std::process::exit(1);
             }
         };
 
+        let bytecode = sparkler_to_bytecode(
+            result.sparkler_bytecode.unwrap()
+        );
+
         bytecode_viewer::display_bytecode(&bytecode);
         return;
     }
 
-    if let Err(e) = run_file(&source_file, args.debug, args.unsafe_fast, args.script_args).await {
+    if let Err(e) = run_file(&source_file, args.debug, args.script_args).await {
         eprintln!("{}", e);
         std::process::exit(1);
     }

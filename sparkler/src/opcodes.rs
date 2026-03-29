@@ -27,11 +27,11 @@ pub enum Opcode {
     SetProperty = 0x31,  // Robj, name_idx, Rs
 
     // Function calls
-    Call = 0x40,         // Rd, func_idx, arg_start, arg_count
-    CallNative = 0x41,   // Rd, name_idx, arg_start, arg_count
-    Invoke = 0x42,       // Rd, method_idx, arg_start, arg_count
-    Return = 0x43,       // Rs
+    Call = 0x40,        // Rd, func_idx, arg_start, arg_count
+    CallNative = 0x41,  // Rd, name_idx, arg_start, arg_count
+    Invoke = 0x42,      // Rd, method_idx, arg_start, arg_count
     InvokeInterface = 0x44,  // Rd, method_idx, arg_start, arg_count
+    Return = 0x43,           // Rs
 
     // Indexed native calls (optimized - uses function index instead of string lookup)
     CallNativeIndexed = 0x45,  // Rd, func_idx (u16), arg_start, arg_count
@@ -111,7 +111,7 @@ impl Opcode {
             Opcode::CallNative => 5,
             Opcode::Invoke => 5,
             Opcode::Return => 2,
-            Opcode::InvokeInterface => 6,
+            Opcode::InvokeInterface => 5,
             Opcode::CallNativeIndexed => 6,
             Opcode::Jump => 3,
             Opcode::JumpIfTrue => 4,

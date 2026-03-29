@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use crate::vm::{NativeFn, NativeFnAsync};
+use crate::vm::{NativeFn, NativeFnAsync, NativeFallbackFn};
 
 /// Maximum number of native functions that can be registered
 pub const MAX_NATIVE_FUNCTIONS: usize = 65535;  // u16::MAX
@@ -16,6 +16,7 @@ pub const MAX_NATIVE_FUNCTIONS: usize = 65535;  // u16::MAX
 pub enum NativeFnType {
     Sync(NativeFn),
     Async(NativeFnAsync),
+    Fallback(NativeFallbackFn),
 }
 
 impl Clone for NativeFnType {
@@ -23,6 +24,7 @@ impl Clone for NativeFnType {
         match self {
             NativeFnType::Sync(f) => NativeFnType::Sync(*f),
             NativeFnType::Async(f) => NativeFnType::Async(*f),
+            NativeFnType::Fallback(f) => NativeFnType::Fallback(*f),
         }
     }
 }
@@ -206,14 +208,44 @@ impl NativeFunctionRegistry {
         self.functions.get(index as usize).and_then(|e| e.as_ref())
     }
 
+    /// Get the name for a function by index (for error messages)
+    pub fn get_name_by_index(&self, index: u16) -> Option<String> {
+        self.get_entry(index).map(|e| e.name.clone())
+    }
+
     /// Get the index for a function name (for linking phase)
     pub fn get_index(&self, name: &str) -> Option<u16> {
         self.name_to_index.get(name).copied()
     }
 
+    /// Get the index for a function name by prefix match (for runtime calls without signature)
+    /// This matches names like "std.io.println(*)" or "std.io.println(str)" against registered names like "std.io.println(str)"
+    pub fn get_index_by_prefix(&self, name: &str) -> Option<u16> {
+        // First try exact match
+        if let Some(&idx) = self.name_to_index.get(name) {
+            return Some(idx);
+        }
+
+        // Extract base name (without signature) from the given name
+        let base_name = name.split('(').next().unwrap_or(name);
+
+        // Try prefix match - look for a registered name that starts with the base name
+        for (registered_name, &idx) in &self.name_to_index {
+            if registered_name.starts_with(base_name) {
+                // Make sure it's a proper prefix (followed by '(' for signature)
+                let suffix_start = base_name.len();
+                if suffix_start < registered_name.len() && registered_name[suffix_start..].starts_with('(') {
+                    return Some(idx);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Set the fallback function
-    pub fn set_fallback(&mut self, func: NativeFn) {
-        self.fallback = Some(NativeFnType::Sync(func));
+    pub fn set_fallback(&mut self, func: NativeFallbackFn) {
+        self.fallback = Some(NativeFnType::Fallback(func));
     }
 
     /// Get the fallback function
@@ -354,7 +386,7 @@ impl RuntimeLinker {
     }
 
     /// Set the fallback function
-    pub fn set_fallback(&mut self, func: NativeFn) {
+    pub fn set_fallback(&mut self, func: NativeFallbackFn) {
         let mut registry = self.registry.write().unwrap();
         registry.set_fallback(func);
     }
@@ -371,7 +403,7 @@ impl RuntimeLinker {
         let mut i = 0;
         while i < bytecode.len() {
             let opcode = bytecode[i];
-            
+
             // Handle CallNative opcode
             if opcode == Opcode::CallNative as u8 {
                 // Format: [CallNative, Rd, name_idx, arg_start, arg_count]
@@ -380,7 +412,8 @@ impl RuntimeLinker {
                     let name_idx = bytecode[i + 2] as usize;
 
                     if let Some(name) = strings.get(name_idx) {
-                        if let Some(func_index) = registry.get_index(name) {
+                        // Use get_index_by_prefix to support generic functions like std.io.println(*)
+                        if let Some(func_index) = registry.get_index_by_prefix(name) {
                             // Replace string index with function index
                             // We'll use a new opcode CallNativeIndexed that takes u16 index
                             bytecode[i + 2] = (func_index & 0xFF) as u8;
@@ -395,7 +428,7 @@ impl RuntimeLinker {
                     }
                 }
             }
-            
+
             // Move to next instruction
             i += 1;
         }
@@ -426,10 +459,11 @@ impl RuntimeLinker {
 #[cfg(test)]
 mod tests {
     use crate::Value;
+    use crate::vm::NativeResult;
     use super::*;
 
-    fn dummy_native(_args: &mut Vec<Value>) -> Result<Value, Value> {
-        Ok(Value::Null)
+    fn dummy_native(_args: &mut Vec<Value>) -> NativeResult {
+        NativeResult::Ready(Value::Null)
     }
 
     #[test]
@@ -447,8 +481,8 @@ mod tests {
         let mut registry = NativeFunctionRegistry::new();
         registry.register("test.func", dummy_native);
 
-        fn new_native(_args: &mut Vec<Value>) -> Result<Value, Value> {
-            Ok(Value::Int64(42))
+        fn new_native(_args: &mut Vec<Value>) -> NativeResult {
+            NativeResult::Ready(Value::Int64(42))
         }
 
         assert!(registry.hot_swap("test.func", new_native));

@@ -494,7 +494,7 @@ impl Lexer {
 
     fn process_multiline_string(&self, s: &str) -> String {
         let mut lines: Vec<&str> = s.split('\n').collect();
-        
+
         if lines.is_empty() {
             return String::new();
         }
@@ -523,6 +523,9 @@ impl Lexer {
 
         let processed_lines: Vec<String> = lines.into_iter()
             .map(|line| {
+                // Strip trailing \r (CRLF -> LF normalization)
+                let line = line.strip_suffix('\r').unwrap_or(line);
+                
                 if line.len() <= min_indent {
                     if line.trim().is_empty() {
                         String::new()

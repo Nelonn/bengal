@@ -1,5 +1,5 @@
-use bengal_compiler::Compiler;
-use sparkler::{Executor, vm::VmState};
+use bengal_compiler::{HlirCompiler, CompilerOptions, sparkler_to_bytecode};
+use sparkler::{Executor, vm::Snapshot};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
@@ -10,12 +10,12 @@ pub struct ReplState {
     /// Executor with registered native functions
     executor: Executor,
     /// Last known good VM state for rollback on errors
-    last_good_state: Option<VmState>,
+    last_good_state: Option<Snapshot>,
 }
 
 impl ReplState {
     pub fn new() -> Self {
-        let mut executor = Executor::new();
+        let mut executor = Executor::with_linker();
         bengal_std::register_all(&mut executor.vm);
 
         // Save initial state after native functions are registered
@@ -78,12 +78,22 @@ impl ReplState {
 
     /// Compile and run source code, returning the last expression result if any
     async fn compile_and_run(&mut self, source: &str, is_expr: bool) -> Result<Option<String>, String> {
-        let mut compiler = Compiler::new(source);
-        compiler.enable_type_checking = true;
-        let bytecode = match compiler.compile() {
-            Ok(bc) => bc,
+        let options = CompilerOptions {
+            enable_type_checking: true,
+            search_paths: vec!["std".to_string()],
+            emit_llvm_ir: false,
+            emit_sparkler_bytecode: true,
+        };
+        
+        let mut compiler = HlirCompiler::with_options(source, options);
+        let result = match compiler.compile() {
+            Ok(r) => r,
             Err(e) => return Err(e),
         };
+        
+        let bytecode = sparkler_to_bytecode(
+            result.sparkler_bytecode.ok_or("Bytecode generation failed")?
+        );
 
         // Run the bytecode
         let result = self.executor.run_to_completion(bytecode, Some("<repl>")).await;

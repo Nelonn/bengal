@@ -1,7 +1,21 @@
-use sparkler::{Value, NativeResult, get_async_callback_sender, debug_vm};
+use sparkler::{Value, NativeResult, get_async_callback_sender, debug_vm, vm::Instance};
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+
+/// Helper function to create a Response instance
+fn create_response_instance(status: u16, body: String) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("code".to_string(), Value::Int64(status as i64));
+    fields.insert("body".to_string(), Value::String(body));
+    
+    Value::Instance(Arc::new(Mutex::new(Instance {
+        class: "std.http.Response".to_string(),
+        fields,
+        private_fields: HashSet::new(),
+        native_data: Arc::new(Mutex::new(None)),
+    })))
+}
 
 pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
@@ -370,7 +384,7 @@ pub fn native_http_client_constructor(_args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-/// Helper function to get or create HttpClientState from instance's native_data
+/// Helper function to get HttpClientState from instance's native_data
 fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientState>>, Value> {
     if args.is_empty() {
         return Err(Value::String(
@@ -383,30 +397,12 @@ fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientSt
         let native_data = instance_lock.native_data.clone();
         drop(instance_lock);
 
-        // Try to get existing state
-        let existing = {
-            let data = native_data.lock().unwrap();
-            if let Some(boxed) = data.as_ref() {
-                if let Some(state) = boxed.downcast_ref::<Arc<Mutex<HttpClientState>>>() {
-                    Some(state.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
+        let data = native_data.lock().unwrap();
+        if let Some(boxed) = data.as_ref() {
+            if let Some(state) = boxed.downcast_ref::<Arc<Mutex<HttpClientState>>>() {
+                return Ok(state.clone());
             }
-        };
-
-        if let Some(state) = existing {
-            return Ok(state);
         }
-
-        // Create new state if not exists
-        let state = Arc::new(Mutex::new(HttpClientState::default()));
-        let mut data = native_data.lock().unwrap();
-        // Store the state in native_data by boxing and casting to dyn Any
-        *data = Some(Box::new(state.clone()) as Box<dyn Any + Send + Sync>);
-        return Ok(state);
     }
 
     Err(Value::String("Expected HttpClient instance".to_string()))
@@ -484,15 +480,18 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
 
     // Get the callback sender from sparkler
     let callback_tx = get_async_callback_sender();
-    
+
     if let Some(tx) = callback_tx {
         let url_clone = url.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url_clone, "", None));
             match result {
-                Ok(response) => { let _ = tx.send(Ok(Value::String(response.body))); }
-                Err(e) => { let _ = tx.send(Ok(Value::String(e))); }
+                Ok(response) => { 
+                    let response_value = create_response_instance(response.status, response.body);
+                    let _ = tx.send(Ok(response_value)); 
+                }
+                Err(_) => { let _ = tx.send(Ok(Value::Null)); }
             }
         });
         debug_vm!("http_client_get: Thread spawned for URL {}", url);
@@ -500,8 +499,8 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
     } else {
         let rt = tokio::runtime::Runtime::new().unwrap();
         match rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url, "", None)) {
-            Ok(response) => NativeResult::Ready(Value::String(response.body)),
-            Err(e) => NativeResult::Ready(Value::String(e)),
+            Ok(response) => NativeResult::Ready(create_response_instance(response.status, response.body)),
+            Err(_) => NativeResult::Ready(Value::Null),
         }
     }
 }
@@ -523,15 +522,18 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
 
     // Get the callback sender from sparkler
     let callback_tx = get_async_callback_sender();
-    
+
     if let Some(tx) = callback_tx {
         let url_clone = url.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url_clone, "", Some(&body)));
             match result {
-                Ok(response) => { let _ = tx.send(Ok(Value::String(response.body))); }
-                Err(e) => { let _ = tx.send(Ok(Value::String(e))); }
+                Ok(response) => { 
+                    let response_value = create_response_instance(response.status, response.body);
+                    let _ = tx.send(Ok(response_value)); 
+                }
+                Err(_) => { let _ = tx.send(Ok(Value::Null)); }
             }
         });
         debug_vm!("http_client_post: Thread spawned for URL {}", url);
@@ -539,8 +541,8 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
     } else {
         let rt = tokio::runtime::Runtime::new().unwrap();
         match rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url, "", Some(&body))) {
-            Ok(response) => NativeResult::Ready(Value::String(response.body)),
-            Err(e) => NativeResult::Ready(Value::String(e)),
+            Ok(response) => NativeResult::Ready(create_response_instance(response.status, response.body)),
+            Err(_) => NativeResult::Ready(Value::Null),
         }
     }
 }

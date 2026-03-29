@@ -218,8 +218,10 @@ impl ModuleResolver {
                 // Determine the alias and module path for the import entry
                 let (alias, module_path) = match kind {
                     ImportKind::Module => {
-                        // import std -> module_path = "std", alias = None
-                        (None, module_name.clone())
+                        // import std -> module_path = "std", alias = Some("std")
+                        // This allows access via std.xxx (e.g., std.io.println)
+                        let alias = path.last().cloned();
+                        (alias, module_name.clone())
                     }
                     ImportKind::Simple => {
                         // import std.io -> module_path = "std.io", alias = Some("io")
@@ -650,175 +652,8 @@ impl ModuleResolver {
     }
 
     fn register_native_functions(&mut self) {
-        // breakpoint function (always available)
-        self.type_context.add_function("breakpoint", FunctionSignature {
-            name: "breakpoint".to_string(),
-            params: vec![],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-
-        // Register std.math native functions
-        self.type_context.add_function("std.math.sin", FunctionSignature {
-            name: "std.math.sin".to_string(),
-            params: vec![ParamSignature {
-                name: "x".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }],
-            return_type: Some(Type::Float),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.math.cos", FunctionSignature {
-            name: "std.math.cos".to_string(),
-            params: vec![ParamSignature {
-                name: "x".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }],
-            return_type: Some(Type::Float),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.math.tan", FunctionSignature {
-            name: "std.math.tan".to_string(),
-            params: vec![ParamSignature {
-                name: "x".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }],
-            return_type: Some(Type::Float),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.math.sqrt", FunctionSignature {
-            name: "std.math.sqrt".to_string(),
-            params: vec![ParamSignature {
-                name: "x".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }],
-            return_type: Some(Type::Float),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.math.min", FunctionSignature {
-            name: "std.math.min".to_string(),
-            params: vec![ParamSignature {
-                name: "a".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }, ParamSignature {
-                name: "b".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }],
-            return_type: Some(Type::Float),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.math.max", FunctionSignature {
-            name: "std.math.max".to_string(),
-            params: vec![ParamSignature {
-                name: "a".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }, ParamSignature {
-                name: "b".to_string(),
-                type_name: Some(Type::Float),
-                default: false,
-            }],
-            return_type: Some(Type::Float),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-
-        // Register std.test native functions
-        self.type_context.add_function("std.test.addFailure", FunctionSignature {
-            name: "std.test.addFailure".to_string(),
-            params: vec![ParamSignature {
-                name: "message".to_string(),
-                type_name: Some(Type::Str),
-                default: false,
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.test.recordPass", FunctionSignature {
-            name: "std.test.recordPass".to_string(),
-            params: vec![],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.test.setCurrentTest", FunctionSignature {
-            name: "std.test.setCurrentTest".to_string(),
-            params: vec![ParamSignature {
-                name: "name".to_string(),
-                type_name: Some(Type::Str),
-                default: false,
-            }],
-            return_type: None,
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
-        self.type_context.add_function("std.test.assertSame", FunctionSignature {
-            name: "std.test.assertSame".to_string(),
-            params: vec![
-                ParamSignature { name: "expected".to_string(), type_name: Some(Type::Any), default: false },
-                ParamSignature { name: "actual".to_string(), type_name: Some(Type::Any), default: false },
-            ],
-            return_type: Some(Type::Bool),
-            return_optional: false,
-            is_method: false,
-            is_native: true,
-            private: false,
-            type_params: Vec::new(),
-            mangled_name: None,
-        });
+        // Native functions are defined in std/*.bl files and loaded through normal import mechanism
+        // No need to hardcode them here - std.math, std.test, std.io etc. define their natives in .bl files
     }
 
     pub fn get_loaded_modules(&self) -> &HashMap<String, ModuleInfo> {

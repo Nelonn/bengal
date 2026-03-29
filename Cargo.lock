@@ -105,6 +105,8 @@ dependencies = [
  "bytecode-viewer",
  "clap",
  "rustyline",
+ "serde",
+ "serde_json",
  "sparkler",
  "tokio",
 ]

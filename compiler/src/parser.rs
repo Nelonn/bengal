@@ -88,6 +88,7 @@ pub struct FunctionDef {
     pub is_native: bool,
     pub private: bool,
     pub type_params: Vec<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +135,7 @@ pub struct Method {
     pub is_native: bool,
     pub is_static: bool,
     pub type_params: Vec<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -762,6 +764,7 @@ impl Parser {
                 is_native: false,
                 is_static: false,
                 type_params: Vec::new(),
+                span: Span::unknown(),
             });
 
             // Constructor with all fields as parameters
@@ -781,6 +784,7 @@ impl Parser {
                     is_native: false,
                     is_static: false,
                     type_params: Vec::new(),
+                    span: Span::unknown(),
                 });
             }
         }
@@ -881,6 +885,7 @@ impl Parser {
     }
 
     fn parse_interface_method(&mut self, private: bool) -> Result<Method, String> {
+        let span = self.current_span();
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error_generic("Expected method name"),
@@ -938,7 +943,7 @@ impl Parser {
             Vec::new()
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_native: false, is_static: false, type_params })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_native: false, is_static: false, type_params, span })
     }
 
     fn parse_enum(&mut self, is_private: bool) -> Result<Stmt, String> {
@@ -1018,6 +1023,7 @@ impl Parser {
     }
 
     fn parse_function_ext(&mut self, is_private: bool, is_native: bool) -> Result<Stmt, String> {
+        let span = self.current_span();
         let name = match self.advance() {
             Token::Identifier(n) => n,
             _ => return self.error("Expected function name"),
@@ -1097,7 +1103,8 @@ impl Parser {
             body,
             is_native,
             private: is_private,
-            type_params
+            type_params,
+            span
         }))
     }
 
@@ -1136,6 +1143,7 @@ impl Parser {
     }
 
     fn parse_method_named(&mut self, name: &str, private: bool, is_native: bool, is_static: bool) -> Result<Method, String> {
+        let span = self.current_span();
         // Parse generic type parameters if present: fn name<T>(params)
         let type_params = if self.match_token(&Token::LAngle) {
             let mut params = Vec::new();
@@ -1201,7 +1209,7 @@ impl Parser {
             body
         };
 
-        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_native, is_static, type_params })
+        Ok(Method { name: name.to_string(), params, return_type, return_optional, body, private, is_native, is_static, type_params, span })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, String> {
@@ -2066,7 +2074,6 @@ impl Parser {
                 if !self.match_token(&Token::RParen) {
                     return self.error_expr("Expected ')' after arguments");
                 }
-                self.skip_newlines();
 
                 // All type conversion functions (str, int, float, bool, etc.) are handled as native function calls
                 expr = Expr::Call {
@@ -2079,7 +2086,6 @@ impl Parser {
                 if !self.match_token(&Token::RBracket) {
                     return self.error_expr("Expected ']' after array index");
                 }
-                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Index {
                     object: Box::new(expr),
@@ -2090,8 +2096,7 @@ impl Parser {
                 // Class instantiation with {} or object literal
                 let span = self.compute_span(self.pos - 1);
                 let fields = self.parse_object_literal()?;
-                self.skip_newlines();
-                
+
                 // If expr is a Variable (class name), this is class instantiation
                 // Otherwise, it's a standalone object literal (type inferred from context)
                 if let Expr::Variable { name: class_name, .. } = &expr {
@@ -2108,7 +2113,6 @@ impl Parser {
                     Token::Identifier(n) => n,
                     _ => return self.error_expr("Expected identifier after '.'"),
                 };
-                self.skip_newlines();
                 let span = self.compute_span(self.pos - 1);
                 expr = Expr::Get {
                     object: Box::new(expr),

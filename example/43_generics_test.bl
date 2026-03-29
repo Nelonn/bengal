@@ -1,5 +1,7 @@
 module test.generics
 
+import std.io
+
 class tvec2<T> {
   x: T
   y: T
@@ -24,5 +26,5 @@ fn main() {
   let v3 = tvec3<float>()
   let iv3 = tvec3<int>()
   
-  print("Generics and type aliases work!")
+  println("Generics and type aliases work!")
 }

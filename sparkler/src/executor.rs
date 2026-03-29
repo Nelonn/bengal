@@ -1,4 +1,4 @@
-use crate::vm::{VM, Value, NativeFn, Class, Function, RunResult, set_async_callback_sender};
+use crate::vm::{VM, Value, NativeFn, NativeFallbackFn, Class, Function, RunResult, set_async_callback_sender};
 use crate::{debug_vm, Opcode};
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
 use std::sync::{Arc, RwLock};
@@ -40,7 +40,7 @@ impl Executor {
         let registry = linker.registry();
         let mut vm = VM::new();
         // Share the same registry between VM and linker
-        vm.native_registry = (*registry.read().unwrap()).clone();
+        vm.program.native_registry = (*registry.read().unwrap()).clone();
         let (tx, rx) = channel();
         Self {
             vm,
@@ -53,7 +53,7 @@ impl Executor {
     /// Create a new executor with a shared registry
     pub fn with_registry(registry: Arc<RwLock<NativeFunctionRegistry>>) -> Self {
         let mut vm = VM::new();
-        vm.native_registry = (*registry.read().unwrap()).clone();
+        vm.program.native_registry = (*registry.read().unwrap()).clone();
         let (tx, rx) = channel();
         Self {
             vm,
@@ -70,29 +70,47 @@ impl Executor {
 
     /// Get the native function registry
     pub fn registry(&mut self) -> &mut NativeFunctionRegistry {
-        &mut self.vm.native_registry
+        &mut self.vm.program.native_registry
     }
 
     pub fn register_native(&mut self, name: &str, f: NativeFn) {
-        self.vm.register_native(name, f);
+        // Register with linker first if it exists (so it gets an index)
+        if let Some(ref mut linker) = self.linker {
+            linker.register(name, f);
+            // Update VM registry from linker
+            let registry = linker.registry();
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
+        } else {
+            self.vm.register_native(name, f);
+        }
     }
 
-    pub fn register_fallback(&mut self, f: NativeFn) {
-        self.vm.register_fallback(f);
+    pub fn register_fallback(&mut self, f: NativeFallbackFn) {
+        // Register fallback with linker if it exists
+        if let Some(ref mut linker) = self.linker {
+            let registry = linker.registry();
+            {
+                let mut guard = registry.write().unwrap();
+                guard.set_fallback(f);
+            }
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
+        } else {
+            self.vm.register_fallback(f);
+        }
     }
 
     /// Link bytecode to native functions using indexed calls
-    /// 
+    ///
     /// This converts string-based CallNative to indexed CallNativeIndexed
     /// for O(1) lookup during execution.
     pub fn link_bytecode(&mut self, bytecode: &mut Bytecode) {
         if let Some(ref mut linker) = self.linker {
             // Update VM registry from linker
             let registry = linker.registry();
-            self.vm.native_registry = (*registry.read().unwrap()).clone();
-            
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
+
             // Convert CallNative to CallNativeIndexed
-            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.native_registry);
+            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.program.native_registry);
         }
     }
 
@@ -115,12 +133,16 @@ impl Executor {
                     let arg_count = bytecode[i + 4];
 
                     if let Some(name) = strings.get(name_idx) {
-                        if let Some(func_index) = registry.get_index(name) {
+                        // Try exact match first, then prefix match (for names without signature)
+                        let func_index = registry.get_index(name)
+                            .or_else(|| registry.get_index_by_prefix(name));
+                        
+                        if let Some(idx) = func_index {
                             // Convert to CallNativeIndexed (6 bytes)
                             new_bytecode.push(Opcode::CallNativeIndexed as u8);
                             new_bytecode.push(rd);
-                            new_bytecode.push((func_index & 0xFF) as u8);
-                            new_bytecode.push(((func_index >> 8) & 0xFF) as u8);
+                            new_bytecode.push((idx & 0xFF) as u8);
+                            new_bytecode.push(((idx >> 8) & 0xFF) as u8);
                             new_bytecode.push(arg_start);
                             new_bytecode.push(arg_count);
                             i += 5;
@@ -134,7 +156,7 @@ impl Executor {
             new_bytecode.push(opcode_byte);
             i += 1;
         }
-        
+
         *bytecode = new_bytecode;
     }
 
@@ -143,24 +165,27 @@ impl Executor {
             self.vm.set_source_file(file);
         }
 
-        let mut bytecode_data = bytecode.data;
+        let bytecode_data = bytecode.data;
         let strings = bytecode.strings;
 
         // Link bytecode if linker is available
         if self.linker.is_some() {
-            Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
+            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.program.native_registry);
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
-        match self.vm.run().map_err(|e| e.to_string())? {
-            RunResult::Finished(val) => Ok(val),
-            RunResult::Breakpoint => {
-                println!("Breakpoint hit at line {}", self.vm.get_line());
-                Ok(None)
-            }
-            RunResult::Suspended => {
-                // VM suspended for async native - should be handled by run_to_completion
-                Ok(None)
+        loop {
+            match self.vm.run().map_err(|e| e.to_string())? {
+                RunResult::Finished(val) => return Ok(val),
+                RunResult::InProgress => continue,
+                RunResult::Breakpoint => {
+                    println!("Breakpoint hit at line {}", self.vm.get_line());
+                    return Ok(None);
+                }
+                RunResult::Suspended => {
+                    // VM suspended for async native - should be handled by run_to_completion
+                    return Ok(None);
+                }
             }
         }
     }
@@ -170,12 +195,12 @@ impl Executor {
             self.vm.set_source_file(file);
         }
 
-        let mut bytecode_data = bytecode.data;
+        let bytecode_data = bytecode.data;
         let strings = bytecode.strings;
 
         // Link bytecode if linker is available
         if self.linker.is_some() {
-            Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.native_registry);
+            // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.program.native_registry);
         }
 
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
@@ -195,6 +220,9 @@ impl Executor {
             match result {
                 RunResult::Finished(val) => {
                     return Ok(val);
+                }
+                RunResult::InProgress => {
+                    continue;
                 }
                 RunResult::Breakpoint => {
                     println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
@@ -227,6 +255,9 @@ impl Executor {
                         Ok(RunResult::Finished(val)) => {
                             return Ok(val);
                         }
+                        Ok(RunResult::InProgress) => {
+                            continue;
+                        }
                         Ok(RunResult::Breakpoint) => {
                             println!("Breakpoint hit at {}:{}", self.vm.get_source_file().unwrap_or_else(|| "<unknown>".to_string()), self.vm.get_line());
                         }
@@ -244,19 +275,24 @@ impl Executor {
     }
 
     /// Hot-swap a native function at runtime
-    /// 
+    ///
     /// This replaces the function implementation without recompiling bytecode.
     /// The new implementation will be used on the next call.
     pub fn hot_swap(&mut self, name: &str, new_func: NativeFn) -> bool {
-        self.vm.native_registry.hot_swap(name, new_func)
+        self.vm.program.native_registry.hot_swap(name, new_func)
+    }
+
+    /// Set a breakpoint in a source file at a specific line
+    pub fn set_breakpoint(&mut self, source_file: &str, line: usize) -> Result<(), String> {
+        self.vm.set_breakpoint(source_file, line)
     }
 
     /// Force relinking of bytecode (useful after hot-swap if indices changed)
     pub fn relink(&mut self, bytecode: &mut Bytecode) {
         if let Some(ref mut linker) = self.linker {
             let registry = linker.registry();
-            self.vm.native_registry = (*registry.read().unwrap()).clone();
-            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.native_registry);
+            self.vm.program.native_registry = (*registry.read().unwrap()).clone();
+            Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.program.native_registry);
         }
     }
 }

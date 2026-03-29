@@ -5,7 +5,7 @@ try {
     throw "Exception!"
     println("This should not be reached")
 } catch (e) {
-    println("Caught: " + e)
+    println("Caught: " + str(e))
 }
 
 println("Continuing after try-catch")
