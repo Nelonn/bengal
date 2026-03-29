@@ -74,6 +74,10 @@ pub struct HlirToSparkler {
     interface_names: std::collections::HashSet<String>,
     /// Map from class name to its vtable (method names in order)
     vtables: std::collections::HashMap<String, Vec<String>>,
+    /// Current line number for lazy line emission
+    current_line: usize,
+    /// Last emitted line number (for lazy line emission)
+    last_emitted_line: usize,
 }
 
 impl HlirToSparkler {
@@ -98,6 +102,8 @@ impl HlirToSparkler {
             interface_names: std::collections::HashSet::new(),
             vtables: std::collections::HashMap::new(),
             source_file: None,
+            current_line: 1,
+            last_emitted_line: 0, // 0 means no line emitted yet
         }
     }
 
@@ -123,6 +129,8 @@ impl HlirToSparkler {
             interface_names: std::collections::HashSet::new(),
             vtables: std::collections::HashMap::new(),
             source_file: None,
+            current_line: 1,
+            last_emitted_line: 0,
         }
     }
 
@@ -218,8 +226,20 @@ impl HlirToSparkler {
         }
     }
 
-    /// Emit an opcode
+    /// Emit line opcode if line number changed (lazy emission)
+    fn maybe_emit_line(&mut self) {
+        if self.current_line != self.last_emitted_line {
+            // Use raw emit to avoid recursive call to maybe_emit_line
+            self.bytecode.push(Opcode::Line as u8);
+            self.bytecode.push((self.current_line & 0xFF) as u8);
+            self.bytecode.push(((self.current_line >> 8) & 0xFF) as u8);
+            self.last_emitted_line = self.current_line;
+        }
+    }
+
+    /// Emit an opcode (with lazy line emission)
     fn emit_opcode(&mut self, opcode: Opcode) {
+        self.maybe_emit_line();
         self.emit(opcode as u8);
     }
 
@@ -589,11 +609,6 @@ impl HlirToSparkler {
         // Record the start offset of this function's bytecode for relative jump calculations
         let func_start_offset = self.current_offset();
 
-        // Emit Line opcode at function entry for debugging
-        self.emit_opcode(Opcode::Line);
-        let line_num = func.line_number as u16;
-        self.emit_u16(line_num);
-
         // Compile blocks
         for block in &func.blocks {
             self.compile_block(block, func);
@@ -627,9 +642,7 @@ impl HlirToSparkler {
         let block_start = self.current_offset();
         self.block_offsets.insert(block_key, block_start);
 
-        // Emit Line opcode at block start if line number changed
-        self.emit_opcode(Opcode::Line);
-        self.emit_u16(block.line_number as u16);
+        // Don't set current_line here - rely on HlirInstr::Line instructions for lazy emission
 
         for instr in &block.instructions {
             self.release_dead_temps();
@@ -821,8 +834,8 @@ impl HlirToSparkler {
             }
 
             HlirInstr::Line { line } => {
-                self.emit_opcode(Opcode::Line);
-                self.emit_u16(*line as u16);
+                // Set current line for lazy emission (don't emit opcode yet)
+                self.current_line = *line;
             }
 
             HlirInstr::TryEnd => {

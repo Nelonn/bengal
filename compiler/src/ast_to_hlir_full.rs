@@ -39,7 +39,7 @@ impl AstToHlirConverter {
             native_classes: std::collections::HashMap::new(),
             string_table: Vec::new(),
             module_prefix: module_name.to_string(),
-            current_line: 1,
+            current_line: 0,
         }
     }
 

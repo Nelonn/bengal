@@ -221,7 +221,7 @@ pub enum HlirInstr {
     /// Exception handling: end of try block
     TryEnd,
 
-    /// Line number for debugging
+    /// Line number for debugging (sets current line for lazy emission)
     Line {
         line: usize,
     },
@@ -643,7 +643,7 @@ impl HlirBuilder {
         self.emit(instr);
     }
 
-    /// Emit line number for debugging
+    /// Emit line number for debugging (sets current line for lazy emission)
     pub fn line(&mut self, line: usize) {
         let instr = HlirInstr::Line { line };
         self.emit(instr);
