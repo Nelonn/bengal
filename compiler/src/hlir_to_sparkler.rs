@@ -659,14 +659,22 @@ impl HlirToSparkler {
                     _ => Opcode::Nop,
                 };
 
-                self.emit_opcode(opcode);
                 if opcode == Opcode::Concat {
                     // Concat: Rd, rs_start, count
-                    // For binary concat, count is always 2
+                    // For binary concat, we need to ensure rhs is in lhs_reg + 1
+                    // If rhs_reg is not lhs_reg + 1, we need to move it first
+                    if rhs_reg != lhs_reg + 1 {
+                        // Emit a move to ensure consecutive registers
+                        self.emit_opcode(Opcode::Move);
+                        self.emit((lhs_reg + 1) as u8);
+                        self.emit(rhs_reg as u8);
+                    }
+                    self.emit_opcode(opcode);
                     self.emit(dest_reg);
                     self.emit(lhs_reg);
                     self.emit(2u8);
                 } else {
+                    self.emit_opcode(opcode);
                     self.emit(dest_reg);
                     self.emit(lhs_reg);
                     self.emit(rhs_reg);

@@ -203,11 +203,6 @@ impl Executor {
             // Self::convert_to_indexed_calls(&mut bytecode_data, &strings, &self.vm.program.native_registry);
         }
 
-        eprintln!("DEBUG: Loading {} classes", bytecode.classes.len());
-        for class in &bytecode.classes {
-            eprintln!("DEBUG:   Class: {}", class.name);
-        }
-        
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
         // Take the callback receiver and keep sender alive
