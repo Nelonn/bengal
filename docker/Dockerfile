@@ -2,7 +2,11 @@
 FROM rust:alpine AS builder
 
 # Install build dependencies
-RUN apk add --no-cache musl-dev gcc
+RUN apk add --no-cache \
+    musl-dev \
+    gcc \
+    openssl-dev \
+    openssl-libs-static
 
 WORKDIR /app
 
