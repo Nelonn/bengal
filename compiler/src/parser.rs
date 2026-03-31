@@ -1,4 +1,5 @@
 use crate::lexer::Token;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
@@ -9,6 +10,24 @@ pub struct Span {
 impl Span {
     pub fn unknown() -> Self {
         Self { line: 0, column: 0 }
+    }
+}
+
+/// Parser error with span information
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    pub message: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl ParseError {
+    pub fn new(message: String, line: usize, column: usize) -> Self {
+        Self { message, line, column }
+    }
+
+    pub fn format(&self, filename: &str) -> String {
+        format!("{}:{}:{}: error: {}", filename, self.line, self.column, self.message)
     }
 }
 
@@ -263,6 +282,7 @@ pub struct Parser {
     source: String,
     path: String,
     token_positions: Vec<usize>,  // Position in source for each token
+    errors: RefCell<Vec<ParseError>>,
 }
 
 impl Parser {
@@ -273,7 +293,29 @@ impl Parser {
             source: source.to_string(),
             path: path.to_string(),
             token_positions,
+            errors: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.errors.borrow().is_empty()
+    }
+
+    pub fn get_errors(&self) -> Vec<ParseError> {
+        self.errors.borrow().clone()
+    }
+
+    pub fn format_errors(&self) -> String {
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path);
+        let errors = self.errors.borrow();
+        let error_messages: Vec<String> = errors
+            .iter()
+            .map(|e| e.format(filename))
+            .collect();
+        error_messages.join("\n")
     }
 
     fn compute_span(&self, token_idx: usize) -> Span {
@@ -302,31 +344,24 @@ impl Parser {
         token
     }
 
-    fn error(&self, message: &str) -> Result<Stmt, String> {
+    fn add_error(&self, message: String) {
         let span = self.compute_span(self.pos);
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
+        self.errors.borrow_mut().push(ParseError::new(message, span.line, span.column));
+    }
+
+    fn error(&self, message: &str) -> Result<Stmt, String> {
+        self.add_error(message.to_string());
+        Err(message.to_string())
     }
 
     fn error_expr(&self, message: &str) -> Result<Expr, String> {
-        let span = self.compute_span(self.pos);
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
+        self.add_error(message.to_string());
+        Err(message.to_string())
     }
 
     fn error_generic<T>(&self, message: &str) -> Result<T, String> {
-        let span = self.compute_span(self.pos);
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
+        self.add_error(message.to_string());
+        Err(message.to_string())
     }
 
     fn check(&self, token: &Token) -> bool {
@@ -360,14 +395,61 @@ impl Parser {
         self.skip_newlines();
 
         while !self.check(&Token::Eof) {
-            let stmt = self.parse_statement()?;
-            if let Some(s) = stmt {
-                let s = self.maybe_parse_else_if(s)?;
-                statements.push(s);
+            // Try to parse a statement, but don't stop on errors
+            match self.parse_statement() {
+                Ok(Some(stmt)) => {
+                    match self.maybe_parse_else_if(stmt) {
+                        Ok(s) => statements.push(s),
+                        Err(_) => {
+                            // Error already recorded, try to continue
+                            self.synchronize();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    self.advance(); // Move past EOF or RBrace
+                }
+                Err(_) => {
+                    // Error already recorded, try to synchronize and continue
+                    self.synchronize();
+                }
             }
             self.skip_newlines();
         }
-        Ok(statements)
+
+        if self.has_errors() {
+            Err(self.format_errors())
+        } else {
+            Ok(statements)
+        }
+    }
+
+    /// Synchronize parser after an error - skip to next statement boundary
+    fn synchronize(&mut self) {
+        self.skip_newlines();
+        // Skip tokens until we find a statement starter or EOF
+        while !self.check(&Token::Eof) {
+            if self.check(&Token::Module)
+                || self.check(&Token::Import)
+                || self.check(&Token::Class)
+                || self.check(&Token::Interface)
+                || self.check(&Token::Enum)
+                || self.check(&Token::Fn)
+                || self.check(&Token::Type)
+                || self.check(&Token::Let)
+                || self.check(&Token::Return)
+                || self.check(&Token::If)
+                || self.check(&Token::For)
+                || self.check(&Token::While)
+                || self.check(&Token::Break)
+                || self.check(&Token::Continue)
+                || self.check(&Token::Try)
+                || self.check(&Token::Throw)
+            {
+                return;
+            }
+            self.advance();
+        }
     }
 
     fn parse_statement(&mut self) -> Result<Option<Stmt>, String> {
@@ -1072,12 +1154,12 @@ impl Parser {
             if self.match_token(&Token::Semicolon) {
                 Vec::new()
             } else if self.check(&Token::LBrace) {
-                self.advance();
-                let b = self.parse_block()?;
-                if !self.match_token(&Token::RBrace) {
-                    return self.error_generic("Expected '}' to close native function body");
-                }
-                b
+                // Record error but still parse the body to continue checking for more errors
+                self.add_error("Native functions cannot have a body".to_string());
+                self.advance(); // consume '{'
+                let b = self.parse_block();
+                let _ = self.match_token(&Token::RBrace); // consume '}' if present
+                b.unwrap_or_default()
             } else {
                 // Also allow no semicolon if it's the end of a block/file
                 Vec::new()
@@ -1187,12 +1269,12 @@ impl Parser {
             if self.match_token(&Token::Semicolon) {
                 Vec::new()
             } else if self.check(&Token::LBrace) {
-                self.advance();
-                let b = self.parse_block()?;
-                if !self.match_token(&Token::RBrace) {
-                    return self.error_generic(&format!("Expected '}}' to close native {} body", name));
-                }
-                b
+                // Record error but still parse the body to continue checking for more errors
+                self.add_error(format!("Native {} cannot have a body", name));
+                self.advance(); // consume '{'
+                let b = self.parse_block();
+                let _ = self.match_token(&Token::RBrace); // consume '}' if present
+                b.unwrap_or_default()
             } else {
                 Vec::new()
             }

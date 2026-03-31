@@ -109,10 +109,10 @@ fn orMsg(message: str?, default: str): str {
     return default
 }
 
-native fn addFailure(message: str?) {}
-native fn recordPass() {}
-native fn setCurrentTest(name: str) {}
-native fn nativeAssertSame(expected: any, actual: any, message: str?) {}
+native fn addFailure(message: str?)
+native fn recordPass()
+native fn setCurrentTest(name: str)
+native fn nativeAssertSame(expected: any, actual: any, message: str?)
 
 // ============== Public API ==============
 

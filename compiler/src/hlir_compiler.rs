@@ -288,108 +288,41 @@ impl HlirCompiler {
                         // import std.io - brings println into scope
                         // We don't compile the module, just track the import for name resolution
                         // Native functions will be resolved at runtime
-                        if let Ok(module_name) = self.load_module(path) {
-                            if let Some(module_info) = self.loaded_modules.get(&module_name) {
-                                for func in &module_info.functions {
-                                    // Map qualified name
-                                    self.import_map.insert(func.clone(), func.clone());
-                                    // Also map simple name
-                                    if let Some(simple_name) = func.split('.').last() {
-                                        self.import_map.insert(simple_name.to_string(), func.clone());
-                                    }
-                                    // Track if this function is native
-                                    if module_info.native_functions.contains(func) {
-                                        self.native_functions.insert(func.clone(), true);
-                                    }
+                        let module_name = self.load_module(path)?;
+                        if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                            for func in &module_info.functions {
+                                // Map qualified name
+                                self.import_map.insert(func.clone(), func.clone());
+                                // Also map simple name
+                                if let Some(simple_name) = func.split('.').last() {
+                                    self.import_map.insert(simple_name.to_string(), func.clone());
                                 }
-                                // Also register classes from the imported module
-                                for class in &module_info.classes {
-                                    // Map qualified name
-                                    self.import_map.insert(class.clone(), class.clone());
-                                    // Also map simple name (e.g., "HttpClient" from "std.http.HttpClient")
-                                    if let Some(simple_name) = class.split('.').last() {
-                                        self.import_map.insert(simple_name.to_string(), class.clone());
-                                    }
+                                // Track if this function is native
+                                if module_info.native_functions.contains(func) {
+                                    self.native_functions.insert(func.clone(), true);
+                                }
+                            }
+                            // Also register classes from the imported module
+                            for class in &module_info.classes {
+                                // Map qualified name
+                                self.import_map.insert(class.clone(), class.clone());
+                                // Also map simple name (e.g., "HttpClient" from "std.http.HttpClient")
+                                if let Some(simple_name) = class.split('.').last() {
+                                    self.import_map.insert(simple_name.to_string(), class.clone());
                                 }
                             }
                         }
                     }
                     ImportKind::Module => {
                         // import std - allows access via std.xxx (e.g., std.io.println)
-                        if let Ok(module_name) = self.load_module(path) {
-                            if let Some(module_info) = self.loaded_modules.get(&module_name) {
-                                // Register the module alias for qualified access
-                                // e.g., for "import helper", register "helper" -> "helper"
-                                if let Some(module_alias) = path.last() {
-                                    // Register all functions from the module with the alias prefix
-                                    for func in &module_info.functions {
-                                        let aliased_name = format!("{}.{}", module_alias, func.split('.').last().unwrap_or(""));
-                                        self.import_map.insert(aliased_name.clone(), func.clone());
-                                        // Track if this function is native
-                                        if module_info.native_functions.contains(func) {
-                                            self.native_functions.insert(aliased_name, true);
-                                        }
-                                    }
-                                    // Also register classes with alias
-                                    for class in &module_info.classes {
-                                        let aliased_name = format!("{}.{}", module_alias, class.split('.').last().unwrap_or(""));
-                                        self.import_map.insert(aliased_name.clone(), class.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ImportKind::Member => {
-                        if path.len() >= 2 {
-                            let module_path = &path[..path.len()-1];
-                            let member = path.last().unwrap();
-                            if let Ok(module_name) = self.load_module(module_path) {
-                                if let Some(module_info) = self.loaded_modules.get(&module_name) {
-                                    for func in &module_info.functions {
-                                        if func.ends_with(&format!(".{}", member)) {
-                                            self.import_map.insert(member.clone(), func.clone());
-                                            // Track if this function is native
-                                            if module_info.native_functions.contains(func) {
-                                                self.native_functions.insert(func.clone(), true);
-                                            }
-                                        }
-                                    }
-                                    // Also check for class members
-                                    for class in &module_info.classes {
-                                        if class.ends_with(&format!(".{}", member)) {
-                                            self.import_map.insert(member.clone(), class.clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ImportKind::Wildcard => {
-                        if let Ok(module_name) = self.load_module(path) {
-                            if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                        let module_name = self.load_module(path)?;
+                        if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                            // Register the module alias for qualified access
+                            // e.g., for "import helper", register "helper" -> "helper"
+                            if let Some(module_alias) = path.last() {
+                                // Register all functions from the module with the alias prefix
                                 for func in &module_info.functions {
-                                    if let Some(simple_name) = func.split('.').last() {
-                                        self.import_map.insert(simple_name.to_string(), func.clone());
-                                        // Track if this function is native
-                                        if module_info.native_functions.contains(func) {
-                                            self.native_functions.insert(func.clone(), true);
-                                        }
-                                    }
-                                }
-                                // Also register classes from wildcard imports
-                                for class in &module_info.classes {
-                                    if let Some(simple_name) = class.split('.').last() {
-                                        self.import_map.insert(simple_name.to_string(), class.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ImportKind::Aliased(alias) => {
-                        if let Ok(module_name) = self.load_module(path) {
-                            if let Some(module_info) = self.loaded_modules.get(&module_name) {
-                                for func in &module_info.functions {
-                                    let aliased_name = format!("{}.{}", alias, func.split('.').last().unwrap_or(""));
+                                    let aliased_name = format!("{}.{}", module_alias, func.split('.').last().unwrap_or(""));
                                     self.import_map.insert(aliased_name.clone(), func.clone());
                                     // Track if this function is native
                                     if module_info.native_functions.contains(func) {
@@ -398,9 +331,71 @@ impl HlirCompiler {
                                 }
                                 // Also register classes with alias
                                 for class in &module_info.classes {
-                                    let aliased_name = format!("{}.{}", alias, class.split('.').last().unwrap_or(""));
+                                    let aliased_name = format!("{}.{}", module_alias, class.split('.').last().unwrap_or(""));
                                     self.import_map.insert(aliased_name.clone(), class.clone());
                                 }
+                            }
+                        }
+                    }
+                    ImportKind::Member => {
+                        if path.len() >= 2 {
+                            let module_path = &path[..path.len()-1];
+                            let member = path.last().unwrap();
+                            let module_name = self.load_module(module_path)?;
+                            if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                                for func in &module_info.functions {
+                                    if func.ends_with(&format!(".{}", member)) {
+                                        self.import_map.insert(member.clone(), func.clone());
+                                        // Track if this function is native
+                                        if module_info.native_functions.contains(func) {
+                                            self.native_functions.insert(func.clone(), true);
+                                        }
+                                    }
+                                }
+                                // Also check for class members
+                                for class in &module_info.classes {
+                                    if class.ends_with(&format!(".{}", member)) {
+                                        self.import_map.insert(member.clone(), class.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ImportKind::Wildcard => {
+                        let module_name = self.load_module(path)?;
+                        if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                            for func in &module_info.functions {
+                                if let Some(simple_name) = func.split('.').last() {
+                                    self.import_map.insert(simple_name.to_string(), func.clone());
+                                    // Track if this function is native
+                                    if module_info.native_functions.contains(func) {
+                                        self.native_functions.insert(func.clone(), true);
+                                    }
+                                }
+                            }
+                            // Also register classes from wildcard imports
+                            for class in &module_info.classes {
+                                if let Some(simple_name) = class.split('.').last() {
+                                    self.import_map.insert(simple_name.to_string(), class.clone());
+                                }
+                            }
+                        }
+                    }
+                    ImportKind::Aliased(alias) => {
+                        let module_name = self.load_module(path)?;
+                        if let Some(module_info) = self.loaded_modules.get(&module_name) {
+                            for func in &module_info.functions {
+                                let aliased_name = format!("{}.{}", alias, func.split('.').last().unwrap_or(""));
+                                self.import_map.insert(aliased_name.clone(), func.clone());
+                                // Track if this function is native
+                                if module_info.native_functions.contains(func) {
+                                    self.native_functions.insert(aliased_name, true);
+                                }
+                            }
+                            // Also register classes with alias
+                            for class in &module_info.classes {
+                                let aliased_name = format!("{}.{}", alias, class.split('.').last().unwrap_or(""));
+                                self.import_map.insert(aliased_name.clone(), class.clone());
                             }
                         }
                     }
