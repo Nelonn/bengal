@@ -19,15 +19,28 @@ pub struct ParseError {
     pub message: String,
     pub line: usize,
     pub column: usize,
+    pub file: String,
+    pub source_line: Option<String>,
 }
 
 impl ParseError {
-    pub fn new(message: String, line: usize, column: usize) -> Self {
-        Self { message, line, column }
+    pub fn new(message: String, file: String, line: usize, column: usize) -> Self {
+        Self { message, file, line, column, source_line: None }
     }
 
-    pub fn format(&self, filename: &str) -> String {
-        format!("{}:{}:{}: error: {}", filename, self.line, self.column, self.message)
+    pub fn with_source(mut self, source_line: String) -> Self {
+        self.source_line = Some(source_line);
+        self
+    }
+
+    pub fn format(&self) -> String {
+        let base = format!("{}:{}:{}: error: {}", self.file, self.line, self.column, self.message);
+        if let Some(ref line) = self.source_line {
+            let pointer = " ".repeat(self.column.saturating_sub(1)) + "^";
+            format!("{}\n  {}\n  {}", base, line, pointer)
+        } else {
+            base
+        }
     }
 }
 
@@ -306,14 +319,10 @@ impl Parser {
     }
 
     pub fn format_errors(&self) -> String {
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
         let errors = self.errors.borrow();
         let error_messages: Vec<String> = errors
             .iter()
-            .map(|e| e.format(filename))
+            .map(|e| e.format())
             .collect();
         error_messages.join("\n")
     }
@@ -346,7 +355,25 @@ impl Parser {
 
     fn add_error(&self, message: String) {
         let span = self.compute_span(self.pos);
-        self.errors.borrow_mut().push(ParseError::new(message, span.line, span.column));
+        let filename = std::path::Path::new(&self.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.path)
+            .to_string();
+        
+        let mut error = ParseError::new(message, filename, span.line, span.column);
+        
+        // Capture the source line for the error snippet
+        let source_line = self.get_source_line(span.line);
+        if let Some(line) = source_line {
+            error = error.with_source(line);
+        }
+        
+        self.errors.borrow_mut().push(error);
+    }
+
+    fn get_source_line(&self, line_num: usize) -> Option<String> {
+        self.source.lines().nth(line_num.saturating_sub(1)).map(|s| s.to_string())
     }
 
     fn error(&self, message: &str) -> Result<Stmt, String> {
@@ -417,10 +444,17 @@ impl Parser {
             self.skip_newlines();
         }
 
+        // Always return statements, even if there are errors
+        // Errors can be retrieved via get_errors() or format_errors()
+        Ok(statements)
+    }
+
+    /// Get formatted error string
+    pub fn get_error_string(&self) -> Option<String> {
         if self.has_errors() {
-            Err(self.format_errors())
+            Some(self.format_errors())
         } else {
-            Ok(statements)
+            None
         }
     }
 

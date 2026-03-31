@@ -4,7 +4,7 @@
 //! It supports imports, module resolution, and bytecode merging.
 
 use crate::lexer::Lexer;
-use crate::parser::{Parser, Stmt, ImportKind, Span};
+use crate::parser::{Parser, Stmt, ImportKind, Span, ParseError};
 use crate::hlir::HlirModule;
 use crate::ast_to_hlir_full::ast_to_hlir;
 use crate::hlir_to_sparkler::{compile_hlir_to_sparkler, compile_hlir_to_sparkler_with_natives, CompiledBytecode};
@@ -12,6 +12,26 @@ use crate::types::{TypeChecker, TypeContext};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Unified compiler error
+#[derive(Debug, Clone)]
+pub enum CompilerError {
+    Parse(ParseError),
+    Import(String),
+    Type(String),
+    Other(String),
+}
+
+impl CompilerError {
+    pub fn format(&self) -> String {
+        match self {
+            CompilerError::Parse(e) => e.format(),
+            CompilerError::Import(msg) => msg.clone(),
+            CompilerError::Type(msg) => msg.clone(),
+            CompilerError::Other(msg) => msg.clone(),
+        }
+    }
+}
 
 /// Compiler options
 #[derive(Debug, Clone)]
@@ -190,25 +210,44 @@ impl HlirCompiler {
         components.join(".")
     }
     
-    fn load_module(&mut self, module_path: &[String]) -> Result<String, String> {
+    fn load_module(&mut self, module_path: &[String]) -> Result<String, Vec<ParseError>> {
         let module_name = module_path.join(".");
 
         if self.loaded_modules.contains_key(&module_name) {
             return Ok(module_name);
         }
 
-        let module_file = self.find_module_file(module_path)?;
+        let module_file = match self.find_module_file(module_path) {
+            Ok(f) => f,
+            Err(e) => return Err(vec![ParseError::new(e, "system".to_string(), 0, 0)]),
+        };
 
-        let source = fs::read_to_string(&module_file)
-            .map_err(|e| format!("Failed to read module '{}': {}", module_file.display(), e))?;
+        let source = match fs::read_to_string(&module_file) {
+            Ok(s) => s,
+            Err(e) => return Err(vec![ParseError::new(
+                format!("Failed to read module '{}': {}", module_file.display(), e),
+                "system".to_string(), 0, 0
+            )]),
+        };
 
         let mut lexer = Lexer::new(&source, module_file.to_str().unwrap_or("unknown"));
-        let (tokens, token_positions) = lexer.tokenize()
-            .map_err(|e| format!("Lexical error in '{}': {}", module_file.display(), e))?;
+        let (tokens, token_positions) = match lexer.tokenize() {
+            Ok(t) => t,
+            Err(e) => return Err(vec![ParseError::new(
+                format!("Lexical error in '{}': {}", module_file.display(), e),
+                module_file.display().to_string(), 0, 0
+            )]),
+        };
 
         let mut parser = Parser::new(tokens, &source, module_file.to_str().unwrap_or("unknown"), token_positions);
         let mut statements = parser.parse()
-            .map_err(|e| format!("Parse error in '{}': {}", module_file.display(), e))?;
+            .unwrap_or_default();
+
+        // Check for parse errors in the module
+        let parse_errors = parser.get_errors();
+        if !parse_errors.is_empty() {
+            return Err(parse_errors);
+        }
 
         let actual_module_path = Self::extract_module_path(&statements, &module_file);
 
@@ -280,7 +319,9 @@ impl HlirCompiler {
         Ok(actual_module_path)
     }
     
-    fn process_imports(&mut self, stmts: &[Stmt]) -> Result<(), String> {
+    fn process_imports(&mut self, stmts: &[Stmt]) -> Result<(), Vec<CompilerError>> {
+        let mut errors = Vec::new();
+        
         for stmt in stmts {
             if let Stmt::Import { path, kind, .. } = stmt {
                 match kind {
@@ -288,7 +329,14 @@ impl HlirCompiler {
                         // import std.io - brings println into scope
                         // We don't compile the module, just track the import for name resolution
                         // Native functions will be resolved at runtime
-                        let module_name = self.load_module(path)?;
+                        let module_name = self.load_module(path);
+                        if let Err(parse_errors) = module_name {
+                            for pe in parse_errors {
+                                errors.push(CompilerError::Parse(pe));
+                            }
+                            continue;
+                        }
+                        let module_name = module_name.unwrap();
                         if let Some(module_info) = self.loaded_modules.get(&module_name) {
                             for func in &module_info.functions {
                                 // Map qualified name
@@ -315,7 +363,14 @@ impl HlirCompiler {
                     }
                     ImportKind::Module => {
                         // import std - allows access via std.xxx (e.g., std.io.println)
-                        let module_name = self.load_module(path)?;
+                        let module_name = self.load_module(path);
+                        if let Err(parse_errors) = module_name {
+                            for pe in parse_errors {
+                                errors.push(CompilerError::Parse(pe));
+                            }
+                            continue;
+                        }
+                        let module_name = module_name.unwrap();
                         if let Some(module_info) = self.loaded_modules.get(&module_name) {
                             // Register the module alias for qualified access
                             // e.g., for "import helper", register "helper" -> "helper"
@@ -341,7 +396,14 @@ impl HlirCompiler {
                         if path.len() >= 2 {
                             let module_path = &path[..path.len()-1];
                             let member = path.last().unwrap();
-                            let module_name = self.load_module(module_path)?;
+                            let module_name = self.load_module(module_path);
+                            if let Err(parse_errors) = module_name {
+                                for pe in parse_errors {
+                                    errors.push(CompilerError::Parse(pe));
+                                }
+                                continue;
+                            }
+                            let module_name = module_name.unwrap();
                             if let Some(module_info) = self.loaded_modules.get(&module_name) {
                                 for func in &module_info.functions {
                                     if func.ends_with(&format!(".{}", member)) {
@@ -362,7 +424,14 @@ impl HlirCompiler {
                         }
                     }
                     ImportKind::Wildcard => {
-                        let module_name = self.load_module(path)?;
+                        let module_name = self.load_module(path);
+                        if let Err(parse_errors) = module_name {
+                            for pe in parse_errors {
+                                errors.push(CompilerError::Parse(pe));
+                            }
+                            continue;
+                        }
+                        let module_name = module_name.unwrap();
                         if let Some(module_info) = self.loaded_modules.get(&module_name) {
                             for func in &module_info.functions {
                                 if let Some(simple_name) = func.split('.').last() {
@@ -382,7 +451,14 @@ impl HlirCompiler {
                         }
                     }
                     ImportKind::Aliased(alias) => {
-                        let module_name = self.load_module(path)?;
+                        let module_name = self.load_module(path);
+                        if let Err(parse_errors) = module_name {
+                            for pe in parse_errors {
+                                errors.push(CompilerError::Parse(pe));
+                            }
+                            continue;
+                        }
+                        let module_name = module_name.unwrap();
                         if let Some(module_info) = self.loaded_modules.get(&module_name) {
                             for func in &module_info.functions {
                                 let aliased_name = format!("{}.{}", alias, func.split('.').last().unwrap_or(""));
@@ -402,7 +478,12 @@ impl HlirCompiler {
                 }
             }
         }
-        Ok(())
+        
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
     
     fn rewrite_calls(stmts: &mut Vec<Stmt>, import_map: &HashMap<String, String>) {
@@ -563,12 +644,33 @@ impl HlirCompiler {
 
         let mut parser = Parser::new(tokens, &self.source, source_path, token_positions);
         let mut statements = parser.parse()
-            .map_err(|e| format!("Parse error: {}", e))?;
+            .unwrap_or_default();  // Always continue, even with parse errors
 
-        self.process_imports(&statements)?;
+        // Process imports to find errors in imported modules too
+        let import_result = self.process_imports(&statements);
 
         // Rewrite function calls to use fully qualified names
         Self::rewrite_calls(&mut statements, &self.import_map);
+
+        // Collect all errors
+        let mut errors = Vec::new();
+
+        // Add parse errors from main file
+        for parse_err in parser.get_errors() {
+            errors.push(CompilerError::Parse(parse_err));
+        }
+
+        // Add import errors (each error from import is already a list)
+        if let Err(import_errors) = import_result {
+            errors.extend(import_errors);
+        }
+
+        if !errors.is_empty() {
+            let error_count = errors.len();
+            let plural = if error_count == 1 { "" } else { "s" };
+            let formatted = errors.iter().map(|e| e.format()).collect::<Vec<_>>().join("\n");
+            return Err(format!("{} error{} found\n{}", error_count, plural, formatted));
+        }
 
         // Type check the code if type checking is enabled
         if self.options.enable_type_checking {
