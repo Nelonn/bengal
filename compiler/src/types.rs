@@ -2903,6 +2903,10 @@ impl TypeChecker {
             Stmt::Continue(_) => {
                 // Continue statement - no type checking needed
             }
+            Stmt::Spawn { expr, .. } => {
+                // Spawn statement - check the expression (should be a function call)
+                self.infer_expr(expr);
+            }
         }
     }
 

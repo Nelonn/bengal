@@ -768,6 +768,49 @@ impl AstToHlirConverter {
                 self.builder.throw(value);
             }
 
+            Stmt::Spawn { expr, span } => {
+                // spawn is compiled as a call to the native __spawn function
+                // Usage: spawn some_func(arg1, arg2, ...)
+                // Compiles to: __spawn("some_func", arg1, arg2, ...)
+                self.set_line(span.line);
+
+                // The expression should be a function call
+                if let Expr::Call { callee, args, .. } = expr {
+                    // Extract function name from the callee
+                    if let Expr::Variable { name, .. } = callee.as_ref() {
+                        // Add function name as a string constant
+                        self.add_string(name.clone());
+                        
+                        // Build arguments: [func_name, arg1, arg2, ...]
+                        let mut spawn_args = vec![HlirValue::StringConst(name.clone())];
+                        for arg in args {
+                            spawn_args.push(self.convert_expr(arg));
+                        }
+
+                        // Call the native __spawn function
+                        self.builder.call_native(
+                            HlirValue::Function("__spawn".to_string()),
+                            spawn_args,
+                            HlirType::Void,
+                        );
+                    } else {
+                        // For now, only simple function calls are supported
+                        self.builder.call_native(
+                            HlirValue::Function("__spawn".to_string()),
+                            vec![HlirValue::Null],
+                            HlirType::Void,
+                        );
+                    }
+                } else {
+                    // spawn without a call - not supported yet
+                    self.builder.call_native(
+                        HlirValue::Function("__spawn".to_string()),
+                        vec![HlirValue::Null],
+                        HlirType::Void,
+                    );
+                }
+            }
+
             Stmt::Module { .. } | Stmt::Import { .. } | Stmt::Class(_) | Stmt::Interface(_) | Stmt::Enum(_) | Stmt::Function(_) | Stmt::TypeAlias(_) => {}
         }
     }
@@ -886,8 +929,64 @@ impl AstToHlirConverter {
                     }
                 }
                 
+                // Check if this is increment/decrement on a simple variable
+                let is_inc_dec = matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement
+                                         | UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement | UnaryOp::Decrement);
+
+                if is_inc_dec {
+                    if let Expr::Variable { name, .. } = expr.as_ref() {
+                        // Handle simple variable increment/decrement: count++ or --count
+                        // Check if variable exists in var_ptrs (for let variables)
+                        if let Some(ptr) = self.var_ptrs.get(name).cloned() {
+                            let var_ty = self.var_types.get(name)
+                                .cloned()
+                                .unwrap_or(ty.clone());
+
+                            // Load current value
+                            let current_val = self.builder.load(ptr.clone(), var_ty.clone());
+
+                            // Compute delta
+                            let delta = match var_ty {
+                                HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                                _ => HlirValue::IntConst(1),
+                            };
+
+                            // For postfix: save original value before modification
+                            // We need to copy to a separate temp to avoid it being overwritten
+                            let original_val = if matches!(op, UnaryOp::PostfixIncrement | UnaryOp::PostfixDecrement) {
+                                // Create a copy of the current value in a new temp
+                                Some(self.builder.bin_op(HlirBinOp::Add, current_val.clone(), HlirValue::IntConst(0), var_ty.clone()))
+                            } else {
+                                None
+                            };
+
+                            // Compute new value
+                            let new_val = if matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement) {
+                                self.builder.bin_op(HlirBinOp::Add, current_val, delta, var_ty.clone())
+                            } else {
+                                self.builder.bin_op(HlirBinOp::Sub, current_val, delta, var_ty.clone())
+                            };
+
+                            // Store back to the variable
+                            self.builder.store(new_val.clone(), ptr.clone(), var_ty);
+
+                            // Return appropriate value
+                            if let Some(orig) = original_val {
+                                return orig;
+                            } else {
+                                return new_val;
+                            }
+                        } else if name != "self" {
+                            // Variable not found in var_ptrs and not "self"
+                            // This might be a Local (function parameter or similar)
+                            // For now, fall through to old code
+                            // TODO: Handle Local variables properly
+                        }
+                    }
+                }
+
                 let value = self.convert_expr(expr);
-                
+
                 let hlir_op = match op {
                     UnaryOp::Not => HlirUnaryOp::LNot,
                     UnaryOp::Negate => HlirUnaryOp::Neg,
@@ -1265,13 +1364,13 @@ impl AstToHlirConverter {
             Expr::Unary { op, expr, .. } => {
                 let ty = self.infer_expr_type(expr);
                 
-                // Check if this is increment/decrement on a class field
-                let is_inc_dec = matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement 
+                // Check if this is increment/decrement
+                let is_inc_dec = matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement
                                          | UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement | UnaryOp::Decrement);
-                
+
                 if is_inc_dec {
+                    // Handle class field increment/decrement: obj.field++ or ++obj.field
                     if let Expr::Get { object, name, .. } = expr.as_ref() {
-                        // Handle class field increment/decrement: obj.field++ or ++obj.field
                         let object_val = self.convert_expr(object);
 
                         // Get the current field value
@@ -1293,6 +1392,35 @@ impl AstToHlirConverter {
                         // Store back to the field
                         self.builder.set_property(object_val, name, new_val.clone());
                         return;
+                    }
+
+                    // Handle simple variable increment/decrement: i++ or ++i
+                    if let Expr::Variable { name, .. } = expr.as_ref() {
+                        if let Some(ptr) = self.var_ptrs.get(name).cloned() {
+                            let var_ty = self.var_types.get(name)
+                                .cloned()
+                                .unwrap_or(ty.clone());
+
+                            // Load current value
+                            let current_val = self.builder.load(ptr.clone(), var_ty.clone());
+
+                            // Compute delta
+                            let delta = match var_ty {
+                                HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                                _ => HlirValue::IntConst(1),
+                            };
+
+                            // Compute new value
+                            let new_val = if matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement) {
+                                self.builder.bin_op(HlirBinOp::Add, current_val, delta, var_ty.clone())
+                            } else {
+                                self.builder.bin_op(HlirBinOp::Sub, current_val, delta, var_ty.clone())
+                            };
+
+                            // Store back to the variable
+                            self.builder.store(new_val, ptr.clone(), var_ty);
+                            return;
+                        }
                     }
                 }
                 
@@ -1460,8 +1588,44 @@ mod tests {
                 self.convert_expr_discard(right);
             }
             Expr::Unary { op, expr, .. } => {
-                let value = self.convert_expr(expr);
                 let ty = self.infer_expr_type(expr);
+                
+                // Check if this is increment/decrement on a simple variable
+                let is_inc_dec = matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement
+                                         | UnaryOp::PrefixDecrement | UnaryOp::PostfixDecrement);
+
+                if is_inc_dec {
+                    if let Expr::Variable { name, .. } = expr.as_ref() {
+                        // Handle simple variable increment/decrement: count++ or --count
+                        if let Some(ptr) = self.var_ptrs.get(name).cloned() {
+                            let var_ty = self.var_types.get(name)
+                                .cloned()
+                                .unwrap_or(ty.clone());
+
+                            // Load current value
+                            let current_val = self.builder.load(ptr.clone(), var_ty.clone());
+
+                            // Compute delta
+                            let delta = match var_ty {
+                                HlirType::F32 | HlirType::F64 => HlirValue::FloatConst(1.0),
+                                _ => HlirValue::IntConst(1),
+                            };
+
+                            // Compute new value
+                            let new_val = if matches!(op, UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement) {
+                                self.builder.bin_op(HlirBinOp::Add, current_val, delta, var_ty.clone())
+                            } else {
+                                self.builder.bin_op(HlirBinOp::Sub, current_val, delta, var_ty.clone())
+                            };
+
+                            // Store back to the variable
+                            self.builder.store(new_val, ptr.clone(), var_ty);
+                            return;
+                        }
+                    }
+                }
+                
+                let value = self.convert_expr(expr);
                 match op {
                     UnaryOp::PrefixIncrement | UnaryOp::PostfixIncrement => {
                         let one = match ty {

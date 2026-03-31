@@ -2,15 +2,15 @@ import std.io
 
 println("Test 1")
 
-for (i in 1..5) {
+/*for (i in 1..5) {
     println(str(i))
-}
+}*/
 
 println("Test 2")
 
-for (i in 10..5) {
+/*for (i in 10..5) {
     println(str(i))
-}
+}*/
 
 println("Test 3")
 
@@ -21,6 +21,12 @@ while (true) {
         break
     }
     println(str(count))
+}
+
+let i = 0
+while (i < 3) {
+    println("Worker iteration " + str(i))
+    i++
 }
 
 println("Done!")

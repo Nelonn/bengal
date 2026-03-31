@@ -1,11 +1,15 @@
 use crate::vm::{VM, Value, NativeFn, NativeFallbackFn, Class, Function, RunResult, set_async_callback_sender};
 use crate::{debug_vm, Opcode};
 use crate::linker::{RuntimeLinker, NativeFunctionRegistry};
+use crate::scheduler::Scheduler;
 use std::sync::{Arc, RwLock};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub use crate::vm::VTable;
 
+#[derive(Clone)]
 pub struct Bytecode {
     pub data: Vec<u8>,
     pub strings: Vec<String>,
@@ -21,6 +25,21 @@ pub struct Executor {
     /// Channel for receiving async native callbacks
     callback_rx: Option<Receiver<Result<Value, Value>>>,
     callback_tx: Option<Sender<Result<Value, Value>>>,
+    /// Scheduler for green threads (created on first spawn)
+    scheduler: Option<Scheduler>,
+    /// Bytecode shared across all threads
+    bytecode: Option<Bytecode>,
+    /// Context for green thread execution
+    green_thread_ctx: Option<Rc<GreenThreadContext>>,
+}
+
+/// Shared context for green thread execution
+pub struct GreenThreadContext {
+    pub scheduler: Rc<RefCell<Scheduler>>,
+    pub bytecode: Bytecode,
+    pub native_registry: NativeFunctionRegistry,
+    /// Pending VMs to be spawned (shared across all threads)
+    pub pending_spawns: Rc<RefCell<Vec<VM>>>,
 }
 
 impl Executor {
@@ -31,6 +50,9 @@ impl Executor {
             linker: None,
             callback_rx: Some(rx),
             callback_tx: Some(tx),
+            scheduler: None,
+            bytecode: None,
+            green_thread_ctx: None,
         }
     }
 
@@ -47,6 +69,9 @@ impl Executor {
             linker: Some(linker),
             callback_rx: Some(rx),
             callback_tx: Some(tx),
+            scheduler: None,
+            bytecode: None,
+            green_thread_ctx: None,
         }
     }
 
@@ -60,6 +85,9 @@ impl Executor {
             linker: Some(RuntimeLinker::with_registry(registry)),
             callback_rx: Some(rx),
             callback_tx: Some(tx),
+            scheduler: None,
+            bytecode: None,
+            green_thread_ctx: None,
         }
     }
 
@@ -195,6 +223,9 @@ impl Executor {
             self.vm.set_source_file(file);
         }
 
+        // Store bytecode for spawn to access
+        self.bytecode = Some(bytecode.clone());
+
         let bytecode_data = bytecode.data;
         let strings = bytecode.strings;
 
@@ -206,7 +237,7 @@ impl Executor {
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
         // Take the callback receiver and keep sender alive
-        let mut callback_rx = Some(self.callback_rx.take().unwrap());
+        let callback_rx = self.callback_rx.take().unwrap();
         let callback_tx = self.callback_tx.take().unwrap();
 
         // Set the callback sender in thread local storage for native functions
@@ -214,6 +245,18 @@ impl Executor {
         let _tx_guard = callback_tx.clone();
         set_async_callback_sender(callback_tx.clone());
 
+        // Check if we have green threads (scheduler was created by spawn)
+        // For now, we always use the scheduler path if __spawn was registered
+        // since we set up the context before knowing if spawn will be called
+        self.run_with_scheduler(callback_rx, callback_tx).await
+    }
+
+    /// Run single-threaded (original behavior, no green threads)
+    async fn run_single_threaded(
+        &mut self,
+        mut callback_rx: Option<Receiver<Result<Value, Value>>>,
+        _callback_tx: Sender<Result<Value, Value>>,
+    ) -> Result<Option<Value>, String> {
         loop {
             let result = self.vm.run().map_err(|e| e.to_string())?;
 
@@ -232,8 +275,8 @@ impl Executor {
                     // VM is suspended waiting for async native callback
                     debug_vm!("executor: VM suspended, waiting for callback");
                     // Use std::thread to wait for callback to avoid tokio state machine corruption
-                    let rx = callback_rx.take().unwrap();
                     debug_vm!("executor: Waiting for callback in spawned thread");
+                    let rx = callback_rx.take().ok_or("Callback receiver not available")?;
                     let result = std::thread::spawn(move || {
                         rx.recv().map_err(|_| "Callback channel closed".to_string())
                     }).join().unwrap();
@@ -274,6 +317,117 @@ impl Executor {
         }
     }
 
+    /// Run with scheduler for green threads support
+    async fn run_with_scheduler(
+        &mut self,
+        callback_rx: Receiver<Result<Value, Value>>,
+        callback_tx: Sender<Result<Value, Value>>,
+    ) -> Result<Option<Value>, String> {
+        // Create scheduler if needed
+        if self.scheduler.is_none() {
+            self.scheduler = Some(Scheduler::new());
+        }
+
+        // Set up context for __spawn BEFORE spawning main thread
+        let scheduler_rc = Rc::new(RefCell::new(self.scheduler.take().unwrap()));
+        let bytecode = self.bytecode.take().ok_or("Bytecode not set")?;
+        let native_registry = self.vm.program.native_registry.clone();
+        let pending_spawns = Rc::new(RefCell::new(Vec::new()));
+
+        let ctx = Rc::new(GreenThreadContext {
+            scheduler: scheduler_rc.clone(),
+            bytecode: bytecode.clone(),
+            native_registry,
+            pending_spawns: pending_spawns.clone(),
+        });
+
+        // Store context in executor and VM's program
+        self.green_thread_ctx = Some(ctx.clone());
+        self.vm.program.green_thread_ctx = Some(ctx);
+
+        // Spawn the main thread
+        {
+            let mut scheduler = scheduler_rc.borrow_mut();
+            scheduler.spawn(std::mem::replace(&mut self.vm, VM::new()));
+        }
+
+        // Run the scheduler
+        let result = self.run_scheduler_loop(callback_rx, callback_tx, scheduler_rc, bytecode, pending_spawns).await;
+
+        // Clear context
+        self.green_thread_ctx = None;
+
+        result
+    }
+
+    /// Run the scheduler loop for green threads
+    async fn run_scheduler_loop(
+        &mut self,
+        mut callback_rx: Receiver<Result<Value, Value>>,
+        _callback_tx: Sender<Result<Value, Value>>,
+        scheduler_rc: Rc<RefCell<Scheduler>>,
+        _bytecode: Bytecode,
+        pending_spawns: Rc<RefCell<Vec<VM>>>,
+    ) -> Result<Option<Value>, String> {
+        let mut last_result = None;
+        
+        loop {
+            // Run scheduler
+            let (result, has_blocked) = {
+                let mut scheduler = scheduler_rc.borrow_mut();
+                scheduler.run()
+            };
+
+            // If we have a result, save it
+            if result.is_some() {
+                last_result = result;
+            }
+
+            // Process any pending spawns (VMs that were spawned during execution)
+            {
+                let mut scheduler = scheduler_rc.borrow_mut();
+                let mut spawns = pending_spawns.borrow_mut();
+                for vm in spawns.drain(..) {
+                    scheduler.spawn(vm);
+                }
+            }
+
+            // Check if we should continue (pending spawns or blocked threads or active threads)
+            let has_pending = !pending_spawns.borrow().is_empty();
+            let scheduler_has_active = scheduler_rc.borrow().active_thread_count() > 0;
+            
+            if !has_pending && !has_blocked && !scheduler_has_active {
+                return Ok(last_result);
+            }
+
+            // If we have blocked threads, wait for callback
+            if has_blocked {
+                debug_vm!("scheduler: Blocked threads, waiting for callback");
+                let result = std::thread::spawn(move || {
+                    callback_rx.recv().map_err(|_| "Callback channel closed".to_string())
+                }).join().unwrap()?;
+
+                let result: Result<Value, Value> = match result {
+                    Ok(val) => Ok(val),
+                    Err(e) => Err(Value::String(e.to_string())),
+                };
+
+                // Wake up blocked threads and continue
+                if let Ok(ref val) = result {
+                    let mut scheduler = scheduler_rc.borrow_mut();
+                    scheduler.wake_all_blocked(val.clone());
+                }
+
+                // Note: callback_rx is consumed, so we can't continue the loop
+                // This is a limitation - for now we just break
+                break;
+            }
+            // If no blocked threads, continue the loop to run active threads
+        }
+
+        Ok(last_result)
+    }
+
     /// Hot-swap a native function at runtime
     ///
     /// This replaces the function implementation without recompiling bytecode.
@@ -294,6 +448,27 @@ impl Executor {
             self.vm.program.native_registry = (*registry.read().unwrap()).clone();
             Self::convert_to_indexed_calls(&mut bytecode.data, &bytecode.strings, &self.vm.program.native_registry);
         }
+    }
+
+    /// Spawn a new green thread with the given VM
+    pub fn spawn_vm(&mut self, vm: VM) {
+        if self.scheduler.is_none() {
+            self.scheduler = Some(Scheduler::new());
+        }
+        if let Some(ref mut scheduler) = self.scheduler {
+            scheduler.spawn(vm);
+        }
+    }
+
+    /// Register the __spawn native function for green thread support
+    pub fn register_spawn_native(&mut self) {
+        // __spawn is now handled directly in the VM's op_call_native
+        // No need to register a native function
+    }
+
+    /// Get the green thread context
+    pub fn green_thread_context(&self) -> Option<&Rc<GreenThreadContext>> {
+        self.green_thread_ctx.as_ref()
     }
 }
 

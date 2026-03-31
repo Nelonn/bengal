@@ -38,6 +38,9 @@ async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> R
     let mut executor = Executor::with_linker();
     bengal_std::register_all(&mut executor.vm);
 
+    // Register green thread support
+    executor.register_spawn_native();
+
     // Sync the linker's registry with the VM's registry
     // This is needed because register_all registers with the VM directly,
     // but the linker needs to have the same registry for bytecode linking

@@ -79,6 +79,7 @@ pub enum Stmt {
     Continue(Span),
     TryCatch { try_block: Block, catch_var: String, catch_block: Block, span: Span },
     Throw { expr: Expr, span: Span },
+    Spawn { expr: Expr, span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -542,6 +543,8 @@ impl Parser {
             self.parse_try_catch()?
         } else if self.match_token(&Token::Throw) {
             self.parse_throw()?
+        } else if self.match_token(&Token::Spawn) {
+            self.parse_spawn()?
         } else {
             let expr = self.parse_expression()?;
 
@@ -1667,6 +1670,14 @@ impl Parser {
         Ok(Stmt::Throw { expr, span })
     }
 
+    fn parse_spawn(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
+        // spawn keyword is followed by an expression (usually a function call)
+        let expr = self.parse_expression()?;
+
+        Ok(Stmt::Spawn { expr, span })
+    }
+
     fn parse_block(&mut self) -> Result<Block, String> {
         let mut block = Vec::new();
         self.skip_newlines();
@@ -2129,26 +2140,27 @@ impl Parser {
             // Check for generic type arguments before function call
             // Only parse as generic if it's an identifier followed by <types> and then (
             if self.check(&Token::LAngle) {
-                // Save position in case we need to backtrack
+                // Save position and error count in case we need to backtrack
                 let saved_pos = self.pos;
-                
+                let saved_error_count = self.errors.borrow().len();
+
                 // Build generic type string
                 let mut type_str = String::new();
                 if let Expr::Variable { name, .. } = &expr {
                     type_str = name.clone();
                 }
-                
+
                 self.advance(); // consume <
                 type_str.push('<');
                 let mut first = true;
                 let mut valid_generic = true;
-                
+
                 loop {
                     if !first {
                         type_str.push_str(", ");
                     }
                     first = false;
-                    
+
                     // Try to parse a type
                     match self.parse_type() {
                         Ok((arg_type, _)) => {
@@ -2159,19 +2171,19 @@ impl Parser {
                             break;
                         }
                     }
-                    
+
                     if !self.match_token(&Token::Comma) {
                         break;
                     }
                 }
-                
+
                 if valid_generic && self.match_token(&Token::RAngle) {
                     // Check if followed by ( for class instantiation
                     self.skip_newlines();
                     if self.check(&Token::LParen) {
                         // This is a generic class instantiation
                         type_str.push('>');
-                        
+
                         // Update expr to be the generic type
                         if let Expr::Variable { span, .. } = &expr {
                             expr = Expr::Variable { name: type_str, span: *span };
@@ -2179,8 +2191,9 @@ impl Parser {
                         continue;
                     }
                 }
-                // Backtrack - restore position
+                // Backtrack - restore position and error count
                 self.pos = saved_pos;
+                self.errors.borrow_mut().truncate(saved_error_count);
             }
 
             if self.match_token(&Token::LParen) {

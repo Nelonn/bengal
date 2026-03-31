@@ -706,6 +706,8 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
 
         Opcode::Breakpoint => ("BREAKPOINT".to_string(), String::new(), 0),
 
+        Opcode::Yield => ("YIELD".to_string(), String::new(), 0),
+
         Opcode::Halt => ("HALT".to_string(), String::new(), 0),
     }
 }

@@ -85,6 +85,9 @@ pub enum Opcode {
     TryEnd = 0x81,
     Throw = 0x82,    // Rs
 
+    // Green threads / concurrency
+    Yield = 0x83,    // Yield execution to another thread
+
     // Debugging
     Breakpoint = 0x90,
 
@@ -144,6 +147,7 @@ impl Opcode {
             Opcode::TryStart => 4,
             Opcode::TryEnd => 1,
             Opcode::Throw => 2,
+            Opcode::Yield => 1,
             Opcode::Breakpoint => 1,
             Opcode::Halt => 1,
         }

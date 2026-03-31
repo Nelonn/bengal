@@ -30,6 +30,7 @@ pub enum Token {
     Constructor,
     Static,
     As,
+    Spawn,
 
     TypeInt,
     TypeFloat,
@@ -578,6 +579,7 @@ impl Lexer {
             "constructor" => Token::Constructor,
             "static" => Token::Static,
             "as" => Token::As,
+            "spawn" => Token::Spawn,
             "int" => Token::TypeInt,
             "float" => Token::TypeFloat,
             "str" => Token::TypeStr,
