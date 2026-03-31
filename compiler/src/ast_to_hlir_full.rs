@@ -769,45 +769,31 @@ impl AstToHlirConverter {
             }
 
             Stmt::Spawn { expr, span } => {
-                // spawn is compiled as a call to the native __spawn function
+                // spawn is compiled as a special SPAWN instruction
                 // Usage: spawn some_func(arg1, arg2, ...)
-                // Compiles to: __spawn("some_func", arg1, arg2, ...)
                 self.set_line(span.line);
 
                 // The expression should be a function call
                 if let Expr::Call { callee, args, .. } = expr {
                     // Extract function name from the callee
                     if let Expr::Variable { name, .. } = callee.as_ref() {
-                        // Add function name as a string constant
-                        self.add_string(name.clone());
-                        
-                        // Build arguments: [func_name, arg1, arg2, ...]
-                        let mut spawn_args = vec![HlirValue::StringConst(name.clone())];
-                        for arg in args {
-                            spawn_args.push(self.convert_expr(arg));
-                        }
+                        // Build arguments
+                        let spawn_args: Vec<HlirValue> = args.iter()
+                            .map(|arg| self.convert_expr(arg))
+                            .collect();
 
-                        // Call the native __spawn function
-                        self.builder.call_native(
-                            HlirValue::Function("__spawn".to_string()),
+                        // Get argument types
+                        let arg_types: Vec<HlirType> = args.iter()
+                            .map(|arg| self.infer_expr_type(arg))
+                            .collect();
+
+                        // Emit SPAWN instruction with function name
+                        self.builder.spawn(
+                            HlirValue::Function(name.clone()),
                             spawn_args,
-                            HlirType::Void,
-                        );
-                    } else {
-                        // For now, only simple function calls are supported
-                        self.builder.call_native(
-                            HlirValue::Function("__spawn".to_string()),
-                            vec![HlirValue::Null],
-                            HlirType::Void,
+                            arg_types,
                         );
                     }
-                } else {
-                    // spawn without a call - not supported yet
-                    self.builder.call_native(
-                        HlirValue::Function("__spawn".to_string()),
-                        vec![HlirValue::Null],
-                        HlirType::Void,
-                    );
                 }
             }
 

@@ -1547,6 +1547,8 @@ impl VM {
         table[Opcode::TryStart as usize] = VM::op_try_start;
         table[Opcode::TryEnd as usize] = VM::op_try_end;
         table[Opcode::Throw as usize] = VM::op_throw;
+        table[Opcode::Yield as usize] = VM::op_yield;
+        table[Opcode::Spawn as usize] = VM::op_spawn;
         table[Opcode::Breakpoint as usize] = VM::op_breakpoint;
         table[Opcode::Halt as usize] = VM::op_halt;
 
@@ -2049,12 +2051,6 @@ impl VM {
             .ok_or_else(|| Value::String(format!("Invalid native name index: {}", name_idx)))?
             .clone();
 
-        // Special handling for __spawn (green thread spawning)
-        // Name includes signature like "__spawn(str,int)"
-        if name.starts_with("__spawn") {
-            return self.handle_spawn(rd, arg_start, arg_count);
-        }
-
         // Check if this is a class method call in the format "Class.method(args)"
         // For qualified class names like "std.http.HttpClient.get(str)", we need to find
         // the last dot before the method name (which starts with a lowercase letter)
@@ -2181,73 +2177,6 @@ impl VM {
                 return Ok(ExecutionResult::Suspended);
             }
         }
-        Ok(ExecutionResult::Continue)
-    }
-
-    /// Handle __spawn for green thread creation
-    /// Usage: __spawn("function_name", arg1, arg2, ...)
-    /// Returns the VM to be spawned, or None if spawn failed
-    fn handle_spawn(&mut self, rd: u8, arg_start: u8, arg_count: u8) -> Result<ExecutionResult, Value> {
-        // Get arguments
-        let mut args = Vec::new();
-        for i in 0..arg_count {
-            args.push(self.get_reg(arg_start + i).clone());
-        }
-
-        // First argument should be the function name (string)
-        let func_name = match &args[0] {
-            Value::String(s) => s.clone(),
-            _ => {
-                self.set_reg(rd, Value::Null);
-                self.set_pc(self.pc() + 1);
-                return Ok(ExecutionResult::Continue);
-            }
-        };
-
-        // Remaining arguments are passed to the function
-        let func_args: Vec<Value> = args[1..].to_vec();
-
-        // Check if we have green thread context
-        let spawned_vm = if let Some(ctx) = &self.program.green_thread_ctx {
-            let mut vm = VM::new();
-            vm.program.native_registry = ctx.native_registry.clone();
-            if vm.load(
-                &ctx.bytecode.data,
-                ctx.bytecode.strings.clone(),
-                ctx.bytecode.classes.clone(),
-                ctx.bytecode.functions.clone(),
-                ctx.bytecode.vtables.clone(),
-            ).is_ok() {
-                // Clear the call stack - we don't want to execute module-level code
-                vm.context.call_stack.clear();
-                
-                // Find function by name (may need to match with signature)
-                let full_func_name = vm.program.functions.keys()
-                    .find(|k| k.starts_with(&func_name) && k.contains('('))
-                    .cloned()
-                    .unwrap_or_else(|| func_name.clone());
-
-                if vm.call_function(&full_func_name, func_args).is_ok() {
-                    Some(vm)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Store the spawned VM in the context's pending_spawns
-        if let Some(vm) = spawned_vm {
-            if let Some(ctx) = &self.program.green_thread_ctx {
-                ctx.pending_spawns.borrow_mut().push(vm);
-            }
-        }
-
-        self.set_reg(rd, Value::Null);
-        self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
     }
 
@@ -3494,6 +3423,72 @@ impl VM {
         self.set_pc(self.pc() + 1);
         let rs = self.program.bytecode[self.pc()] as u8;
         Err(self.get_reg(rs).clone())
+    }
+
+    #[inline]
+    fn op_yield(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_spawn(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let func_idx_lo = self.program.bytecode[self.pc()] as u16;
+        self.set_pc(self.pc() + 1);
+        let func_idx_hi = self.program.bytecode[self.pc()] as u16;
+        self.set_pc(self.pc() + 1);
+        let func_index = (func_idx_hi << 8) | func_idx_lo;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.program.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+
+        // Get the function name from the string table
+        let func_name = self.program.strings.get(func_index as usize)
+            .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_index)))?
+            .clone();
+
+        // Collect arguments
+        let mut args = Vec::new();
+        for i in 0..arg_count {
+            args.push(self.get_reg(arg_start + i).clone());
+        }
+
+        // Check if we have green thread context
+        let spawned_vm = if let Some(ctx) = &self.program.green_thread_ctx {
+            let mut vm = VM::new();
+            vm.program.native_registry = ctx.native_registry.clone();
+            if vm.load(
+                &ctx.bytecode.data,
+                ctx.bytecode.strings.clone(),
+                ctx.bytecode.classes.clone(),
+                ctx.bytecode.functions.clone(),
+                ctx.bytecode.vtables.clone(),
+            ).is_ok() {
+                // Clear the call stack - we don't want to execute module-level code
+                vm.context.call_stack.clear();
+                
+                if vm.call_function(&func_name, args).is_ok() {
+                    Some(vm)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Store the spawned VM in the context's pending_spawns
+        if let Some(vm) = spawned_vm {
+            if let Some(ctx) = &self.program.green_thread_ctx {
+                ctx.pending_spawns.borrow_mut().push(vm);
+            }
+        }
+
+        Ok(ExecutionResult::Continue)
     }
 
     #[inline]

@@ -87,6 +87,7 @@ pub enum Opcode {
 
     // Green threads / concurrency
     Yield = 0x83,    // Yield execution to another thread
+    Spawn = 0x84,    // Spawn a new green thread: func_idx, arg_start, arg_count
 
     // Debugging
     Breakpoint = 0x90,
@@ -148,6 +149,7 @@ impl Opcode {
             Opcode::TryEnd => 1,
             Opcode::Throw => 2,
             Opcode::Yield => 1,
+            Opcode::Spawn => 5,  // func_idx (u16), arg_start, arg_count
             Opcode::Breakpoint => 1,
             Opcode::Halt => 1,
         }

@@ -460,12 +460,6 @@ impl Executor {
         }
     }
 
-    /// Register the __spawn native function for green thread support
-    pub fn register_spawn_native(&mut self) {
-        // __spawn is now handled directly in the VM's op_call_native
-        // No need to register a native function
-    }
-
     /// Get the green thread context
     pub fn green_thread_context(&self) -> Option<&Rc<GreenThreadContext>> {
         self.green_thread_ctx.as_ref()

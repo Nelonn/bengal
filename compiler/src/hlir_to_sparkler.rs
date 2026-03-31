@@ -1116,6 +1116,61 @@ impl HlirToSparkler {
                 }
             }
 
+            HlirInstr::Spawn { func, args, arg_types } => {
+                // Spawn instruction - creates a new green thread
+                if let HlirValue::Function(name) = func {
+                    // Mangle the function name with argument types for proper resolution
+                    let arg_type_list: Vec<Type> = arg_types.iter().map(hlir_type_to_type).collect();
+                    let mangled_name = mangle(None, None, name, &arg_type_list);
+                    let func_idx = self.add_string(mangled_name);
+
+                    // Resolve argument registers
+                    let src_regs: Vec<u8> = args
+                        .iter()
+                        .map(|arg| self.get_value_reg(arg))
+                        .collect();
+
+                    // Check if source registers are consecutive
+                    let (arg_start, staging_regs, needs_moves) = if args.is_empty() {
+                        (0, vec![], false)
+                    } else if args.len() == 1 {
+                        (src_regs[0], vec![src_regs[0]], false)
+                    } else if src_regs.windows(2).all(|w| w[1] == w[0] + 1) {
+                        (src_regs[0], src_regs.clone(), false)
+                    } else {
+                        let arg_start = self.alloc_consecutive_regs(args.len());
+                        let staging_regs: Vec<u8> = (0..args.len())
+                            .map(|i| arg_start + i as u8)
+                            .collect();
+                        (arg_start, staging_regs, true)
+                    };
+
+                    // Emit MOVEs only if source registers weren't consecutive
+                    if needs_moves {
+                        for (i, &src_reg) in src_regs.iter().enumerate() {
+                            let staging_reg = staging_regs[i];
+                            self.emit_opcode(Opcode::Move);
+                            self.emit(staging_reg);
+                            self.emit(src_reg);
+                        }
+                    }
+
+                    // Emit Spawn opcode
+                    self.emit_opcode(Opcode::Spawn);
+                    self.emit((func_idx & 0xFF) as u8);
+                    self.emit(((func_idx >> 8) & 0xFF) as u8);
+                    self.emit(arg_start);
+                    self.emit(args.len() as u8);
+
+                    // Return staging registers to freelist
+                    if needs_moves {
+                        for reg in staging_regs {
+                            self.reusable_regs.push(reg);
+                        }
+                    }
+                }
+            }
+
             HlirInstr::Cmp { op, lhs, rhs, dest, ty } => {
                 let dest_reg = self.get_reg_for_temp(*dest);
                 let lhs_reg = self.get_value_reg(lhs);

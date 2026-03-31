@@ -246,6 +246,13 @@ pub enum HlirInstr {
         field_name: String,
         dest: usize,
     },
+
+    /// Spawn a new green thread: spawn func(args)
+    Spawn {
+        func: HlirValue,
+        args: Vec<HlirValue>,
+        arg_types: Vec<HlirType>,
+    },
 }
 
 /// Cast kinds
@@ -569,6 +576,12 @@ impl HlirBuilder {
     pub fn call_native_discard(&mut self, func: HlirValue, args: Vec<HlirValue>, return_ty: HlirType) {
         let arg_types: Vec<HlirType> = args.iter().map(|a| self.get_value_type(a)).collect();
         let instr = HlirInstr::CallNative { func, args, dest: None, return_ty: return_ty.clone(), arg_types };
+        self.emit(instr);
+    }
+
+    /// Generate a spawn instruction for green threads
+    pub fn spawn(&mut self, func: HlirValue, args: Vec<HlirValue>, arg_types: Vec<HlirType>) {
+        let instr = HlirInstr::Spawn { func, args, arg_types };
         self.emit(instr);
     }
 
