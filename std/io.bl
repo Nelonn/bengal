@@ -15,5 +15,5 @@ interface InputStream {
 }
 
 interface OutputStream {
-  //fn write(todo)
+  fn write(bytes: uint8[])
 }
