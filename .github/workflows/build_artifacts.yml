@@ -338,7 +338,7 @@ jobs:
           cp target/${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}/release/bengal.exe artifacts/bin/
           cp std/*.bl artifacts/std/
           cd artifacts
-          zip -r ../bengal-windows-${{ matrix.arch }}.zip bin std
+          Compress-Archive -Path bin, std -DestinationPath ../bengal-windows-${{ matrix.arch }}.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v5
