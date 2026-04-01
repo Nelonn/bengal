@@ -509,6 +509,7 @@ pub struct VariableInfo {
     pub name: String,
     pub type_name: Type,
     pub private: bool,
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -595,6 +596,7 @@ impl TypeContext {
             name: "ARGV".to_string(),
             type_name: Type::Array(Box::new(Type::Str)),
             private: false,
+            is_const: false,
         });
 
         // Register native classes
@@ -1357,11 +1359,12 @@ impl TypeContext {
         self.enums.get(enum_name).and_then(|e| e.variants.get(variant_name))
     }
 
-    pub fn add_variable(&mut self, name: &str, type_name: Type, private: bool) {
+    pub fn add_variable(&mut self, name: &str, type_name: Type, private: bool, is_const: bool) {
         self.variables.insert(name.to_string(), VariableInfo {
             name: name.to_string(),
             type_name,
             private,
+            is_const,
         });
     }
 
@@ -2843,12 +2846,34 @@ impl TypeChecker {
                 } else {
                     self.infer_expr(expr)
                 };
-                self.context.add_variable(name, expr_type, *private);
+                self.context.add_variable(name, expr_type, *private, false);
+            }
+            Stmt::Const { name, type_annotation, expr, private, .. } => {
+                // If there's a type annotation, use it for type deduction
+                let expr_type = if let Some(ref type_name) = type_annotation {
+                    let expected_type = Type::from_str(type_name);
+                    self.infer_expr_with_expected_type(expr, &Some(expected_type))
+                } else {
+                    self.infer_expr(expr)
+                };
+                self.context.add_variable(name, expr_type, *private, true);
             }
             Stmt::Assign { name, expr, span } => {
                 let expr_type = self.infer_expr(expr);
 
                 if let Some(var_info) = self.context.get_variable(name) {
+                    // Check if trying to assign to a const
+                    if var_info.is_const {
+                        self.context.add_error_with_location(
+                            format!("Cannot assign to constant '{}'", name),
+                            span.line,
+                            span.column,
+                            None,
+                            None,
+                        );
+                        return;
+                    }
+
                     // Use expected type for type deduction
                     let expected_type = var_info.type_name.clone();
                     let deduced_type = self.infer_expr_with_expected_type(expr, &Some(expected_type.clone()));
@@ -2895,13 +2920,24 @@ impl TypeChecker {
                     );
                 } else {
                     // Variable not declared with let, create it (implicit declaration in global/function scope)
-                    self.context.add_variable(name, expr_type, false);
+                    self.context.add_variable(name, expr_type, false, false);
                 }
             }
             Stmt::AugAssign { target, op, expr, span } => {
                 let var_type = match target {
                     crate::parser::AugAssignTarget::Variable(name) => {
                         if let Some(var_info) = self.context.get_variable(name) {
+                            // Check if trying to modify a const
+                            if var_info.is_const {
+                                self.context.add_error_with_location(
+                                    format!("Cannot modify constant '{}'", name),
+                                    span.line,
+                                    span.column,
+                                    None,
+                                    None,
+                                );
+                                return;
+                            }
                             var_info.type_name.clone()
                         } else {
                             self.context.add_error_with_location(
@@ -3067,7 +3103,7 @@ impl TypeChecker {
             Stmt::For { var_name, range, body, .. } => {
                 let _range_type = self.infer_expr(range);
                 // For now, assume ranges are integers
-                self.context.add_variable(var_name, Type::Int, false);
+                self.context.add_variable(var_name, Type::Int, false, false);
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
@@ -3095,7 +3131,7 @@ impl TypeChecker {
                 }
 
                 // Add catch variable (exception object) - currently unknown type
-                self.context.add_variable(catch_var, Type::Unknown, false);
+                self.context.add_variable(catch_var, Type::Unknown, false, false);
 
                 for stmt in catch_block {
                     self.check_stmt(stmt);
@@ -3175,7 +3211,7 @@ impl TypeChecker {
         for type_param in &func.type_params {
             // Add type parameter as a variable with TypeParameter type
             // This allows the type checker to recognize T as a valid type
-            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false);
+            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false, false);
             added_type_params.push(type_param.clone());
         }
 
@@ -3185,7 +3221,7 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone(), false);
+            self.context.add_variable(&param.name, param_type.clone(), false, false);
             added_vars.push(param.name.clone());
         }
 
@@ -3229,7 +3265,7 @@ impl TypeChecker {
         // Add type parameters as local type variables for generic methods
         let mut added_type_params = Vec::new();
         for type_param in &method.type_params {
-            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false);
+            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false, false);
             added_type_params.push(type_param.clone());
         }
 
@@ -3239,12 +3275,12 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone(), false);
+            self.context.add_variable(&param.name, param_type.clone(), false, false);
             added_vars.push(param.name.clone());
         }
 
         // Add 'self' variable
-        self.context.add_variable("self", Type::Class(class_name.to_string()), false);
+        self.context.add_variable("self", Type::Class(class_name.to_string()), false, false);
 
         // Check method body
         for stmt in &method.body {
@@ -4428,7 +4464,7 @@ impl TypeChecker {
                     let param_type = param.type_name.as_ref()
                         .map(|t| Type::from_str(t))
                         .unwrap_or(Type::Unknown);
-                    self.context.add_variable(&param.name, param_type, false);
+                    self.context.add_variable(&param.name, param_type, false, false);
                     added_vars.push(param.name.clone());
                 }
 
@@ -4683,7 +4719,7 @@ impl TypeChecker {
                         // Add parameters as local variables with expected types
                         let mut added_vars = Vec::new();
                         for (param, param_type) in params.iter().zip(param_types.iter()) {
-                            self.context.add_variable(&param.name, param_type.clone(), false);
+                            self.context.add_variable(&param.name, param_type.clone(), false, false);
                             added_vars.push(param.name.clone());
                         }
 

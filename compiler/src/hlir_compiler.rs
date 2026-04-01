@@ -496,6 +496,7 @@ impl HlirCompiler {
         match stmt {
             Stmt::Expr(expr) => Self::rewrite_expr_calls(expr, import_map),
             Stmt::Let { expr, .. } => Self::rewrite_expr_calls(expr, import_map),
+            Stmt::Const { expr, .. } => Self::rewrite_expr_calls(expr, import_map),
             Stmt::Assign { expr, .. } => Self::rewrite_expr_calls(expr, import_map),
             Stmt::Return { expr, .. } => {
                 if let Some(e) = expr {
@@ -806,6 +807,9 @@ impl HlirCompiler {
                                         import_entry.members.push(iface.name.clone());
                                     }
                                     Stmt::Let { name, .. } => {
+                                        import_entry.members.push(name.clone());
+                                    }
+                                    Stmt::Const { name, .. } => {
                                         import_entry.members.push(name.clone());
                                     }
                                     _ => {}

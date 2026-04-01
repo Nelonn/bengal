@@ -280,6 +280,9 @@ impl ModuleResolver {
                                 Stmt::Let { name, .. } => {
                                     import_entry.members.push(name.clone());
                                 }
+                                Stmt::Const { name, .. } => {
+                                    import_entry.members.push(name.clone());
+                                }
                                 _ => {}
                             }
                         }
@@ -541,6 +544,23 @@ impl ModuleResolver {
                         name: name.clone(),
                         type_name: var_type,
                         private: *private,
+                        is_const: false,
+                    });
+                }
+                Stmt::Const { name, type_annotation, expr: _, private, .. } => {
+                    // Register module-level constants (e.g., math.PI)
+                    let var_type = if let Some(ref ty) = type_annotation {
+                        Type::from_str(ty)
+                    } else {
+                        // Infer type from expression (simplified - default to Unknown)
+                        Type::Unknown
+                    };
+                    let qualified_name = format!("{}.{}", module_name, name);
+                    self.type_context.variables.insert(qualified_name, crate::types::VariableInfo {
+                        name: name.clone(),
+                        type_name: var_type,
+                        private: *private,
+                        is_const: true,
                     });
                 }
                 _ => {}

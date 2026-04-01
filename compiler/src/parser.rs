@@ -68,6 +68,7 @@ pub enum Stmt {
     Function(FunctionDef),
     TypeAlias(TypeAliasDef),
     Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool, span: Span },
+    Const { name: String, type_annotation: Option<String>, expr: Expr, private: bool, span: Span },
     Assign { name: String, expr: Expr, span: Span },
     AugAssign { target: AugAssignTarget, op: AugOp, expr: Expr, span: Span },
     Return { expr: Option<Expr>, span: Span },
@@ -527,6 +528,8 @@ impl Parser {
             self.parse_type_alias(is_private)?
         } else if self.match_token(&Token::Let) {
             self.parse_let(is_private)?
+        } else if self.match_token(&Token::Const) {
+            self.parse_const(is_private)?
         } else if self.match_token(&Token::Return) {
             self.parse_return()?
         } else if self.match_token(&Token::If) {
@@ -1511,6 +1514,36 @@ impl Parser {
         let expr = self.parse_expression()?;
 
         Ok(Stmt::Let { name, type_annotation, expr, private: is_private, span })
+    }
+
+    fn parse_const(&mut self, is_private: bool) -> Result<Stmt, String> {
+        let span = self.current_span();
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return self.error("Expected constant name after 'const'"),
+        };
+
+        let type_annotation = if self.check(&Token::Colon) {
+            self.advance();
+            let (type_name, optional) = self.parse_type()?;
+            if optional {
+                Some(type_name + "?")
+            } else {
+                Some(type_name)
+            }
+        } else {
+            None
+        };
+
+        self.skip_newlines();
+        if !self.match_token(&Token::Equal) {
+            return self.error("Expected '=' in const statement");
+        }
+        self.skip_newlines();
+
+        let expr = self.parse_expression()?;
+
+        Ok(Stmt::Const { name, type_annotation, expr, private: is_private, span })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, String> {

@@ -544,7 +544,38 @@ impl AstToHlirConverter {
                 let value = self.convert_expr(expr);
                 self.builder.store(value, ptr, ty);
             }
-            
+            Stmt::Const { name, expr, type_annotation, span, .. } => {
+                // Const is handled the same as let at the HLIR level
+                // Immutability is enforced at the type checking stage
+                self.set_line(span.line);
+                let ty = type_annotation.as_ref()
+                    .map(|t| self.type_from_str(t))
+                    .unwrap_or_else(|| self.infer_expr_type(expr));
+
+                let ptr = self.builder.alloca(ty.clone(), name);
+                self.var_types.insert(name.clone(), ty.clone());
+                self.var_ptrs.insert(name.clone(), ptr.clone());
+
+                // Store the declared type name for interface dispatch
+                if let Some(type_ann) = type_annotation {
+                    self.var_declared_type_names.insert(name.clone(), type_ann.clone());
+                }
+
+                // If the expression is a constructor call, store the class name
+                if let Expr::Call { callee, .. } = expr {
+                    if let Expr::Variable { name: callee_name, .. } = callee.as_ref() {
+                        // For qualified names like "std.http.HttpClient", extract the last component "HttpClient"
+                        let class_name = callee_name.split('.').last().unwrap_or(callee_name);
+                        if class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                            self.var_classes.insert(name.clone(), callee_name.clone());
+                        }
+                    }
+                }
+
+                let value = self.convert_expr(expr);
+                self.builder.store(value, ptr, ty);
+            }
+
             Stmt::Assign { name, expr, span } => {
                 self.set_line(span.line);
                 let ty = self.var_types.get(name)
