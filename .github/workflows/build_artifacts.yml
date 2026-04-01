@@ -32,7 +32,7 @@ jobs:
           sudo apt install -y pkg-config libssl-dev
 
       - name: Build Debian package (with build)
-        run: cargo deb --release
+        run: cargo deb
 
       - name: Upload Debian artifact
         uses: actions/upload-artifact@v4
