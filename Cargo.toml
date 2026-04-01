@@ -9,10 +9,30 @@ members = [
 ]
 
 [package]
-name = "bengal-cli"
+name = "bengal"
 version = "0.1.0"
 edition = "2021"
 description = "Bengal language CLI"
+license = "MIT"
+
+[package.metadata.deb]
+maintainer = "Your Name <you@example.com>"
+copyright = "..."
+license-file = ["LICENSE", "4"]
+depends = "$auto"
+extended-description = "bengal compiler"
+section = "compiler"
+priority = "optional"
+assets = [
+    ["target/release/bengal", "usr/bin/", "755"]
+]
+
+[package.metadata.generate-rpm]
+license = "MIT"
+assets = [
+    { source = "target/release/bengal", dest = "/usr/bin/bengal", mode = "755" },
+    { source = "LICENSE", dest = "/usr/share/licenses/bengal/LICENSE", mode = "644" },
+]
 
 [[bin]]
 name = "bengal"
