@@ -1,19 +1,19 @@
 module std.io
 
-native fn print(text: str) {}
+native fn print(text: str)
 
 fn println<T>(line: T) {
   print(str(line) + "\n")
 }
 
-native fn sleep(ms: int) {}
+native fn sleep(ms: int)
 
-native fn readLine(): str {}
+native fn readLine(): str
 
 interface InputStream {
   fn read(size: int): ByteBuffer
 }
 
 interface OutputStream {
-  //fn write(todo)
+  fn write(bytes: uint8[])
 }

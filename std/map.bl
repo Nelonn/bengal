@@ -12,7 +12,11 @@ interface Map<K, V> {
   fn get(key: K): V?
 
   operator[key: K](value: V?): V? {
-    add(key, value)
+    if (value == null) {
+      remove(key)
+      return null
+    }
+    return add(key, value)
   }
 
   operator[key: K](): V? {

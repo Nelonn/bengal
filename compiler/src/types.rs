@@ -509,6 +509,7 @@ pub struct VariableInfo {
     pub name: String,
     pub type_name: Type,
     pub private: bool,
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -595,6 +596,7 @@ impl TypeContext {
             name: "ARGV".to_string(),
             type_name: Type::Array(Box::new(Type::Str)),
             private: false,
+            is_const: false,
         });
 
         // Register native classes
@@ -1357,11 +1359,12 @@ impl TypeContext {
         self.enums.get(enum_name).and_then(|e| e.variants.get(variant_name))
     }
 
-    pub fn add_variable(&mut self, name: &str, type_name: Type, private: bool) {
+    pub fn add_variable(&mut self, name: &str, type_name: Type, private: bool, is_const: bool) {
         self.variables.insert(name.to_string(), VariableInfo {
             name: name.to_string(),
             type_name,
             private,
+            is_const,
         });
     }
 
@@ -2046,11 +2049,16 @@ impl TypeContext {
         if arg_types.len() > sig.params.len() {
             return false; // Too many arguments
         }
-        
+
         // Check if we have enough params (including defaults) for the provided args
         let min_args = sig.params.iter().position(|p| p.default).unwrap_or(sig.params.len());
         if arg_types.len() < min_args {
             return false; // Not enough arguments (before first default)
+        }
+
+        // For generic functions, we need to infer type arguments and substitute them
+        if !sig.type_params.is_empty() {
+            return self.signature_matches_generic(sig, arg_types);
         }
 
         for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
@@ -2068,14 +2076,218 @@ impl TypeContext {
         true
     }
 
+    /// Check if a generic function signature matches the given argument types
+    /// Infers type arguments from the actual arguments and substitutes them
+    fn signature_matches_generic(&self, sig: &FunctionSignature, arg_types: &[Type]) -> bool {
+        // Build a mapping from type parameters to inferred types
+        let mut type_mappings: HashMap<String, Type> = HashMap::new();
+
+        // Infer type arguments from each argument
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                if !self.infer_type_arguments(param_type, arg_type, &sig.type_params, &mut type_mappings) {
+                    return false; // Type inference failed
+                }
+            }
+        }
+
+        // Now verify that all parameters match with the inferred types
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                // Substitute type parameters with inferred types
+                let substituted_type = self.substitute_type_params_from_map(param_type, &type_mappings);
+                
+                // Allow Unknown types to match anything
+                if substituted_type != Type::Unknown && *arg_type != Type::Unknown {
+                    if !arg_type.is_assignable_to(&substituted_type) {
+                        return false;
+                    }
+                }
+            }
+            // If param has no type, it matches anything
+        }
+
+        true
+    }
+
+    /// Infer type arguments by matching a parameter type against an argument type
+    /// Populates the type_mappings with inferred type parameters
+    fn infer_type_arguments(&self, param_type: &Type, arg_type: &Type, type_params: &[String], type_mappings: &mut HashMap<String, Type>) -> bool {
+        match (param_type, arg_type) {
+            // Type parameter - infer the type
+            (Type::TypeParameter(param_name), _) => {
+                if type_params.contains(param_name) {
+                    // Check if we already inferred a type for this parameter
+                    if let Some(existing) = type_mappings.get(param_name) {
+                        // Already inferred - must be consistent (or one is Unknown)
+                        if existing != &Type::Unknown && arg_type != &Type::Unknown && existing != arg_type {
+                            // Conflict - try to find a common supertype
+                            // For now, just check assignability both ways
+                            if !existing.is_assignable_to(arg_type) && !arg_type.is_assignable_to(existing) {
+                                return false;
+                            }
+                            // Keep the more specific type (the one that's assignable to the other)
+                            if arg_type.is_assignable_to(existing) {
+                                // existing is more general, keep it
+                            } else {
+                                type_mappings.insert(param_name.clone(), arg_type.clone());
+                            }
+                        }
+                    } else {
+                        // First inference for this type parameter
+                        type_mappings.insert(param_name.clone(), arg_type.clone());
+                    }
+                }
+                true
+            }
+            // Array types - recurse into element type
+            (Type::Array(param_inner), Type::Array(arg_inner)) => {
+                self.infer_type_arguments(param_inner, arg_inner, type_params, type_mappings)
+            }
+            (Type::Array(_), _) => false, // Mismatch
+            
+            // Optional types - recurse into inner type
+            (Type::Optional(param_inner), Type::Optional(arg_inner)) => {
+                self.infer_type_arguments(param_inner, arg_inner, type_params, type_mappings)
+            }
+            (Type::Optional(param_inner), arg_inner) => {
+                // T? can match T (non-optional)
+                self.infer_type_arguments(param_inner, arg_inner, type_params, type_mappings)
+            }
+            
+            // Generic instances - match name and recurse into type arguments
+            (Type::GenericInstance(param_name, param_args), Type::GenericInstance(arg_name, arg_args)) => {
+                if param_name != arg_name || param_args.len() != arg_args.len() {
+                    return false;
+                }
+                for (p_arg, a_arg) in param_args.iter().zip(arg_args.iter()) {
+                    if !self.infer_type_arguments(p_arg, a_arg, type_params, type_mappings) {
+                        return false;
+                    }
+                }
+                true
+            }
+            
+            // Function types - match params and return type
+            (Type::Function(param_params, param_return), Type::Function(arg_params, arg_return)) => {
+                if param_params.len() != arg_params.len() {
+                    return false;
+                }
+                for (p_p, a_p) in param_params.iter().zip(arg_params.iter()) {
+                    if !self.infer_type_arguments(p_p, a_p, type_params, type_mappings) {
+                        return false;
+                    }
+                }
+                self.infer_type_arguments(param_return, arg_return, type_params, type_mappings)
+            }
+            
+            // Same concrete types - match
+            (Type::Str, Type::Str) |
+            (Type::Int, Type::Int) |
+            (Type::Float, Type::Float) |
+            (Type::Bool, Type::Bool) |
+            (Type::Int8, Type::Int8) |
+            (Type::UInt8, Type::UInt8) |
+            (Type::Int16, Type::Int16) |
+            (Type::UInt16, Type::UInt16) |
+            (Type::Int32, Type::Int32) |
+            (Type::UInt32, Type::UInt32) |
+            (Type::Int64, Type::Int64) |
+            (Type::UInt64, Type::UInt64) |
+            (Type::Float32, Type::Float32) |
+            (Type::Float64, Type::Float64) => true,
+            
+            // Class types - must match exactly
+            (Type::Class(p_name), Type::Class(a_name)) => p_name == a_name,
+            
+            // Unknown matches anything
+            (Type::Unknown, _) | (_, Type::Unknown) => true,
+            
+            // Any matches anything
+            (Type::Any, _) | (_, Type::Any) => true,
+            
+            // Numeric type conversions (allow some flexibility)
+            (p, a) if p.is_numeric() && a.is_numeric() => true,
+            
+            // Default: not a match
+            _ => false,
+        }
+    }
+
+    /// Substitute type parameters using a map of inferred types
+    fn substitute_type_params_from_map(&self, ty: &Type, type_mappings: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::TypeParameter(param_name) => {
+                type_mappings.get(param_name).cloned().unwrap_or_else(|| ty.clone())
+            }
+            Type::Array(inner) => {
+                Type::Array(Box::new(self.substitute_type_params_from_map(inner, type_mappings)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type_params_from_map(inner, type_mappings)))
+            }
+            Type::GenericInstance(name, args) => {
+                let substituted_args: Vec<Type> = args
+                    .iter()
+                    .map(|arg| self.substitute_type_params_from_map(arg, type_mappings))
+                    .collect();
+                Type::GenericInstance(name.clone(), substituted_args)
+            }
+            Type::Function(params, return_type) => {
+                let substituted_params: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.substitute_type_params_from_map(p, type_mappings))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_type_params_from_map(return_type, type_mappings));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => ty.clone(),
+        }
+    }
+
     /// Calculate a match score (lower is better) for overload resolution
     fn calculate_match_score(&self, sig: &FunctionSignature, arg_types: &[Type]) -> usize {
+        // For generic functions, we need to infer type arguments first
+        if !sig.type_params.is_empty() {
+            return self.calculate_match_score_generic(sig, arg_types);
+        }
+
         let mut score = 0;
         for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
             if let Some(param_type) = &param.type_name {
                 if param_type == arg_type {
                     score += 0; // Exact match
                 } else if arg_type.is_assignable_to(param_type) {
+                    score += 1; // Conversion needed
+                } else {
+                    score += 100; // Bad match (should have been filtered)
+                }
+            }
+        }
+        score
+    }
+
+    /// Calculate match score for generic functions
+    fn calculate_match_score_generic(&self, sig: &FunctionSignature, arg_types: &[Type]) -> usize {
+        // Build a mapping from type parameters to inferred types
+        let mut type_mappings: HashMap<String, Type> = HashMap::new();
+
+        // Infer type arguments from each argument
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                self.infer_type_arguments(param_type, arg_type, &sig.type_params, &mut type_mappings);
+            }
+        }
+
+        // Calculate score with substituted types
+        let mut score = 0;
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                let substituted_type = self.substitute_type_params_from_map(param_type, &type_mappings);
+                
+                if substituted_type == *arg_type {
+                    score += 0; // Exact match
+                } else if arg_type.is_assignable_to(&substituted_type) {
                     score += 1; // Conversion needed
                 } else {
                     score += 100; // Bad match (should have been filtered)
@@ -2634,12 +2846,34 @@ impl TypeChecker {
                 } else {
                     self.infer_expr(expr)
                 };
-                self.context.add_variable(name, expr_type, *private);
+                self.context.add_variable(name, expr_type, *private, false);
+            }
+            Stmt::Const { name, type_annotation, expr, private, .. } => {
+                // If there's a type annotation, use it for type deduction
+                let expr_type = if let Some(ref type_name) = type_annotation {
+                    let expected_type = Type::from_str(type_name);
+                    self.infer_expr_with_expected_type(expr, &Some(expected_type))
+                } else {
+                    self.infer_expr(expr)
+                };
+                self.context.add_variable(name, expr_type, *private, true);
             }
             Stmt::Assign { name, expr, span } => {
                 let expr_type = self.infer_expr(expr);
 
                 if let Some(var_info) = self.context.get_variable(name) {
+                    // Check if trying to assign to a const
+                    if var_info.is_const {
+                        self.context.add_error_with_location(
+                            format!("Cannot assign to constant '{}'", name),
+                            span.line,
+                            span.column,
+                            None,
+                            None,
+                        );
+                        return;
+                    }
+
                     // Use expected type for type deduction
                     let expected_type = var_info.type_name.clone();
                     let deduced_type = self.infer_expr_with_expected_type(expr, &Some(expected_type.clone()));
@@ -2686,13 +2920,24 @@ impl TypeChecker {
                     );
                 } else {
                     // Variable not declared with let, create it (implicit declaration in global/function scope)
-                    self.context.add_variable(name, expr_type, false);
+                    self.context.add_variable(name, expr_type, false, false);
                 }
             }
             Stmt::AugAssign { target, op, expr, span } => {
                 let var_type = match target {
                     crate::parser::AugAssignTarget::Variable(name) => {
                         if let Some(var_info) = self.context.get_variable(name) {
+                            // Check if trying to modify a const
+                            if var_info.is_const {
+                                self.context.add_error_with_location(
+                                    format!("Cannot modify constant '{}'", name),
+                                    span.line,
+                                    span.column,
+                                    None,
+                                    None,
+                                );
+                                return;
+                            }
                             var_info.type_name.clone()
                         } else {
                             self.context.add_error_with_location(
@@ -2858,7 +3103,7 @@ impl TypeChecker {
             Stmt::For { var_name, range, body, .. } => {
                 let _range_type = self.infer_expr(range);
                 // For now, assume ranges are integers
-                self.context.add_variable(var_name, Type::Int, false);
+                self.context.add_variable(var_name, Type::Int, false, false);
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
@@ -2886,7 +3131,7 @@ impl TypeChecker {
                 }
 
                 // Add catch variable (exception object) - currently unknown type
-                self.context.add_variable(catch_var, Type::Unknown, false);
+                self.context.add_variable(catch_var, Type::Unknown, false, false);
 
                 for stmt in catch_block {
                     self.check_stmt(stmt);
@@ -2902,6 +3147,10 @@ impl TypeChecker {
             }
             Stmt::Continue(_) => {
                 // Continue statement - no type checking needed
+            }
+            Stmt::Spawn { expr, .. } => {
+                // Spawn statement - check the expression (should be a function call)
+                self.infer_expr(expr);
             }
         }
     }
@@ -2962,7 +3211,7 @@ impl TypeChecker {
         for type_param in &func.type_params {
             // Add type parameter as a variable with TypeParameter type
             // This allows the type checker to recognize T as a valid type
-            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false);
+            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false, false);
             added_type_params.push(type_param.clone());
         }
 
@@ -2972,7 +3221,7 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone(), false);
+            self.context.add_variable(&param.name, param_type.clone(), false, false);
             added_vars.push(param.name.clone());
         }
 
@@ -3016,7 +3265,7 @@ impl TypeChecker {
         // Add type parameters as local type variables for generic methods
         let mut added_type_params = Vec::new();
         for type_param in &method.type_params {
-            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false);
+            self.context.add_variable(type_param, Type::TypeParameter(type_param.clone()), false, false);
             added_type_params.push(type_param.clone());
         }
 
@@ -3026,12 +3275,12 @@ impl TypeChecker {
             let param_type = param.type_name.as_ref()
                 .map(|t| Type::from_str(t))
                 .unwrap_or(Type::Unknown);
-            self.context.add_variable(&param.name, param_type.clone(), false);
+            self.context.add_variable(&param.name, param_type.clone(), false, false);
             added_vars.push(param.name.clone());
         }
 
         // Add 'self' variable
-        self.context.add_variable("self", Type::Class(class_name.to_string()), false);
+        self.context.add_variable("self", Type::Class(class_name.to_string()), false, false);
 
         // Check method body
         for stmt in &method.body {
@@ -4215,7 +4464,7 @@ impl TypeChecker {
                     let param_type = param.type_name.as_ref()
                         .map(|t| Type::from_str(t))
                         .unwrap_or(Type::Unknown);
-                    self.context.add_variable(&param.name, param_type, false);
+                    self.context.add_variable(&param.name, param_type, false, false);
                     added_vars.push(param.name.clone());
                 }
 
@@ -4470,7 +4719,7 @@ impl TypeChecker {
                         // Add parameters as local variables with expected types
                         let mut added_vars = Vec::new();
                         for (param, param_type) in params.iter().zip(param_types.iter()) {
-                            self.context.add_variable(&param.name, param_type.clone(), false);
+                            self.context.add_variable(&param.name, param_type.clone(), false, false);
                             added_vars.push(param.name.clone());
                         }
 

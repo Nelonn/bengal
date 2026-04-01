@@ -3,30 +3,27 @@ module std.shell
 import std.sys
 
 fn cd(dir: str) {
-    setPwd(dir)
-}
-
-fn split_command(cmd: str): str[] {
-    let trimmed = cmd.trim()
-    let parts = trimmed.split(" ")
-    return parts
-}
-
-fn sh(cmd: str): str {
-    let parts = split_command(cmd)
-    let executable = parts[0]
-    let args = parts
-    let process = sys.Process()
-    process.start(executable, args, true, true, false, null)
-    process.closeStdin()
-    process.wait()
-    return process.getStdout()
+  setPwd(dir)
 }
 
 fn exec(cmd: str, args: str[]): int? {
-    let process = sys.Process()
-    process.start(cmd, args, false, false, true, null)
-    process.closeStdin()
-    process.wait()
-    return process.exitCode()
+  let process = sys.Process()
+  process.start(cmd, args, false, false, true, null)
+  process.wait()
+  return process.exitCode()
+}
+
+fn exec(line: str): int? {
+  let parts = splitCommand(line)
+  return exec(parts[0], parts[1:])
+}
+
+fn sh(cmd: str): int? {
+  return exec("bash", [cmd])
+}
+
+private fn splitCommand(cmd: str): str[] {
+  let trimmed = cmd.trim()
+  let parts = trimmed.split(" ")
+  return parts
 }

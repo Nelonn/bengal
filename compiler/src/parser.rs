@@ -1,4 +1,5 @@
 use crate::lexer::Token;
+use std::cell::RefCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
@@ -9,6 +10,37 @@ pub struct Span {
 impl Span {
     pub fn unknown() -> Self {
         Self { line: 0, column: 0 }
+    }
+}
+
+/// Parser error with span information
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    pub message: String,
+    pub line: usize,
+    pub column: usize,
+    pub file: String,
+    pub source_line: Option<String>,
+}
+
+impl ParseError {
+    pub fn new(message: String, file: String, line: usize, column: usize) -> Self {
+        Self { message, file, line, column, source_line: None }
+    }
+
+    pub fn with_source(mut self, source_line: String) -> Self {
+        self.source_line = Some(source_line);
+        self
+    }
+
+    pub fn format(&self) -> String {
+        let base = format!("{}:{}:{}: error: {}", self.file, self.line, self.column, self.message);
+        if let Some(ref line) = self.source_line {
+            let pointer = " ".repeat(self.column.saturating_sub(1)) + "^";
+            format!("{}\n  {}\n  {}", base, line, pointer)
+        } else {
+            base
+        }
     }
 }
 
@@ -36,6 +68,7 @@ pub enum Stmt {
     Function(FunctionDef),
     TypeAlias(TypeAliasDef),
     Let { name: String, type_annotation: Option<String>, expr: Expr, private: bool, span: Span },
+    Const { name: String, type_annotation: Option<String>, expr: Expr, private: bool, span: Span },
     Assign { name: String, expr: Expr, span: Span },
     AugAssign { target: AugAssignTarget, op: AugOp, expr: Expr, span: Span },
     Return { expr: Option<Expr>, span: Span },
@@ -47,6 +80,7 @@ pub enum Stmt {
     Continue(Span),
     TryCatch { try_block: Block, catch_var: String, catch_block: Block, span: Span },
     Throw { expr: Expr, span: Span },
+    Spawn { expr: Expr, span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +297,7 @@ pub struct Parser {
     source: String,
     path: String,
     token_positions: Vec<usize>,  // Position in source for each token
+    errors: RefCell<Vec<ParseError>>,
 }
 
 impl Parser {
@@ -273,7 +308,25 @@ impl Parser {
             source: source.to_string(),
             path: path.to_string(),
             token_positions,
+            errors: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.errors.borrow().is_empty()
+    }
+
+    pub fn get_errors(&self) -> Vec<ParseError> {
+        self.errors.borrow().clone()
+    }
+
+    pub fn format_errors(&self) -> String {
+        let errors = self.errors.borrow();
+        let error_messages: Vec<String> = errors
+            .iter()
+            .map(|e| e.format())
+            .collect();
+        error_messages.join("\n")
     }
 
     fn compute_span(&self, token_idx: usize) -> Span {
@@ -302,31 +355,42 @@ impl Parser {
         token
     }
 
-    fn error(&self, message: &str) -> Result<Stmt, String> {
+    fn add_error(&self, message: String) {
         let span = self.compute_span(self.pos);
         let filename = std::path::Path::new(&self.path)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
+            .unwrap_or(&self.path)
+            .to_string();
+        
+        let mut error = ParseError::new(message, filename, span.line, span.column);
+        
+        // Capture the source line for the error snippet
+        let source_line = self.get_source_line(span.line);
+        if let Some(line) = source_line {
+            error = error.with_source(line);
+        }
+        
+        self.errors.borrow_mut().push(error);
+    }
+
+    fn get_source_line(&self, line_num: usize) -> Option<String> {
+        self.source.lines().nth(line_num.saturating_sub(1)).map(|s| s.to_string())
+    }
+
+    fn error(&self, message: &str) -> Result<Stmt, String> {
+        self.add_error(message.to_string());
+        Err(message.to_string())
     }
 
     fn error_expr(&self, message: &str) -> Result<Expr, String> {
-        let span = self.compute_span(self.pos);
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
+        self.add_error(message.to_string());
+        Err(message.to_string())
     }
 
     fn error_generic<T>(&self, message: &str) -> Result<T, String> {
-        let span = self.compute_span(self.pos);
-        let filename = std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path);
-        Err(format!("{}:{}:{}: error: {}", filename, span.line, span.column, message))
+        self.add_error(message.to_string());
+        Err(message.to_string())
     }
 
     fn check(&self, token: &Token) -> bool {
@@ -360,14 +424,68 @@ impl Parser {
         self.skip_newlines();
 
         while !self.check(&Token::Eof) {
-            let stmt = self.parse_statement()?;
-            if let Some(s) = stmt {
-                let s = self.maybe_parse_else_if(s)?;
-                statements.push(s);
+            // Try to parse a statement, but don't stop on errors
+            match self.parse_statement() {
+                Ok(Some(stmt)) => {
+                    match self.maybe_parse_else_if(stmt) {
+                        Ok(s) => statements.push(s),
+                        Err(_) => {
+                            // Error already recorded, try to continue
+                            self.synchronize();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    self.advance(); // Move past EOF or RBrace
+                }
+                Err(_) => {
+                    // Error already recorded, try to synchronize and continue
+                    self.synchronize();
+                }
             }
             self.skip_newlines();
         }
+
+        // Always return statements, even if there are errors
+        // Errors can be retrieved via get_errors() or format_errors()
         Ok(statements)
+    }
+
+    /// Get formatted error string
+    pub fn get_error_string(&self) -> Option<String> {
+        if self.has_errors() {
+            Some(self.format_errors())
+        } else {
+            None
+        }
+    }
+
+    /// Synchronize parser after an error - skip to next statement boundary
+    fn synchronize(&mut self) {
+        self.skip_newlines();
+        // Skip tokens until we find a statement starter or EOF
+        while !self.check(&Token::Eof) {
+            if self.check(&Token::Module)
+                || self.check(&Token::Import)
+                || self.check(&Token::Class)
+                || self.check(&Token::Interface)
+                || self.check(&Token::Enum)
+                || self.check(&Token::Fn)
+                || self.check(&Token::Type)
+                || self.check(&Token::Let)
+                || self.check(&Token::Return)
+                || self.check(&Token::If)
+                || self.check(&Token::For)
+                || self.check(&Token::While)
+                || self.check(&Token::Break)
+                || self.check(&Token::Continue)
+                || self.check(&Token::Try)
+                || self.check(&Token::Throw)
+            {
+                return;
+            }
+            self.advance();
+        }
     }
 
     fn parse_statement(&mut self) -> Result<Option<Stmt>, String> {
@@ -410,6 +528,8 @@ impl Parser {
             self.parse_type_alias(is_private)?
         } else if self.match_token(&Token::Let) {
             self.parse_let(is_private)?
+        } else if self.match_token(&Token::Const) {
+            self.parse_const(is_private)?
         } else if self.match_token(&Token::Return) {
             self.parse_return()?
         } else if self.match_token(&Token::If) {
@@ -426,6 +546,8 @@ impl Parser {
             self.parse_try_catch()?
         } else if self.match_token(&Token::Throw) {
             self.parse_throw()?
+        } else if self.match_token(&Token::Spawn) {
+            self.parse_spawn()?
         } else {
             let expr = self.parse_expression()?;
 
@@ -1072,12 +1194,12 @@ impl Parser {
             if self.match_token(&Token::Semicolon) {
                 Vec::new()
             } else if self.check(&Token::LBrace) {
-                self.advance();
-                let b = self.parse_block()?;
-                if !self.match_token(&Token::RBrace) {
-                    return self.error_generic("Expected '}' to close native function body");
-                }
-                b
+                // Record error but still parse the body to continue checking for more errors
+                self.add_error("Native functions cannot have a body".to_string());
+                self.advance(); // consume '{'
+                let b = self.parse_block();
+                let _ = self.match_token(&Token::RBrace); // consume '}' if present
+                b.unwrap_or_default()
             } else {
                 // Also allow no semicolon if it's the end of a block/file
                 Vec::new()
@@ -1187,12 +1309,12 @@ impl Parser {
             if self.match_token(&Token::Semicolon) {
                 Vec::new()
             } else if self.check(&Token::LBrace) {
-                self.advance();
-                let b = self.parse_block()?;
-                if !self.match_token(&Token::RBrace) {
-                    return self.error_generic(&format!("Expected '}}' to close native {} body", name));
-                }
-                b
+                // Record error but still parse the body to continue checking for more errors
+                self.add_error(format!("Native {} cannot have a body", name));
+                self.advance(); // consume '{'
+                let b = self.parse_block();
+                let _ = self.match_token(&Token::RBrace); // consume '}' if present
+                b.unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -1394,6 +1516,36 @@ impl Parser {
         Ok(Stmt::Let { name, type_annotation, expr, private: is_private, span })
     }
 
+    fn parse_const(&mut self, is_private: bool) -> Result<Stmt, String> {
+        let span = self.current_span();
+        let name = match self.advance() {
+            Token::Identifier(n) => n,
+            _ => return self.error("Expected constant name after 'const'"),
+        };
+
+        let type_annotation = if self.check(&Token::Colon) {
+            self.advance();
+            let (type_name, optional) = self.parse_type()?;
+            if optional {
+                Some(type_name + "?")
+            } else {
+                Some(type_name)
+            }
+        } else {
+            None
+        };
+
+        self.skip_newlines();
+        if !self.match_token(&Token::Equal) {
+            return self.error("Expected '=' in const statement");
+        }
+        self.skip_newlines();
+
+        let expr = self.parse_expression()?;
+
+        Ok(Stmt::Const { name, type_annotation, expr, private: is_private, span })
+    }
+
     fn parse_return(&mut self) -> Result<Stmt, String> {
         let span = self.current_span();
         let expr = if self.check(&Token::Semicolon) || self.check(&Token::Newline) || self.check(&Token::RBrace) || self.check(&Token::Eof) {
@@ -1549,6 +1701,14 @@ impl Parser {
         let expr = self.parse_expression()?;
 
         Ok(Stmt::Throw { expr, span })
+    }
+
+    fn parse_spawn(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
+        // spawn keyword is followed by an expression (usually a function call)
+        let expr = self.parse_expression()?;
+
+        Ok(Stmt::Spawn { expr, span })
     }
 
     fn parse_block(&mut self) -> Result<Block, String> {
@@ -2013,26 +2173,27 @@ impl Parser {
             // Check for generic type arguments before function call
             // Only parse as generic if it's an identifier followed by <types> and then (
             if self.check(&Token::LAngle) {
-                // Save position in case we need to backtrack
+                // Save position and error count in case we need to backtrack
                 let saved_pos = self.pos;
-                
+                let saved_error_count = self.errors.borrow().len();
+
                 // Build generic type string
                 let mut type_str = String::new();
                 if let Expr::Variable { name, .. } = &expr {
                     type_str = name.clone();
                 }
-                
+
                 self.advance(); // consume <
                 type_str.push('<');
                 let mut first = true;
                 let mut valid_generic = true;
-                
+
                 loop {
                     if !first {
                         type_str.push_str(", ");
                     }
                     first = false;
-                    
+
                     // Try to parse a type
                     match self.parse_type() {
                         Ok((arg_type, _)) => {
@@ -2043,19 +2204,19 @@ impl Parser {
                             break;
                         }
                     }
-                    
+
                     if !self.match_token(&Token::Comma) {
                         break;
                     }
                 }
-                
+
                 if valid_generic && self.match_token(&Token::RAngle) {
                     // Check if followed by ( for class instantiation
                     self.skip_newlines();
                     if self.check(&Token::LParen) {
                         // This is a generic class instantiation
                         type_str.push('>');
-                        
+
                         // Update expr to be the generic type
                         if let Expr::Variable { span, .. } = &expr {
                             expr = Expr::Variable { name: type_str, span: *span };
@@ -2063,8 +2224,9 @@ impl Parser {
                         continue;
                     }
                 }
-                // Backtrack - restore position
+                // Backtrack - restore position and error count
                 self.pos = saved_pos;
+                self.errors.borrow_mut().truncate(saved_error_count);
             }
 
             if self.match_token(&Token::LParen) {

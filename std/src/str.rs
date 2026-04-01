@@ -1,7 +1,7 @@
-use sparkler::{Value, NativeResult};
+use sparkler::{Value, NativeResult, NativeContext};
 
 /// Native str() function that converts any value to string
-pub fn native_str(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("".to_string()));
     }
@@ -64,7 +64,7 @@ pub fn native_str(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(result)
 }
 
-pub fn native_str_length(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_length(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("length requires a string argument".to_string()));
     }
@@ -76,7 +76,7 @@ pub fn native_str_length(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_str_trim(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_trim(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("trim requires a string argument".to_string()));
     }
@@ -88,7 +88,7 @@ pub fn native_str_trim(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_str_split(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_split(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String("split requires a string and a delimiter".to_string()));
     }
@@ -111,7 +111,7 @@ pub fn native_str_split(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(parts_value))))
 }
 
-pub fn native_str_to_int(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_to_int(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("to_int requires a string argument".to_string()));
     }
@@ -126,7 +126,7 @@ pub fn native_str_to_int(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_str_to_float(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_to_float(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("to_float requires a string argument".to_string()));
     }
@@ -141,7 +141,7 @@ pub fn native_str_to_float(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_str_contains(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_contains(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String("contains requires a string and a substring".to_string()));
     }
@@ -161,7 +161,7 @@ pub fn native_str_contains(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Bool(input.contains(&substring)))
 }
 
-pub fn native_str_starts_with(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_starts_with(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String("starts_with requires a string and a prefix".to_string()));
     }
@@ -181,7 +181,7 @@ pub fn native_str_starts_with(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Bool(input.starts_with(&prefix)))
 }
 
-pub fn native_str_ends_with(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_ends_with(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String("ends_with requires a string and a suffix".to_string()));
     }
@@ -201,7 +201,7 @@ pub fn native_str_ends_with(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Bool(input.ends_with(&suffix)))
 }
 
-pub fn native_str_substring(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_substring(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("substring requires a string argument".to_string()));
     }
@@ -234,7 +234,7 @@ pub fn native_str_substring(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String(input[start..end].to_string()))
 }
 
-pub fn native_str_to_lowercase(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_to_lowercase(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("to_lowercase requires a string argument".to_string()));
     }
@@ -246,7 +246,7 @@ pub fn native_str_to_lowercase(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_str_to_uppercase(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_to_uppercase(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("to_uppercase requires a string argument".to_string()));
     }
@@ -258,7 +258,7 @@ pub fn native_str_to_uppercase(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_str_replace(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_str_replace(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Ready(Value::String("replace requires a string, a pattern, and a replacement".to_string()));
     }
@@ -285,7 +285,7 @@ pub fn native_str_replace(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native int() function that converts any value to integer
-pub fn native_int(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_int(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Int64(0));
     }
@@ -318,7 +318,7 @@ pub fn native_int(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native float() function that converts any value to float
-pub fn native_float(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_float(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Float64(0.0));
     }
@@ -349,7 +349,7 @@ pub fn native_float(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native bool() function that converts any value to bool
-pub fn native_bool(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_bool(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Bool(false));
     }
@@ -375,7 +375,7 @@ pub fn native_bool(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native int8() function that converts any value to int8
-pub fn native_int8(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_int8(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Int8(0));
     }
@@ -383,7 +383,7 @@ pub fn native_int8(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native uint8() function that converts any value to uint8
-pub fn native_uint8(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_uint8(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::UInt8(0));
     }
@@ -391,7 +391,7 @@ pub fn native_uint8(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native int16() function that converts any value to int16
-pub fn native_int16(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_int16(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Int16(0));
     }
@@ -399,7 +399,7 @@ pub fn native_int16(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native uint16() function that converts any value to uint16
-pub fn native_uint16(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_uint16(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::UInt16(0));
     }
@@ -407,7 +407,7 @@ pub fn native_uint16(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native int32() function that converts any value to int32
-pub fn native_int32(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_int32(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Int32(0));
     }
@@ -415,7 +415,7 @@ pub fn native_int32(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native uint32() function that converts any value to uint32
-pub fn native_uint32(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_uint32(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::UInt32(0));
     }
@@ -423,7 +423,7 @@ pub fn native_uint32(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native int64() function that converts any value to int64
-pub fn native_int64(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_int64(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Int64(0));
     }
@@ -431,7 +431,7 @@ pub fn native_int64(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native uint64() function that converts any value to uint64
-pub fn native_uint64(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_uint64(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::UInt64(0));
     }
@@ -439,7 +439,7 @@ pub fn native_uint64(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native float32() function that converts any value to float32
-pub fn native_float32(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_float32(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Float32(0.0));
     }
@@ -447,7 +447,7 @@ pub fn native_float32(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Native float64() function that converts any value to float64
-pub fn native_float64(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_float64(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::Float64(0.0));
     }

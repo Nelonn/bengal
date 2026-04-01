@@ -18,6 +18,7 @@ use sparkler::{NativeFallbackFn, NativeModule, NativeResult, Value, VM};
 pub fn register_all(vm: &mut VM) {
     NativeModule::new("std.io")
         .function("print(str)", io::native_print)
+        .function("sleep(int)", io::native_sleep)
         .register(vm);
 
     NativeModule::new("std.data")
@@ -202,7 +203,7 @@ pub fn register_all(vm: &mut VM) {
         .function("assertSame", test::native_assert_same)
         .register(vm);
 
-    vm.register_fallback(|name, _args| {
+    vm.register_fallback(|_ctx, name, _args| {
         NativeResult::Ready(Value::String(
             format!("Native method not available or disabled by runtime: {}", name),
         ))

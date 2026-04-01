@@ -1,0 +1,24 @@
+// Test sleep with green threads
+
+import std.io
+
+fn worker(id: int, delay: int) {
+    println("Worker " + str(id) + " starting, will sleep for " + str(delay) + "ms")
+    sleep(delay)
+    println("Worker " + str(id) + " woke up after " + str(delay) + "ms")
+}
+
+fn main() {
+    println("Sleep test starting...")
+
+    // Spawn workers with different sleep times
+    spawn worker(1, 100)
+    spawn worker(2, 50)
+    spawn worker(3, 150)
+
+    println("All workers spawned, main thread waiting...")
+    sleep(200)
+    println("Main thread finished after 200ms")
+}
+
+main()

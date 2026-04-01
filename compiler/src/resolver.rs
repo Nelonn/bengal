@@ -280,6 +280,9 @@ impl ModuleResolver {
                                 Stmt::Let { name, .. } => {
                                     import_entry.members.push(name.clone());
                                 }
+                                Stmt::Const { name, .. } => {
+                                    import_entry.members.push(name.clone());
+                                }
                                 _ => {}
                             }
                         }
@@ -349,9 +352,22 @@ impl ModuleResolver {
                     }
                 }
 
-                // Merge the context back but NOT the errors (errors are reported separately)
-                let mut new_ctx = type_checker.get_context().clone();
+                // Merge the context back but preserve imports from the main context
+                // The module's context may not have the same imports as the main file
+                let module_ctx = type_checker.get_context();
+                
+                // Save imports before replacing context
+                let saved_imports = self.type_context.imports.clone();
+                let saved_import_paths = self.type_context.import_paths.clone();
+                
+                // Replace context with module's context
+                let mut new_ctx = module_ctx.clone();
                 new_ctx.errors = self.type_context.errors.clone();
+                
+                // Restore imports
+                new_ctx.imports = saved_imports;
+                new_ctx.import_paths = saved_import_paths;
+                
                 self.type_context = new_ctx;
             }
         }
@@ -528,6 +544,23 @@ impl ModuleResolver {
                         name: name.clone(),
                         type_name: var_type,
                         private: *private,
+                        is_const: false,
+                    });
+                }
+                Stmt::Const { name, type_annotation, expr: _, private, .. } => {
+                    // Register module-level constants (e.g., math.PI)
+                    let var_type = if let Some(ref ty) = type_annotation {
+                        Type::from_str(ty)
+                    } else {
+                        // Infer type from expression (simplified - default to Unknown)
+                        Type::Unknown
+                    };
+                    let qualified_name = format!("{}.{}", module_name, name);
+                    self.type_context.variables.insert(qualified_name, crate::types::VariableInfo {
+                        name: name.clone(),
+                        type_name: var_type,
+                        private: *private,
+                        is_const: true,
                     });
                 }
                 _ => {}

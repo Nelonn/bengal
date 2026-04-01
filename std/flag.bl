@@ -1,22 +1,6 @@
-module std.args
+module std.flag
 
-native fn get(): str[]
-
-fn count(): int {
-  let args = get()
-  return args.length()
-}
-
-fn at(index: int): str? {
-  let args = get()
-  if (index < 0) {
-    return null
-  }
-  if (index >= args.length()) {
-    return null
-  }
-  return args[index]
-}
+import std.args
 
 fn program(): str {
   let args = get()

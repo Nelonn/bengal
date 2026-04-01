@@ -4,22 +4,18 @@ native fn exit(code: int)
 native fn env(key: str): str?
 native fn setPwd(dir: str)
 
+native fn getArgs(): str[]
+
 native class Process {
-  fn start(cmd: str, args: str[], capture_stdout: bool, capture_stderr: bool, inherit_stdin: bool, working_dir: str?)
-
-  fn writeStdin(data: str)
-
-  fn closeStdin()
-
-  fn readStdout(): str
-
-  fn readStderr(): str
+  fn start(cmd: str, args: str[], capture_stdout: bool, capture_stderr: bool, working_dir: str?)
 
   fn wait()
 
   fn exitCode(): int?
 
-  fn getStdout(): str
+  fn getStdin(): OutputStream
 
-  fn getStderr(): str
+  fn getStdout(): InputStream
+
+  fn getStderr(): InputStream
 }

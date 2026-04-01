@@ -706,6 +706,17 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
 
         Opcode::Breakpoint => ("BREAKPOINT".to_string(), String::new(), 0),
 
+        Opcode::Yield => ("YIELD".to_string(), String::new(), 0),
+
+        Opcode::Spawn => {
+            let func_idx = ((data[pc + 1] as u16) | ((data[pc + 2] as u16) << 8)) as usize;
+            let arg_start = data[pc + 3];
+            let arg_count = data[pc + 4];
+            let func_name = strings.get(func_idx).cloned().unwrap_or_else(|| format!("func_{}", func_idx));
+            let operands = format!("func={}, args=R{}..R{}", func_name, arg_start, arg_start + arg_count - 1);
+            (format!("SPAWN"), operands, 4)
+        }
+
         Opcode::Halt => ("HALT".to_string(), String::new(), 0),
     }
 }
@@ -761,6 +772,8 @@ fn opcode_from_byte(byte: u8) -> Opcode {
         0x80 => Opcode::TryStart,
         0x81 => Opcode::TryEnd,
         0x82 => Opcode::Throw,
+        0x83 => Opcode::Yield,
+        0x84 => Opcode::Spawn,
         0x90 => Opcode::Breakpoint,
         0xFF => Opcode::Halt,
         _ => Opcode::Nop, // Unknown opcode treated as NOP

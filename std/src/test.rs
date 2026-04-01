@@ -1,7 +1,7 @@
-use sparkler::{Value, NativeResult};
+use sparkler::{Value, NativeResult, NativeContext};
 
 /// Assert that two values are the same type and equal
-pub fn native_assert_same(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_assert_same(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String("assertSame requires expected and actual values".to_string()));
     }
@@ -45,7 +45,7 @@ pub fn native_assert_same(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Fail the test immediately with a message
-pub fn native_fail(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fail(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let message = if !args.is_empty() {
         if let Value::String(s) = &args[0] {
             s.clone()
@@ -60,11 +60,11 @@ pub fn native_fail(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Set current test name (called by test() function)
-pub fn native_set_current_test(_args: &mut Vec<Value>) -> NativeResult {
+pub fn native_set_current_test(_ctx: &NativeContext, _args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
 /// Record a passing test
-pub fn native_record_pass(_args: &mut Vec<Value>) -> NativeResult {
+pub fn native_record_pass(_ctx: &NativeContext, _args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }

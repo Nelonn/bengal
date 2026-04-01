@@ -1,4 +1,4 @@
-use sparkler::{vm::Instance, Value, NativeResult};
+use sparkler::{vm::Instance, Value, NativeResult, NativeContext};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -28,7 +28,7 @@ impl ProcessData {
     }
 }
 
-pub fn native_process_native_create(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_native_create(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -41,7 +41,7 @@ pub fn native_process_native_create(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_process_start(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_start(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -134,7 +134,7 @@ pub fn native_process_start(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_write_stdin(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_write_stdin(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -169,7 +169,7 @@ pub fn native_process_write_stdin(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_close_stdin(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_close_stdin(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -188,7 +188,7 @@ pub fn native_process_close_stdin(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_read_stdout(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_read_stdout(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -229,7 +229,7 @@ pub fn native_process_read_stdout(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_read_stderr(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_read_stderr(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -270,7 +270,7 @@ pub fn native_process_read_stderr(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_wait(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_wait(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -320,7 +320,7 @@ pub fn native_process_wait(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_exit_code(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_exit_code(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -342,7 +342,7 @@ pub fn native_process_exit_code(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_get_stdout(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_get_stdout(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -361,7 +361,7 @@ pub fn native_process_get_stdout(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_get_stderr(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_get_stderr(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -380,7 +380,7 @@ pub fn native_process_get_stderr(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("Process native data not initialized".to_string()))
 }
 
-pub fn native_process_native_destroy(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_process_native_destroy(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -406,7 +406,7 @@ pub fn native_process_native_destroy(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_sys_env(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_sys_env(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if !args.is_empty() {
         if let Value::String(key) = &args[0] {
             return match std::env::var(key) {
@@ -435,7 +435,7 @@ pub fn native_sys_env(args: &mut Vec<Value>) -> NativeResult {
     }))))
 }
 
-pub fn native_sys_set_pwd(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_sys_set_pwd(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("set_pwd requires a directory argument".to_string()));
     }

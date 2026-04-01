@@ -1,7 +1,7 @@
-use sparkler::{Value, NativeResult};
+use sparkler::{Value, NativeResult, NativeContext};
 use std::sync::{Arc, Mutex};
 
-pub fn native_args_get(_args: &mut Vec<Value>) -> NativeResult {
+pub fn native_args_get(_ctx: &NativeContext, _args: &mut Vec<Value>) -> NativeResult {
     let args: Vec<String> = std::env::args().collect();
 
     // Create an array of strings

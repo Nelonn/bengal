@@ -85,6 +85,10 @@ pub enum Opcode {
     TryEnd = 0x81,
     Throw = 0x82,    // Rs
 
+    // Green threads / concurrency
+    Yield = 0x83,    // Yield execution to another thread
+    Spawn = 0x84,    // Spawn a new green thread: func_idx, arg_start, arg_count
+
     // Debugging
     Breakpoint = 0x90,
 
@@ -97,7 +101,7 @@ impl Opcode {
     pub fn size(&self) -> usize {
         match self {
             Opcode::Nop => 1,
-            Opcode::LoadConst => 3,
+            Opcode::LoadConst => 4,
             Opcode::LoadInt => 10,
             Opcode::LoadFloat => 10,
             Opcode::LoadBool => 2,
@@ -144,6 +148,8 @@ impl Opcode {
             Opcode::TryStart => 4,
             Opcode::TryEnd => 1,
             Opcode::Throw => 2,
+            Opcode::Yield => 1,
+            Opcode::Spawn => 5,  // func_idx (u16), arg_start, arg_count
             Opcode::Breakpoint => 1,
             Opcode::Halt => 1,
         }

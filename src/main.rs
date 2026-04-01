@@ -27,7 +27,7 @@ async fn run_file(source_file: &str, debug: bool, script_args: Vec<String>) -> R
     let result = match compiler.compile() {
         Ok(r) => r,
         Err(e) => {
-            return Err(format!("Compilation error: {}", e).into());
+            return Err(format!("Compilation error:\n{}", e).into());
         }
     };
 
@@ -237,7 +237,7 @@ async fn main() {
         let result = match compiler.compile() {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Compilation error: {}", e);
+                eprintln!("Compilation error:\n{}", e);
                 std::process::exit(1);
             }
         };

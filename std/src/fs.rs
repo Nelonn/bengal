@@ -1,11 +1,11 @@
-use sparkler::{vm::Instance, Value, NativeResult};
+use sparkler::{vm::Instance, Value, NativeResult, NativeContext};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// Read entire file content as bytes (returns Int8 array instance)
-pub fn native_fs_read(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_read(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::read requires a path argument".to_string(),
@@ -42,7 +42,7 @@ pub fn native_fs_read(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Read entire file content as string
-pub fn native_fs_read_string(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_read_string(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::read_string requires a path argument".to_string(),
@@ -65,7 +65,7 @@ pub fn native_fs_read_string(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Write bytes to a file (from Int8 array instance)
-pub fn native_fs_write(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_write(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "fs::write requires path and data arguments".to_string(),
@@ -93,7 +93,7 @@ pub fn native_fs_write(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Write string to a file
-pub fn native_fs_write_string(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_write_string(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "fs::write_string requires path and data arguments".to_string(),
@@ -125,7 +125,7 @@ pub fn native_fs_write_string(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Append bytes to a file
-pub fn native_fs_append(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_append(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "fs::append requires path and data arguments".to_string(),
@@ -162,7 +162,7 @@ pub fn native_fs_append(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Append string to a file
-pub fn native_fs_append_string(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_append_string(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "fs::append_string requires path and data arguments".to_string(),
@@ -203,7 +203,7 @@ pub fn native_fs_append_string(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Remove a file or directory
-pub fn native_fs_remove(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_remove(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::remove requires a path argument".to_string(),
@@ -238,7 +238,7 @@ pub fn native_fs_remove(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Remove a file
-pub fn native_fs_remove_file(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_remove_file(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::remove_file requires a path argument".to_string(),
@@ -261,7 +261,7 @@ pub fn native_fs_remove_file(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Remove an empty directory
-pub fn native_fs_remove_dir(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_remove_dir(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::remove_dir requires a path argument".to_string(),
@@ -284,7 +284,7 @@ pub fn native_fs_remove_dir(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Remove a directory and all its contents
-pub fn native_fs_remove_dir_all(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_remove_dir_all(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::remove_dir_all requires a path argument".to_string(),
@@ -307,7 +307,7 @@ pub fn native_fs_remove_dir_all(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Check if a path exists
-pub fn native_fs_exists(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_exists(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::exists requires a path argument".to_string(),
@@ -327,7 +327,7 @@ pub fn native_fs_exists(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Check if a path is a file
-pub fn native_fs_is_file(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_is_file(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::is_file requires a path argument".to_string(),
@@ -347,7 +347,7 @@ pub fn native_fs_is_file(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Check if a path is a directory
-pub fn native_fs_is_dir(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_is_dir(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::is_dir requires a path argument".to_string(),
@@ -367,7 +367,7 @@ pub fn native_fs_is_dir(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Create a new directory
-pub fn native_fs_create_dir(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_create_dir(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::create_dir requires a path argument".to_string(),
@@ -390,7 +390,7 @@ pub fn native_fs_create_dir(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Create a directory and all parent directories
-pub fn native_fs_create_dir_all(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_create_dir_all(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::create_dir_all requires a path argument".to_string(),
@@ -413,7 +413,7 @@ pub fn native_fs_create_dir_all(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Read directory contents
-pub fn native_fs_read_dir(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_read_dir(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::read_dir requires a path argument".to_string(),
@@ -465,7 +465,7 @@ pub fn native_fs_read_dir(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Copy a file
-pub fn native_fs_copy(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_copy(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "fs::copy requires source and destination arguments".to_string(),
@@ -497,7 +497,7 @@ pub fn native_fs_copy(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Rename/move a file or directory
-pub fn native_fs_rename(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_rename(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "fs::rename requires source and destination arguments".to_string(),
@@ -529,7 +529,7 @@ pub fn native_fs_rename(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Get file/directory metadata
-pub fn native_fs_metadata(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_metadata(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::metadata requires a path argument".to_string(),
@@ -594,7 +594,7 @@ pub fn native_fs_metadata(args: &mut Vec<Value>) -> NativeResult {
 }
 
 /// Get the canonical, absolute path
-pub fn native_fs_canonicalize(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_fs_canonicalize(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fs::canonicalize requires a path argument".to_string(),

@@ -427,6 +427,8 @@ pub enum NativeResult {
     Ready(Value),
     /// Function is pending, will callback with result later
     Pending,
+    /// Function is pending with a wait identifier for targeted wakeup
+    PendingWithWaitId(String),
 }
 
 impl From<Value> for NativeResult {
@@ -447,9 +449,105 @@ impl From<Result<Value, Value>> for NativeResult {
 /// Async callback for native functions
 pub type AsyncCallback = Box<dyn FnOnce(Result<Value, Value>) + Send + 'static>;
 
-pub type NativeFn = fn(&mut Vec<Value>) -> NativeResult;
-pub type NativeFnAsync = fn(&mut Vec<Value>, AsyncCallback) -> NativeResult;
-pub type NativeFallbackFn = fn(&str, &mut Vec<Value>) -> NativeResult;
+/// Context provided to native functions for creating instances and manipulating objects
+pub struct NativeContext<'a> {
+    vm: &'a VM,
+}
+
+impl<'a> NativeContext<'a> {
+    /// Create a new native context
+    pub fn new(vm: &'a VM) -> Self {
+        Self { vm }
+    }
+
+    /// Create an instance of a class by name
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let instance = ctx.create_instance("std.http.Response")?;
+    /// ```
+    pub fn create_instance(&self, class_name: &str) -> Result<Value, String> {
+        // Look up the class in the VM's class registry
+        if let Some(class) = self.vm.program.classes.get(class_name) {
+            let instance = Value::Instance(Arc::new(Mutex::new(Instance {
+                class: class_name.to_string(),
+                fields: class.fields.clone(),
+                private_fields: class.private_fields.clone(),
+                native_data: Arc::new(Mutex::new(None)),
+            })));
+            Ok(instance)
+        } else {
+            Err(format!("Class '{}' not found", class_name))
+        }
+    }
+
+    /// Set a property on an instance
+    /// 
+    /// # Example
+    /// ```ignore
+    /// ctx.set_property(&instance, "code", Value::Int64(403))?;
+    /// ```
+    pub fn set_property(&self, instance: &Value, property_name: &str, value: Value) -> Result<(), String> {
+        match instance {
+            Value::Instance(inst) => {
+                let mut inst_lock = inst.lock().unwrap();
+                inst_lock.fields.insert(property_name.to_string(), value);
+                Ok(())
+            }
+            _ => Err("Expected an instance".to_string()),
+        }
+    }
+
+    /// Get a property from an instance
+    pub fn get_property(&self, instance: &Value, property_name: &str) -> Result<Value, String> {
+        match instance {
+            Value::Instance(inst) => {
+                let inst_lock = inst.lock().unwrap();
+                inst_lock.fields.get(property_name)
+                    .cloned()
+                    .ok_or_else(|| format!("Property '{}' not found", property_name))
+            }
+            _ => Err("Expected an instance".to_string()),
+        }
+    }
+
+    /// Get the native_data from an instance (for native state)
+    pub fn get_native_data<T: Any + Send + Sync>(&self, instance: &Value) -> Option<Arc<Mutex<T>>> {
+        match instance {
+            Value::Instance(inst) => {
+                let inst_lock = inst.lock().unwrap();
+                let native_data = inst_lock.native_data.clone();
+                drop(inst_lock);
+                
+                let data = native_data.lock().unwrap();
+                if let Some(boxed) = data.as_ref() {
+                    if let Some(concrete) = boxed.downcast_ref::<Arc<Mutex<T>>>() {
+                        return Some(concrete.clone());
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Set the native_data on an instance (for native state)
+    pub fn set_native_data<T: Any + Send + Sync>(&self, instance: &Value, data: Arc<Mutex<T>>) -> Result<(), String> {
+        match instance {
+            Value::Instance(inst) => {
+                let inst_lock = inst.lock().unwrap();
+                let mut native_data = inst_lock.native_data.lock().unwrap();
+                *native_data = Some(Box::new(data) as Box<dyn Any + Send + Sync>);
+                Ok(())
+            }
+            _ => Err("Expected an instance".to_string()),
+        }
+    }
+}
+
+pub type NativeFn = fn(&NativeContext, &mut Vec<Value>) -> NativeResult;
+pub type NativeFnAsync = fn(&NativeContext, &mut Vec<Value>, AsyncCallback) -> NativeResult;
+pub type NativeFallbackFn = fn(&NativeContext, &str, &mut Vec<Value>) -> NativeResult;
 
 pub struct NativeFunctionBuilder {
     name: String,
@@ -778,6 +876,8 @@ pub struct Context {
     pub pending_native_result: Option<u8>,
     /// Callback for pending native operation
     pub pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
+    /// Wait identifier for targeted wakeup (used with PendingWithWaitId)
+    pub pending_wait_id: Option<String>,
 }
 
 impl Clone for Context {
@@ -789,6 +889,7 @@ impl Clone for Context {
             exception_handlers: self.exception_handlers.clone(),
             pending_native_result: self.pending_native_result,
             pending_native_callback: None, // Cannot clone the callback
+            pending_wait_id: self.pending_wait_id.clone(),
         }
     }
 }
@@ -802,6 +903,7 @@ impl Context {
             exception_handlers: Vec::new(),
             pending_native_result: None,
             pending_native_callback: None,
+            pending_wait_id: None,
         }
     }
 }
@@ -829,6 +931,8 @@ pub struct Program {
     pub fallback_native: Option<crate::linker::NativeFnType>,
     /// Vtables for interface method dispatch (indexed by vtable_idx)
     pub vtables: Vec<VTable>,
+    /// Green thread context (for spawn support)
+    pub green_thread_ctx: Option<std::rc::Rc<crate::executor::GreenThreadContext>>,
 }
 
 impl Program {
@@ -841,6 +945,7 @@ impl Program {
             native_registry: NativeFunctionRegistry::new(),
             fallback_native: None,
             vtables: Vec::new(),
+            green_thread_ctx: None,
         }
     }
 }
@@ -1057,6 +1162,44 @@ impl VM {
         Ok(())
     }
 
+    /// Start execution at a specific function
+    /// This is used for green thread spawning
+    pub fn call_function(&mut self, function_name: &str, args: Vec<Value>) -> Result<(), String> {
+        let function = self.program.functions.get(function_name)
+            .ok_or_else(|| format!("Function not found: {}", function_name))?;
+
+        // Calculate frame base - start at beginning of registers for a new thread
+        let new_frame_base = 0;
+
+        if new_frame_base + function.register_count as usize > self.context.registers.len() {
+            return Err("Register overflow: function requires too many registers".to_string());
+        }
+
+        // Create a new call frame for this function
+        let new_frame = CallFrame::new(
+            0,  // PC starts at 0 in function's bytecode
+            new_frame_base,
+            function.param_count,
+            function.register_count,
+            function_name.to_string(),
+            function.source_file.clone(),
+            Arc::new(function.bytecode.clone()),
+            self.program.strings.clone(),
+            self.program.functions.clone(),
+            self.program.classes.clone(),
+            None,  // No return register for top-level spawned function
+        );
+
+        self.push_frame(new_frame);
+
+        // Set up arguments in the callee's frame (R1, R2, etc.)
+        for (i, arg) in args.into_iter().enumerate() {
+            self.set_reg((i + 1) as u8, arg);
+        }
+
+        Ok(())
+    }
+
     /// Set a local variable by name
     pub fn set_local(&mut self, name: &str, value: Value) {
         self.context.locals.insert(name.to_string(), value);
@@ -1192,15 +1335,23 @@ impl VM {
 
                 let mut has_local_handler = false;
                 if let Some(handler) = self.context.exception_handlers.last() {
-                    if handler.call_stack_depth == self.context.call_stack.len() {
+                    // Check if the exception was thrown within the try block's scope
+                    // The call stack depth should be >= the handler's depth (same or deeper)
+                    if handler.call_stack_depth <= self.context.call_stack.len() {
                         has_local_handler = true;
                     }
                 }
 
                 if has_local_handler {
                     let handler = self.context.exception_handlers.pop().unwrap();
+                    // Unwind the call stack to the handler's level
+                    while self.context.call_stack.len() > handler.call_stack_depth {
+                        self.pop_frame();
+                    }
                     self.set_pc(handler.catch_pc);
-                    self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                    // Store the exception message (string) in the catch register, not the wrapped exception
+                    let exception_message = exception.message;
+                    self.set_reg(handler.catch_register as u8, Value::String(exception_message));
                     return Ok(RunResult::InProgress);
                 } else {
                     return Err(Value::Exception(exception));
@@ -1506,6 +1657,8 @@ impl VM {
         table[Opcode::TryStart as usize] = VM::op_try_start;
         table[Opcode::TryEnd as usize] = VM::op_try_end;
         table[Opcode::Throw as usize] = VM::op_throw;
+        table[Opcode::Yield as usize] = VM::op_yield;
+        table[Opcode::Spawn as usize] = VM::op_spawn;
         table[Opcode::Breakpoint as usize] = VM::op_breakpoint;
         table[Opcode::Halt as usize] = VM::op_halt;
 
@@ -1523,12 +1676,12 @@ impl VM {
         self.set_pc(self.pc() + 1);
         let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let idx = self.program.bytecode[self.pc()] as usize;
+        let idx = ((self.program.bytecode[self.pc() + 1] as usize) << 8) | (self.program.bytecode[self.pc()] as usize);
+        self.set_pc(self.pc() + 2);
         let s = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
         self.set_reg(rd, Value::String(s));
-        self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
     }
 
@@ -1784,7 +1937,8 @@ impl VM {
                 // Call native_create if available
                 if let Some(native_create) = class.native_create {
                     let mut args = vec![instance.clone()];
-                    let _ = native_create(&mut args);
+                    let ctx = NativeContext::new(&self);
+                    let _ = native_create(&ctx, &mut args);
                 }
 
                 // Check for native constructor method
@@ -1793,7 +1947,8 @@ impl VM {
                     let method_name = &func_name[paren_pos + 1..]; // "constructor()"
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
-                        let _ = native_ctor(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let _ = native_ctor(&ctx, &mut args);
                         // Don't overwrite rd - it already has the instance
                         return Ok(ExecutionResult::Continue);
                     }
@@ -1822,10 +1977,11 @@ impl VM {
                 for i in 0..arg_count {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
+                let ctx = NativeContext::new(&self);
                 let result = match func_type {
-                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
-                    crate::linker::NativeFnType::Fallback(f) => f(&func_name, &mut args),
+                    crate::linker::NativeFnType::Fallback(f) => f(&ctx, &func_name, &mut args),
                 };
                 match result {
                     NativeResult::Ready(val) => {
@@ -1834,6 +1990,11 @@ impl VM {
                     }
                     NativeResult::Pending => {
                         self.context.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                    NativeResult::PendingWithWaitId(wait_id) => {
+                        self.context.pending_native_result = Some(rd);
+                        self.context.pending_wait_id = Some(wait_id);
                         return Ok(ExecutionResult::Suspended);
                     }
                 }
@@ -1939,7 +2100,8 @@ impl VM {
                         for i in 0..arg_count {
                             args.push(self.get_reg(arg_start + i).clone());
                         }
-                        let result = native_method(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let result = native_method(&ctx, &mut args);
                         if let NativeResult::Ready(val) = result {
                             self.set_reg(rd, val);
                         }
@@ -2056,13 +2218,15 @@ impl VM {
                     // Call native_create if available
                     if let Some(native_create) = class.native_create {
                         let mut args = vec![instance.clone()];
-                        let _ = native_create(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let _ = native_create(&ctx, &mut args);
                     }
 
                     // Call the native constructor method if available
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
-                        let _ = native_ctor(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let _ = native_ctor(&ctx, &mut args);
                         // Don't overwrite rd - it already has the instance
                     }
                     self.set_pc(self.pc() + 1);
@@ -2076,7 +2240,8 @@ impl VM {
                     for i in 1..arg_count {
                         args.push(self.get_reg(arg_start + i).clone());
                     }
-                    let result = native_method(&mut args);
+                    let ctx = NativeContext::new(&self);
+                    let result = native_method(&ctx, &mut args);
                     match result {
                         NativeResult::Ready(val) => {
                             self.set_reg(rd, val);
@@ -2085,6 +2250,12 @@ impl VM {
                         }
                         NativeResult::Pending => {
                             self.context.pending_native_result = Some(rd);
+                            self.set_pc(self.pc() + 1);
+                            return Ok(ExecutionResult::Suspended);
+                        }
+                        NativeResult::PendingWithWaitId(wait_id) => {
+                            self.context.pending_native_result = Some(rd);
+                            self.context.pending_wait_id = Some(wait_id);
                             self.set_pc(self.pc() + 1);
                             return Ok(ExecutionResult::Suspended);
                         }
@@ -2098,23 +2269,26 @@ impl VM {
             args.push(self.get_reg(arg_start + i).clone());
         }
 
+        // Create context for native function
+        let ctx = NativeContext::new(&self);
+
         let result = match self.program.native_registry.get_index(&name)
             .or_else(|| self.program.native_registry.get_index_by_prefix(&name))
             .and_then(|idx| self.program.native_registry.get_by_index(idx)) {
             Some(func_type) => {
                 match func_type {
-                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
-                    crate::linker::NativeFnType::Fallback(f) => f(&name, &mut args),
+                    crate::linker::NativeFnType::Fallback(f) => f(&ctx, &name, &mut args),
                 }
             }
             None => {
                 match self.program.fallback_native.clone() {
                     Some(func_type) => {
                         match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                             crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
-                            crate::linker::NativeFnType::Fallback(f) => f(&name, &mut args),
+                            crate::linker::NativeFnType::Fallback(f) => f(&ctx, &name, &mut args),
                         }
                     }
                     None => {
@@ -2130,7 +2304,14 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
             NativeResult::Pending => {
+                self.set_pc(self.pc() + 1);  // Advance past arg_count before suspending
                 self.context.pending_native_result = Some(rd);
+                return Ok(ExecutionResult::Suspended);
+            }
+            NativeResult::PendingWithWaitId(wait_id) => {
+                self.set_pc(self.pc() + 1);  // Advance past arg_count before suspending
+                self.context.pending_native_result = Some(rd);
+                self.context.pending_wait_id = Some(wait_id);
                 return Ok(ExecutionResult::Suspended);
             }
         }
@@ -2157,16 +2338,19 @@ impl VM {
             args.push(self.get_reg(arg_start + i).clone());
         }
 
+        // Create context for native function
+        let ctx = NativeContext::new(&self);
+
         let result = match self.program.native_registry.get_by_index(func_index) {
             Some(func_type) => {
                 match func_type {
-                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
                     crate::linker::NativeFnType::Fallback(f) => {
                         // For indexed calls, try to get the function name from the registry
                         let name = self.program.native_registry.get_name_by_index(func_index)
                             .unwrap_or_else(|| format!("unknown@{}", func_index));
-                        f(&name, &mut args)
+                        f(&ctx, &name, &mut args)
                     },
                 }
             }
@@ -2174,13 +2358,13 @@ impl VM {
                 match self.program.fallback_native.clone() {
                     Some(func_type) => {
                         match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                             crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
                             crate::linker::NativeFnType::Fallback(f) => {
                                 // For indexed calls, try to get the function name from the registry
                                 let name = self.program.native_registry.get_name_by_index(func_index)
                                     .unwrap_or_else(|| format!("unknown@{}", func_index));
-                                f(&name, &mut args)
+                                f(&ctx, &name, &mut args)
                             },
                         }
                     }
@@ -2199,6 +2383,12 @@ impl VM {
             NativeResult::Pending => {
                 self.set_pc(self.pc() + 1);
                 self.context.pending_native_result = Some(rd);
+                return Ok(ExecutionResult::Suspended);
+            }
+            NativeResult::PendingWithWaitId(wait_id) => {
+                self.set_pc(self.pc() + 1);
+                self.context.pending_native_result = Some(rd);
+                self.context.pending_wait_id = Some(wait_id);
                 return Ok(ExecutionResult::Suspended);
             }
         }
@@ -2398,7 +2588,8 @@ impl VM {
         if let Some(class) = self.program.classes.get(&class_name).cloned() {
             if let Some(native_method) = class.native_methods.get(&name) {
                 let mut method_args = args.clone();
-                let result = native_method(&mut method_args);
+                let ctx = NativeContext::new(&self);
+                let result = native_method(&ctx, &mut method_args);
                 match result {
                     NativeResult::Ready(val) => {
                         if name == "constructor" {
@@ -2411,6 +2602,12 @@ impl VM {
                     NativeResult::Pending => {
                         self.set_pc(self.pc() + 1);
                         self.context.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                    NativeResult::PendingWithWaitId(wait_id) => {
+                        self.set_pc(self.pc() + 1);
+                        self.context.pending_native_result = Some(rd);
+                        self.context.pending_wait_id = Some(wait_id);
                         return Ok(ExecutionResult::Suspended);
                     }
                 }
@@ -3380,6 +3577,68 @@ impl VM {
         self.set_pc(self.pc() + 1);
         let rs = self.program.bytecode[self.pc()] as u8;
         Err(self.get_reg(rs).clone())
+    }
+
+    #[inline]
+    fn op_yield(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        Ok(ExecutionResult::Continue)
+    }
+
+    #[inline]
+    fn op_spawn(&mut self) -> Result<ExecutionResult, Value> {
+        self.set_pc(self.pc() + 1);
+        let func_idx_lo = self.program.bytecode[self.pc()] as u16;
+        self.set_pc(self.pc() + 1);
+        let func_idx_hi = self.program.bytecode[self.pc()] as u16;
+        self.set_pc(self.pc() + 1);
+        let func_index = (func_idx_hi << 8) | func_idx_lo;
+        let arg_start = self.program.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+        let arg_count = self.program.bytecode[self.pc()] as u8;
+        self.set_pc(self.pc() + 1);
+
+        // Get the function name from the string table
+        let func_name = self.program.strings.get(func_index as usize)
+            .ok_or_else(|| Value::String(format!("Invalid function index: {}", func_index)))?
+            .clone();
+
+        // Collect arguments
+        let mut args = Vec::new();
+        for i in 0..arg_count {
+            args.push(self.get_reg(arg_start + i).clone());
+        }
+
+        // Check if we have green thread context
+        let spawned_vm = if let Some(ctx) = &self.program.green_thread_ctx {
+            let mut vm = VM::new();
+            vm.program.native_registry = ctx.native_registry.clone();
+            // Share the data structures via Arc (they're immutable)
+            vm.program.strings = self.program.strings.clone();
+            vm.program.classes = self.program.classes.clone();
+            vm.program.functions = self.program.functions.clone();
+            vm.program.vtables = ctx.bytecode.vtables.clone();
+            
+            // Clear any existing call stack
+            vm.context.call_stack.clear();
+
+            if vm.call_function(&func_name, args).is_ok() {
+                Some(vm)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Store the spawned VM in the context's pending_spawns
+        if let Some(vm) = spawned_vm {
+            if let Some(ctx) = &self.program.green_thread_ctx {
+                ctx.pending_spawns.borrow_mut().push(vm);
+            }
+        }
+
+        Ok(ExecutionResult::Continue)
     }
 
     #[inline]
