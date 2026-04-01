@@ -2353,7 +2353,7 @@ impl Parser {
                 if self.check(&Token::RParen) {
                     break;
                 }
-                
+
                 // Check for named argument: name: value
                 let arg = if self.peek_ahead(1) == Some(&Token::Colon) {
                     let span = self.current_span();
@@ -2367,10 +2367,16 @@ impl Parser {
                 } else {
                     CallArg::Positional(self.parse_expression()?)
                 };
-                
+
                 args.push(arg);
 
+                // Allow trailing comma
                 if !self.match_token(&Token::Comma) {
+                    break;
+                }
+                
+                // Check for closing paren (trailing comma case)
+                if self.check(&Token::RParen) {
                     break;
                 }
             }
