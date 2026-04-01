@@ -191,13 +191,20 @@ pub struct LambdaParam {
     pub type_name: Option<String>,
 }
 
+/// Represents a function call argument, either positional or named
+#[derive(Debug, Clone)]
+pub enum CallArg {
+    Positional(Expr),
+    Named { name: String, value: Expr, span: Span },
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
     Literal(Literal),
     Variable { name: String, span: Span },
     Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr>, span: Span },
     Unary { op: UnaryOp, expr: Box<Expr>, span: Span },
-    Call { callee: Box<Expr>, args: Vec<Expr>, span: Span },
+    Call { callee: Box<Expr>, args: Vec<CallArg>, span: Span },
     Get { object: Box<Expr>, name: String, span: Span },
     Set { object: Box<Expr>, name: String, value: Box<Expr>, span: Span },
     Interpolated { parts: Vec<InterpPart>, span: Span },
@@ -347,6 +354,10 @@ impl Parser {
 
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+    }
+
+    fn peek_ahead(&self, n: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + n)
     }
 
     fn advance(&mut self) -> Token {
@@ -2332,7 +2343,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_arguments(&mut self) -> Result<Vec<Expr>, String> {
+    fn parse_arguments(&mut self) -> Result<Vec<CallArg>, String> {
         let mut args = Vec::new();
         self.skip_newlines();
 
@@ -2342,7 +2353,22 @@ impl Parser {
                 if self.check(&Token::RParen) {
                     break;
                 }
-                args.push(self.parse_expression()?);
+                
+                // Check for named argument: name: value
+                let arg = if self.peek_ahead(1) == Some(&Token::Colon) {
+                    let span = self.current_span();
+                    let name = match self.advance() {
+                        Token::Identifier(n) => n,
+                        t => return self.error_generic(&format!("Expected parameter name in named argument, got {:?}", t)),
+                    };
+                    self.match_token(&Token::Colon);
+                    let value = self.parse_expression()?;
+                    CallArg::Named { name, value, span }
+                } else {
+                    CallArg::Positional(self.parse_expression()?)
+                };
+                
+                args.push(arg);
 
                 if !self.match_token(&Token::Comma) {
                     break;
@@ -2713,7 +2739,16 @@ impl Parser {
             Expr::Call { callee, args, span: _ } => {
                 Expr::Call {
                     callee: Box::new(Self::adjust_expr_span(*callee, line, column_offset)),
-                    args: args.into_iter().map(|arg| Self::adjust_expr_span(arg, line, column_offset)).collect(),
+                    args: args.into_iter().map(|arg| {
+                        match arg {
+                            CallArg::Positional(expr) => CallArg::Positional(Self::adjust_expr_span(expr, line, column_offset)),
+                            CallArg::Named { name, value, span: _ } => CallArg::Named {
+                                name,
+                                value: Self::adjust_expr_span(value, line, column_offset),
+                                span: Span { line, column: column_offset },
+                            }
+                        }
+                    }).collect(),
                     span: Span { line, column: column_offset },
                 }
             }

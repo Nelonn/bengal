@@ -3,7 +3,7 @@
 //! This module converts Bengal AST to HLIR (High-Level IR).
 //! Supports ALL Bengal language features.
 
-use crate::parser::{self, Expr, Stmt, BinaryOp, UnaryOp, Literal, CastType, InterpPart};
+use crate::parser::{self, Expr, Stmt, BinaryOp, UnaryOp, Literal, CastType, InterpPart, CallArg};
 use crate::hlir::{HlirBuilder, HlirModule, HlirType, HlirValue, HlirBinOp, HlirUnaryOp, HlirCastKind, HlirClass};
 use crate::types::{self, Type};
 
@@ -839,14 +839,22 @@ impl AstToHlirConverter {
                 if let Expr::Call { callee, args, .. } = expr {
                     // Extract function name from the callee
                     if let Expr::Variable { name, .. } = callee.as_ref() {
+                        // Helper to extract expression from CallArg
+                        fn get_expr(arg: &CallArg) -> &Expr {
+                            match arg {
+                                CallArg::Positional(expr) => expr,
+                                CallArg::Named { value, .. } => value,
+                            }
+                        }
+                        
                         // Build arguments
                         let spawn_args: Vec<HlirValue> = args.iter()
-                            .map(|arg| self.convert_expr(arg))
+                            .map(|arg| self.convert_expr(get_expr(arg)))
                             .collect();
 
                         // Get argument types
                         let arg_types: Vec<HlirType> = args.iter()
-                            .map(|arg| self.infer_expr_type(arg))
+                            .map(|arg| self.infer_expr_type(get_expr(arg)))
                             .collect();
 
                         // Emit SPAWN instruction with function name
@@ -1064,8 +1072,17 @@ impl AstToHlirConverter {
                     Expr::Get { object: _, name, .. } => format!("Get(method={})", name),
                     _ => "Other".to_string(),
                 };
-                let mut func_args: Vec<HlirValue> = args.iter()
-                    .map(|a| self.convert_expr(a))
+                
+                // Helper to extract expression from CallArg
+                fn get_expr(arg: &CallArg) -> &Expr {
+                    match arg {
+                        CallArg::Positional(expr) => expr,
+                        CallArg::Named { value, .. } => value,
+                    }
+                }
+                
+                let func_args: Vec<HlirValue> = args.iter()
+                    .map(|a| self.convert_expr(get_expr(a)))
                     .collect();
 
                 if let Expr::Variable { name, .. } = callee.as_ref() {
@@ -1075,7 +1092,7 @@ impl AstToHlirConverter {
                     let func_name = if class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
                         // Mangle constructor name with parameter types using the central mangle function
                         let arg_types: Vec<Type> = args.iter().map(|a| {
-                            let ty = self.infer_expr_type(a);
+                            let ty = self.infer_expr_type(get_expr(a));
                             // Convert HlirType to Type for mangling
                             match ty {
                                 HlirType::I8 => Type::Int8,
@@ -1095,7 +1112,7 @@ impl AstToHlirConverter {
                     };
                     let func = HlirValue::Function(func_name);
                     let return_ty = self.infer_expr_type(expr);
-                    
+
                     // Check if this is a native class constructor
                     let is_native_class = self.native_classes.get(name).copied().unwrap_or(false);
                     if is_native_class {
@@ -1137,7 +1154,7 @@ impl AstToHlirConverter {
 
                     // Build argument types for mangling (only actual method args, not self)
                     let arg_types: Vec<Type> = args.iter().map(|a| {
-                        let ty = self.infer_expr_type(a);
+                        let ty = self.infer_expr_type(get_expr(a));
                         match ty {
                             HlirType::I8 => Type::Int8,
                             HlirType::I32 => Type::Int,
@@ -1154,7 +1171,7 @@ impl AstToHlirConverter {
                     let method_name = types::mangle(None, Some(&class_name), name, &arg_types);
                     let func = HlirValue::Function(method_name);
                     let return_ty = self.infer_expr_type(expr);
-                    
+
                     // Check if this is a native class method
                     let is_native_class = self.native_classes.get(&class_name).copied().unwrap_or(false);
                     if is_native_class {
@@ -1492,7 +1509,15 @@ impl AstToHlirConverter {
                 }
             }
             Expr::Call { callee, args, .. } => {
-                let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(a)).collect();
+                // Helper to extract expression from CallArg
+                fn get_expr(arg: &CallArg) -> &Expr {
+                    match arg {
+                        CallArg::Positional(expr) => expr,
+                        CallArg::Named { value, .. } => value,
+                    }
+                }
+                
+                let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(get_expr(a))).collect();
                 if let Expr::Variable { name, .. } = callee.as_ref() {
                     let func = HlirValue::Function(name.clone());
                     let return_ty = self.infer_expr_type(expr);
@@ -1526,7 +1551,7 @@ impl AstToHlirConverter {
 
                     // Build argument types for mangling (only actual method args, not self)
                     let arg_types: Vec<Type> = args.iter().map(|a| {
-                        let ty = self.infer_expr_type(a);
+                        let ty = self.infer_expr_type(get_expr(a));
                         match ty {
                             HlirType::I8 => Type::Int8,
                             HlirType::I32 => Type::Int,
@@ -1709,7 +1734,15 @@ mod tests {
                 }
             }
             Expr::Call { callee, args, .. } => {
-                let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(a)).collect();
+                // Helper to extract expression from CallArg
+                fn get_expr(arg: &CallArg) -> &Expr {
+                    match arg {
+                        CallArg::Positional(expr) => expr,
+                        CallArg::Named { value, .. } => value,
+                    }
+                }
+                
+                let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(get_expr(a))).collect();
                 if let Expr::Variable { name, .. } = callee.as_ref() {
                     let func = HlirValue::Function(name.clone());
                     let return_ty = self.infer_expr_type(expr);
@@ -1743,7 +1776,7 @@ mod tests {
 
                     // Build argument types for mangling (only actual method args, not self)
                     let arg_types: Vec<Type> = args.iter().map(|a| {
-                        let ty = self.infer_expr_type(a);
+                        let ty = self.infer_expr_type(get_expr(a));
                         match ty {
                             HlirType::I8 => Type::Int8,
                             HlirType::I32 => Type::Int,

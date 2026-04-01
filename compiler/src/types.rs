@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::parser::{ClassDef, Method, Expr, Literal, Stmt, CastType};
+use crate::parser::{ClassDef, Method, Expr, Literal, Stmt, CastType, CallArg};
 
 fn is_numeric_type(ty: &Type) -> bool {
     ty.is_numeric()
@@ -2061,8 +2061,21 @@ impl TypeContext {
             return self.signature_matches_generic(sig, arg_types);
         }
 
-        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+        // Match arguments to parameters, skipping params with defaults when there are fewer args
+        let mut arg_idx = 0;
+        for (param_idx, param) in sig.params.iter().enumerate() {
+            // If this param has a default and we've run out of args, we're done
+            if arg_idx >= arg_types.len() {
+                if param.default {
+                    break; // Remaining params should all have defaults
+                } else {
+                    return false; // Required param without an argument
+                }
+            }
+            
+            // Check if this param's type matches the current arg
             if let Some(param_type) = &param.type_name {
+                let arg_type = &arg_types[arg_idx];
                 // Allow Unknown types to match anything
                 if param_type != &Type::Unknown && arg_type != &Type::Unknown {
                     if !arg_type.is_assignable_to(param_type) {
@@ -2071,6 +2084,8 @@ impl TypeContext {
                 }
             }
             // If param has no type, it matches anything
+            
+            arg_idx += 1;
         }
 
         true
@@ -3670,12 +3685,12 @@ impl TypeChecker {
                     // or a variable of type 'any' (which can be called dynamically)
                     let var_info_and_type = self.context.get_variable(func_name)
                         .map(|var_info| (var_info.type_name.clone(), var_info.name.clone()));
-                    
+
                     if let Some((var_type, _var_name)) = var_info_and_type {
                         if let Type::Function(param_types, return_type) = &var_type {
                             // This is a variable of function type - check the call
                             let arg_types: Vec<Type> = args.iter()
-                                .map(|arg| self.infer_expr(arg))
+                                .map(|arg| self.infer_call_arg(arg))
                                 .collect();
 
                             // Check argument count
@@ -3701,7 +3716,7 @@ impl TypeChecker {
                             // Variable of type 'any' can be called dynamically (no type checking)
                             // Infer argument types but don't check them
                             for arg in args {
-                                self.infer_expr(arg);
+                                self.infer_call_arg(arg);
                             }
                             return Type::Any;
                         }
@@ -3714,7 +3729,7 @@ impl TypeChecker {
                         // This is a generic function call with explicit type arguments
                         // First, resolve the base function
                         let arg_types: Vec<Type> = args.iter()
-                            .map(|arg| self.infer_expr(arg))
+                            .map(|arg| self.infer_call_arg(arg))
                             .collect();
 
                         let func_sig_opt = self.context.resolve_function_call(base_func_name, &arg_types);
@@ -3776,7 +3791,7 @@ impl TypeChecker {
                     // Regular function call - use overload resolution
                     // First, infer argument types for overload resolution
                     let arg_types: Vec<Type> = args.iter()
-                        .map(|arg| self.infer_expr(arg))
+                        .map(|arg| self.infer_call_arg(arg))
                         .collect();
 
                     // Use resolve_function_call for proper overload resolution
@@ -3967,7 +3982,7 @@ impl TypeChecker {
                             if let Some(_nested_class_info) = self.context.get_class(&nested_class_name) {
                                 // This is a nested class instantiation
                                 let arg_types: Vec<Type> = args.iter()
-                                    .map(|arg| self.infer_expr(arg))
+                                    .map(|arg| self.infer_call_arg(arg))
                                     .collect();
                                 let ctor_sig = self.context.resolve_method_call(&nested_class_name, "constructor", &arg_types);
                                 if let Some(sig) = ctor_sig.cloned() {
@@ -3993,7 +4008,7 @@ impl TypeChecker {
                     if let Some(class_name) = effective_class {
                         // This is a method call on a class instance or built-in type
                         let arg_types: Vec<Type> = args.iter()
-                            .map(|arg| self.infer_expr(arg))
+                            .map(|arg| self.infer_call_arg(arg))
                             .collect();
                         let method_sig = self.context.resolve_method_call(&class_name, name, &arg_types);
 
@@ -4032,14 +4047,14 @@ impl TypeChecker {
                         let func_sig = self.context.resolve_qualified_function(module_name, name);
                         if let Some(sig) = func_sig.cloned() {
                             let _arg_types: Vec<Type> = args.iter()
-                                .map(|arg| self.infer_expr(arg))
+                                .map(|arg| self.infer_call_arg(arg))
                                 .collect();
                             self.check_function_call(&sig, args, &sig.name, method_span.line, method_span.column);
                             return sig.return_type.clone().unwrap_or(Type::Unknown);
                         } else if let Some(qualified_class_name) = self.context.resolve_qualified_class(module_name, name) {
                             // It's a qualified class instantiation
                             let arg_types: Vec<Type> = args.iter()
-                                .map(|arg| self.infer_expr(arg))
+                                .map(|arg| self.infer_call_arg(arg))
                                 .collect();
                             let ctor_sig = self.context.resolve_method_call(&qualified_class_name, "constructor", &arg_types);
                             if let Some(sig) = ctor_sig.cloned() {
@@ -4748,7 +4763,42 @@ impl TypeChecker {
         }
     }
 
-    fn check_function_call(&mut self, func_sig: &FunctionSignature, args: &[Expr], func_name: &str, span_line: usize, span_column: usize) {
+    /// Helper to extract expression from CallArg
+    fn get_expr_from_call_arg(arg: &CallArg) -> &Expr {
+        match arg {
+            CallArg::Positional(expr) => expr,
+            CallArg::Named { value, .. } => value,
+        }
+    }
+
+    /// Helper to infer type from CallArg
+    fn infer_call_arg(&mut self, arg: &CallArg) -> Type {
+        self.infer_expr(Self::get_expr_from_call_arg(arg))
+    }
+
+    fn check_function_call(&mut self, func_sig: &FunctionSignature, args: &[CallArg], func_name: &str, span_line: usize, span_column: usize) {
+        // Check for mixed positional and named arguments
+        let mut seen_named = false;
+        for arg in args {
+            match arg {
+                CallArg::Positional(_) => {
+                    if seen_named {
+                        self.context.add_error_with_location(
+                            "Positional arguments cannot come after named arguments".to_string(),
+                            span_line,
+                            span_column,
+                            None,
+                            None,
+                        );
+                        return;
+                    }
+                }
+                CallArg::Named { .. } => {
+                    seen_named = true;
+                }
+            }
+        }
+
         // Check argument count - allow fewer args if remaining params have defaults
         let min_args = func_sig.params.iter().position(|p| p.default).unwrap_or(func_sig.params.len());
         if args.len() > func_sig.params.len() {
@@ -4782,23 +4832,75 @@ impl TypeChecker {
             return;
         }
 
-        // Check argument types
-        for (i, (arg, param)) in args.iter().zip(func_sig.params.iter()).enumerate() {
-            let arg_type = self.infer_expr_with_expected_type(arg, &param.type_name);
+        // Build a map of named arguments for quick lookup
+        use std::collections::HashMap;
+        let mut named_args_map: HashMap<&str, &CallArg> = HashMap::new();
+        let mut positional_args: Vec<&CallArg> = Vec::new();
+        
+        for arg in args {
+            match arg {
+                CallArg::Positional(_) => {
+                    positional_args.push(arg);
+                }
+                CallArg::Named { name, .. } => {
+                    named_args_map.insert(name.as_str(), arg);
+                }
+            }
+        }
 
-            if let Some(expected_type) = &param.type_name {
-                if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
-                    let (line, column) = Self::get_expr_span(arg);
+        // Check argument types - handle both positional and named arguments
+        let mut positional_idx = 0;
+        for param in func_sig.params.iter() {
+            // Check if this parameter has a named argument
+            let has_named = named_args_map.contains_key(param.name.as_str());
+            
+            // Try to find a matching argument - first check positional, then named
+            let arg_opt = if has_named {
+                // This parameter has a named argument, use it
+                named_args_map.get(param.name.as_str()).copied()
+            } else if positional_idx < positional_args.len() {
+                // Use the next positional argument
+                let arg = positional_args.get(positional_idx).copied();
+                positional_idx += 1;
+                arg
+            } else {
+                // No argument provided, parameter must have a default
+                None
+            };
+
+            if let Some(arg) = arg_opt {
+                let arg_type = self.infer_call_arg(arg);
+
+                if let Some(expected_type) = &param.type_name {
+                    if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
+                        let (line, column) = Self::get_call_arg_span(arg);
+                        self.context.add_error_with_location(
+                            format!(
+                                "Argument '{}' of function '{}' has wrong type: expected {}, got {}",
+                                param.name,
+                                func_name,
+                                expected_type.to_str(),
+                                arg_type.to_str()
+                            ),
+                            line,
+                            column,
+                            None,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Check for unknown named arguments
+        for arg in args {
+            if let CallArg::Named { name, span, .. } = arg {
+                let found = func_sig.params.iter().any(|p| p.name == *name);
+                if !found {
                     self.context.add_error_with_location(
-                        format!(
-                            "Argument {} of function '{}' has wrong type: expected {}, got {}",
-                            i + 1,
-                            func_name,
-                            expected_type.to_str(),
-                            arg_type.to_str()
-                        ),
-                        line,
-                        column,
+                        format!("Unknown parameter '{}' in function call to '{}'", name, func_name),
+                        span.line,
+                        span.column,
                         None,
                         None,
                     );
@@ -4807,7 +4909,37 @@ impl TypeChecker {
         }
     }
 
-    fn check_method_call(&mut self, method_sig: &MethodSignature, args: &[Expr], method_name: &str, class_name: &str, span_line: usize, span_column: usize) {
+    /// Helper to get span from CallArg
+    fn get_call_arg_span(arg: &CallArg) -> (usize, usize) {
+        match arg {
+            CallArg::Positional(expr) => Self::get_expr_span(expr),
+            CallArg::Named { span, .. } => (span.line, span.column),
+        }
+    }
+
+    fn check_method_call(&mut self, method_sig: &MethodSignature, args: &[CallArg], method_name: &str, class_name: &str, span_line: usize, span_column: usize) {
+        // Check for mixed positional and named arguments
+        let mut seen_named = false;
+        for arg in args {
+            match arg {
+                CallArg::Positional(_) => {
+                    if seen_named {
+                        self.context.add_error_with_location(
+                            "Positional arguments cannot come after named arguments".to_string(),
+                            span_line,
+                            span_column,
+                            None,
+                            None,
+                        );
+                        return;
+                    }
+                }
+                CallArg::Named { .. } => {
+                    seen_named = true;
+                }
+            }
+        }
+
         // Check argument count - allow fewer args if remaining params have defaults
         let min_args = method_sig.params.iter().position(|p| p.default).unwrap_or(method_sig.params.len());
         if args.len() > method_sig.params.len() {
@@ -4843,23 +4975,75 @@ impl TypeChecker {
             return;
         }
 
-        // Check argument types
-        for (i, (arg, param)) in args.iter().zip(method_sig.params.iter()).enumerate() {
-            let arg_type = self.infer_expr_with_expected_type(arg, &param.type_name);
+        // Build a map of named arguments for quick lookup
+        use std::collections::HashMap;
+        let mut named_args_map: HashMap<&str, &CallArg> = HashMap::new();
+        let mut positional_args: Vec<&CallArg> = Vec::new();
+        
+        for arg in args {
+            match arg {
+                CallArg::Positional(_) => {
+                    positional_args.push(arg);
+                }
+                CallArg::Named { name, .. } => {
+                    named_args_map.insert(name.as_str(), arg);
+                }
+            }
+        }
 
-            if let Some(expected_type) = &param.type_name {
-                if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
-                    let (line, column) = Self::get_expr_span(arg);
+        // Check argument types - handle both positional and named arguments
+        let mut positional_idx = 0;
+        for param in method_sig.params.iter() {
+            // Check if this parameter has a named argument
+            let has_named = named_args_map.contains_key(param.name.as_str());
+            
+            // Try to find a matching argument - first check positional, then named
+            let arg_opt = if has_named {
+                // This parameter has a named argument, use it
+                named_args_map.get(param.name.as_str()).copied()
+            } else if positional_idx < positional_args.len() {
+                // Use the next positional argument
+                let arg = positional_args.get(positional_idx).copied();
+                positional_idx += 1;
+                arg
+            } else {
+                // No argument provided, parameter must have a default
+                None
+            };
+
+            if let Some(arg) = arg_opt {
+                let arg_type = self.infer_call_arg(arg);
+
+                if let Some(expected_type) = &param.type_name {
+                    if !arg_type.is_assignable_to(expected_type) && arg_type != Type::Unknown {
+                        let (line, column) = Self::get_call_arg_span(arg);
+                        self.context.add_error_with_location(
+                            format!(
+                                "Argument '{}' of method '{}' has wrong type: expected {}, got {}",
+                                param.name,
+                                method_name,
+                                expected_type.to_str(),
+                                arg_type.to_str()
+                            ),
+                            line,
+                            column,
+                            None,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Check for unknown named arguments
+        for arg in args {
+            if let CallArg::Named { name, span, .. } = arg {
+                let found = method_sig.params.iter().any(|p| p.name == *name);
+                if !found {
                     self.context.add_error_with_location(
-                        format!(
-                            "Argument {} of method '{}' has wrong type: expected {}, got {}",
-                            i + 1,
-                            method_name,
-                            expected_type.to_str(),
-                            arg_type.to_str()
-                        ),
-                        line,
-                        column,
+                        format!("Unknown parameter '{}' in method call to '{}'", name, method_name),
+                        span.line,
+                        span.column,
                         None,
                         None,
                     );

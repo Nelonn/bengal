@@ -4,7 +4,7 @@
 //! It supports imports, module resolution, and bytecode merging.
 
 use crate::lexer::Lexer;
-use crate::parser::{Parser, Stmt, ImportKind, Span, ParseError};
+use crate::parser::{Parser, Stmt, ImportKind, Span, ParseError, CallArg};
 use crate::hlir::HlirModule;
 use crate::ast_to_hlir_full::ast_to_hlir;
 use crate::hlir_to_sparkler::{compile_hlir_to_sparkler, compile_hlir_to_sparkler_with_natives, CompiledBytecode};
@@ -585,7 +585,14 @@ impl HlirCompiler {
                 }
 
                 for arg in args {
-                    Self::rewrite_expr_calls(arg, import_map);
+                    // Helper to get mutable reference to expression from CallArg
+                    fn get_expr_mut(arg: &mut CallArg) -> &mut Expr {
+                        match arg {
+                            CallArg::Positional(expr) => expr,
+                            CallArg::Named { value, .. } => value,
+                        }
+                    }
+                    Self::rewrite_expr_calls(get_expr_mut(arg), import_map);
                 }
             }
             Expr::Binary { left, right, .. } => {
