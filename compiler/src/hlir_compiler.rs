@@ -746,6 +746,81 @@ impl HlirCompiler {
                 }
             }
 
+            // Add imports to the type context so resolve_function_call can find imported functions
+            for stmt in &statements {
+                if let Stmt::Import { path, kind, .. } = stmt {
+                    let module_name = path.join(".");
+                    
+                    // Create import entry based on the import kind
+                    let (alias, import_module_path) = match kind {
+                        ImportKind::Module => {
+                            let alias = path.last().cloned();
+                            (alias, module_name.clone())
+                        }
+                        ImportKind::Simple => {
+                            let alias = path.last().cloned();
+                            (alias, module_name.clone())
+                        }
+                        ImportKind::Aliased(ref alias_str) => {
+                            (Some(alias_str.clone()), module_name.clone())
+                        }
+                        ImportKind::Member => {
+                            let import_path = if path.len() > 1 {
+                                path[..path.len()-1].join(".")
+                            } else {
+                                module_name.clone()
+                            };
+                            let alias = path.last().cloned();
+                            (alias, import_path)
+                        }
+                        ImportKind::Wildcard => {
+                            let import_path = if path.len() > 1 {
+                                path[..path.len()-1].join(".")
+                            } else {
+                                module_name.clone()
+                            };
+                            (None, import_path)
+                        }
+                    };
+
+                    // Create import entry
+                    let mut import_entry = crate::types::ImportEntry {
+                        module_path: import_module_path.clone(),
+                        alias,
+                        kind: kind.clone(),
+                        members: Vec::new(),
+                    };
+
+                    // For wildcard and simple imports, discover members from the loaded module
+                    if matches!(kind, ImportKind::Wildcard | ImportKind::Simple) {
+                        if let Some(module_info) = self.loaded_modules.get(&import_module_path) {
+                            for stmt in &module_info.statements {
+                                match stmt {
+                                    Stmt::Function(func) => {
+                                        import_entry.members.push(func.name.clone());
+                                    }
+                                    Stmt::Class(class) => {
+                                        import_entry.members.push(class.name.clone());
+                                    }
+                                    Stmt::Interface(iface) => {
+                                        import_entry.members.push(iface.name.clone());
+                                    }
+                                    Stmt::Let { name, .. } => {
+                                        import_entry.members.push(name.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+
+                    ctx.imports.push(import_entry);
+                    if !ctx.import_paths.contains(&module_name) {
+                        ctx.import_paths.push(module_name);
+                    }
+                }
+            }
+
             let mut type_checker = TypeChecker::with_context(ctx);
 
             let result = type_checker.check(&statements);

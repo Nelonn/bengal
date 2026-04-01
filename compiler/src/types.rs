@@ -2046,11 +2046,16 @@ impl TypeContext {
         if arg_types.len() > sig.params.len() {
             return false; // Too many arguments
         }
-        
+
         // Check if we have enough params (including defaults) for the provided args
         let min_args = sig.params.iter().position(|p| p.default).unwrap_or(sig.params.len());
         if arg_types.len() < min_args {
             return false; // Not enough arguments (before first default)
+        }
+
+        // For generic functions, we need to infer type arguments and substitute them
+        if !sig.type_params.is_empty() {
+            return self.signature_matches_generic(sig, arg_types);
         }
 
         for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
@@ -2068,14 +2073,218 @@ impl TypeContext {
         true
     }
 
+    /// Check if a generic function signature matches the given argument types
+    /// Infers type arguments from the actual arguments and substitutes them
+    fn signature_matches_generic(&self, sig: &FunctionSignature, arg_types: &[Type]) -> bool {
+        // Build a mapping from type parameters to inferred types
+        let mut type_mappings: HashMap<String, Type> = HashMap::new();
+
+        // Infer type arguments from each argument
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                if !self.infer_type_arguments(param_type, arg_type, &sig.type_params, &mut type_mappings) {
+                    return false; // Type inference failed
+                }
+            }
+        }
+
+        // Now verify that all parameters match with the inferred types
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                // Substitute type parameters with inferred types
+                let substituted_type = self.substitute_type_params_from_map(param_type, &type_mappings);
+                
+                // Allow Unknown types to match anything
+                if substituted_type != Type::Unknown && *arg_type != Type::Unknown {
+                    if !arg_type.is_assignable_to(&substituted_type) {
+                        return false;
+                    }
+                }
+            }
+            // If param has no type, it matches anything
+        }
+
+        true
+    }
+
+    /// Infer type arguments by matching a parameter type against an argument type
+    /// Populates the type_mappings with inferred type parameters
+    fn infer_type_arguments(&self, param_type: &Type, arg_type: &Type, type_params: &[String], type_mappings: &mut HashMap<String, Type>) -> bool {
+        match (param_type, arg_type) {
+            // Type parameter - infer the type
+            (Type::TypeParameter(param_name), _) => {
+                if type_params.contains(param_name) {
+                    // Check if we already inferred a type for this parameter
+                    if let Some(existing) = type_mappings.get(param_name) {
+                        // Already inferred - must be consistent (or one is Unknown)
+                        if existing != &Type::Unknown && arg_type != &Type::Unknown && existing != arg_type {
+                            // Conflict - try to find a common supertype
+                            // For now, just check assignability both ways
+                            if !existing.is_assignable_to(arg_type) && !arg_type.is_assignable_to(existing) {
+                                return false;
+                            }
+                            // Keep the more specific type (the one that's assignable to the other)
+                            if arg_type.is_assignable_to(existing) {
+                                // existing is more general, keep it
+                            } else {
+                                type_mappings.insert(param_name.clone(), arg_type.clone());
+                            }
+                        }
+                    } else {
+                        // First inference for this type parameter
+                        type_mappings.insert(param_name.clone(), arg_type.clone());
+                    }
+                }
+                true
+            }
+            // Array types - recurse into element type
+            (Type::Array(param_inner), Type::Array(arg_inner)) => {
+                self.infer_type_arguments(param_inner, arg_inner, type_params, type_mappings)
+            }
+            (Type::Array(_), _) => false, // Mismatch
+            
+            // Optional types - recurse into inner type
+            (Type::Optional(param_inner), Type::Optional(arg_inner)) => {
+                self.infer_type_arguments(param_inner, arg_inner, type_params, type_mappings)
+            }
+            (Type::Optional(param_inner), arg_inner) => {
+                // T? can match T (non-optional)
+                self.infer_type_arguments(param_inner, arg_inner, type_params, type_mappings)
+            }
+            
+            // Generic instances - match name and recurse into type arguments
+            (Type::GenericInstance(param_name, param_args), Type::GenericInstance(arg_name, arg_args)) => {
+                if param_name != arg_name || param_args.len() != arg_args.len() {
+                    return false;
+                }
+                for (p_arg, a_arg) in param_args.iter().zip(arg_args.iter()) {
+                    if !self.infer_type_arguments(p_arg, a_arg, type_params, type_mappings) {
+                        return false;
+                    }
+                }
+                true
+            }
+            
+            // Function types - match params and return type
+            (Type::Function(param_params, param_return), Type::Function(arg_params, arg_return)) => {
+                if param_params.len() != arg_params.len() {
+                    return false;
+                }
+                for (p_p, a_p) in param_params.iter().zip(arg_params.iter()) {
+                    if !self.infer_type_arguments(p_p, a_p, type_params, type_mappings) {
+                        return false;
+                    }
+                }
+                self.infer_type_arguments(param_return, arg_return, type_params, type_mappings)
+            }
+            
+            // Same concrete types - match
+            (Type::Str, Type::Str) |
+            (Type::Int, Type::Int) |
+            (Type::Float, Type::Float) |
+            (Type::Bool, Type::Bool) |
+            (Type::Int8, Type::Int8) |
+            (Type::UInt8, Type::UInt8) |
+            (Type::Int16, Type::Int16) |
+            (Type::UInt16, Type::UInt16) |
+            (Type::Int32, Type::Int32) |
+            (Type::UInt32, Type::UInt32) |
+            (Type::Int64, Type::Int64) |
+            (Type::UInt64, Type::UInt64) |
+            (Type::Float32, Type::Float32) |
+            (Type::Float64, Type::Float64) => true,
+            
+            // Class types - must match exactly
+            (Type::Class(p_name), Type::Class(a_name)) => p_name == a_name,
+            
+            // Unknown matches anything
+            (Type::Unknown, _) | (_, Type::Unknown) => true,
+            
+            // Any matches anything
+            (Type::Any, _) | (_, Type::Any) => true,
+            
+            // Numeric type conversions (allow some flexibility)
+            (p, a) if p.is_numeric() && a.is_numeric() => true,
+            
+            // Default: not a match
+            _ => false,
+        }
+    }
+
+    /// Substitute type parameters using a map of inferred types
+    fn substitute_type_params_from_map(&self, ty: &Type, type_mappings: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::TypeParameter(param_name) => {
+                type_mappings.get(param_name).cloned().unwrap_or_else(|| ty.clone())
+            }
+            Type::Array(inner) => {
+                Type::Array(Box::new(self.substitute_type_params_from_map(inner, type_mappings)))
+            }
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.substitute_type_params_from_map(inner, type_mappings)))
+            }
+            Type::GenericInstance(name, args) => {
+                let substituted_args: Vec<Type> = args
+                    .iter()
+                    .map(|arg| self.substitute_type_params_from_map(arg, type_mappings))
+                    .collect();
+                Type::GenericInstance(name.clone(), substituted_args)
+            }
+            Type::Function(params, return_type) => {
+                let substituted_params: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.substitute_type_params_from_map(p, type_mappings))
+                    .collect();
+                let substituted_return = Box::new(self.substitute_type_params_from_map(return_type, type_mappings));
+                Type::Function(substituted_params, substituted_return)
+            }
+            _ => ty.clone(),
+        }
+    }
+
     /// Calculate a match score (lower is better) for overload resolution
     fn calculate_match_score(&self, sig: &FunctionSignature, arg_types: &[Type]) -> usize {
+        // For generic functions, we need to infer type arguments first
+        if !sig.type_params.is_empty() {
+            return self.calculate_match_score_generic(sig, arg_types);
+        }
+
         let mut score = 0;
         for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
             if let Some(param_type) = &param.type_name {
                 if param_type == arg_type {
                     score += 0; // Exact match
                 } else if arg_type.is_assignable_to(param_type) {
+                    score += 1; // Conversion needed
+                } else {
+                    score += 100; // Bad match (should have been filtered)
+                }
+            }
+        }
+        score
+    }
+
+    /// Calculate match score for generic functions
+    fn calculate_match_score_generic(&self, sig: &FunctionSignature, arg_types: &[Type]) -> usize {
+        // Build a mapping from type parameters to inferred types
+        let mut type_mappings: HashMap<String, Type> = HashMap::new();
+
+        // Infer type arguments from each argument
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                self.infer_type_arguments(param_type, arg_type, &sig.type_params, &mut type_mappings);
+            }
+        }
+
+        // Calculate score with substituted types
+        let mut score = 0;
+        for (param, arg_type) in sig.params.iter().zip(arg_types.iter()) {
+            if let Some(param_type) = &param.type_name {
+                let substituted_type = self.substitute_type_params_from_map(param_type, &type_mappings);
+                
+                if substituted_type == *arg_type {
+                    score += 0; // Exact match
+                } else if arg_type.is_assignable_to(&substituted_type) {
                     score += 1; // Conversion needed
                 } else {
                     score += 100; // Bad match (should have been filtered)
