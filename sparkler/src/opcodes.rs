@@ -101,7 +101,7 @@ impl Opcode {
     pub fn size(&self) -> usize {
         match self {
             Opcode::Nop => 1,
-            Opcode::LoadConst => 3,
+            Opcode::LoadConst => 4,
             Opcode::LoadInt => 10,
             Opcode::LoadFloat => 10,
             Opcode::LoadBool => 2,

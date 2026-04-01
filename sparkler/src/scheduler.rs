@@ -30,6 +30,8 @@ pub struct GreenThread {
     pub state: ThreadState,
     /// Data that will be used to resume the thread when unblocked
     pub resume_data: Option<Value>,
+    /// Optional identifier for what this thread is waiting on (for targeted wakeups)
+    pub wait_id: Option<String>,
 }
 
 impl GreenThread {
@@ -39,6 +41,7 @@ impl GreenThread {
             vm,
             state: ThreadState::Ready,
             resume_data: None,
+            wait_id: None,
         }
     }
 }
@@ -194,6 +197,19 @@ impl Scheduler {
             if thread.state == ThreadState::Blocked {
                 thread.state = ThreadState::Ready;
                 thread.resume_data = Some(data.clone());
+                thread.wait_id = None;
+            }
+        }
+    }
+
+    /// Wake up a specific blocked thread by wait_id
+    pub fn wake_by_wait_id(&mut self, wait_id: &str, data: Value) {
+        for thread in &mut self.threads {
+            if thread.state == ThreadState::Blocked && thread.wait_id.as_deref() == Some(wait_id) {
+                thread.state = ThreadState::Ready;
+                thread.resume_data = Some(data);
+                thread.wait_id = None;
+                return;
             }
         }
     }
@@ -303,7 +319,11 @@ impl Scheduler {
                                     // Thread suspended for async operation
                                     // Mark as blocked and move to next
                                     thread.state = ThreadState::Blocked;
-                                    
+                                    // Set wait_id if the VM has one pending
+                                    if let Some(wait_id) = thread.vm.context.pending_wait_id.take() {
+                                        thread.wait_id = Some(wait_id);
+                                    }
+
                                     if self.yield_to_next().is_none() {
                                         break;
                                     }

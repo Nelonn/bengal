@@ -714,7 +714,7 @@ fn decode_instruction(data: &[u8], pc: usize, opcode: Opcode, bytecode: &Bytecod
             let arg_count = data[pc + 4];
             let func_name = strings.get(func_idx).cloned().unwrap_or_else(|| format!("func_{}", func_idx));
             let operands = format!("func={}, args=R{}..R{}", func_name, arg_start, arg_start + arg_count - 1);
-            (format!("SPAWN"), operands, 5)
+            (format!("SPAWN"), operands, 4)
         }
 
         Opcode::Halt => ("HALT".to_string(), String::new(), 0),

@@ -427,6 +427,8 @@ pub enum NativeResult {
     Ready(Value),
     /// Function is pending, will callback with result later
     Pending,
+    /// Function is pending with a wait identifier for targeted wakeup
+    PendingWithWaitId(String),
 }
 
 impl From<Value> for NativeResult {
@@ -778,6 +780,8 @@ pub struct Context {
     pub pending_native_result: Option<u8>,
     /// Callback for pending native operation
     pub pending_native_callback: Option<Box<dyn FnOnce(Result<Value, Value>) + Send>>,
+    /// Wait identifier for targeted wakeup (used with PendingWithWaitId)
+    pub pending_wait_id: Option<String>,
 }
 
 impl Clone for Context {
@@ -789,6 +793,7 @@ impl Clone for Context {
             exception_handlers: self.exception_handlers.clone(),
             pending_native_result: self.pending_native_result,
             pending_native_callback: None, // Cannot clone the callback
+            pending_wait_id: self.pending_wait_id.clone(),
         }
     }
 }
@@ -802,6 +807,7 @@ impl Context {
             exception_handlers: Vec::new(),
             pending_native_result: None,
             pending_native_callback: None,
+            pending_wait_id: None,
         }
     }
 }
@@ -1566,12 +1572,12 @@ impl VM {
         self.set_pc(self.pc() + 1);
         let rd = self.program.bytecode[self.pc()] as u8;
         self.set_pc(self.pc() + 1);
-        let idx = self.program.bytecode[self.pc()] as usize;
+        let idx = ((self.program.bytecode[self.pc() + 1] as usize) << 8) | (self.program.bytecode[self.pc()] as usize);
+        self.set_pc(self.pc() + 2);
         let s = self.program.strings.get(idx)
             .ok_or_else(|| Value::String(format!("Invalid string index: {}", idx)))?
             .clone();
         self.set_reg(rd, Value::String(s));
-        self.set_pc(self.pc() + 1);
         Ok(ExecutionResult::Continue)
     }
 
@@ -1879,6 +1885,11 @@ impl VM {
                         self.context.pending_native_result = Some(rd);
                         return Ok(ExecutionResult::Suspended);
                     }
+                    NativeResult::PendingWithWaitId(wait_id) => {
+                        self.context.pending_native_result = Some(rd);
+                        self.context.pending_wait_id = Some(wait_id);
+                        return Ok(ExecutionResult::Suspended);
+                    }
                 }
             } else {
                 return Err(Value::String(format!("Native function not found: {}", func_name)));
@@ -2131,6 +2142,12 @@ impl VM {
                             self.set_pc(self.pc() + 1);
                             return Ok(ExecutionResult::Suspended);
                         }
+                        NativeResult::PendingWithWaitId(wait_id) => {
+                            self.context.pending_native_result = Some(rd);
+                            self.context.pending_wait_id = Some(wait_id);
+                            self.set_pc(self.pc() + 1);
+                            return Ok(ExecutionResult::Suspended);
+                        }
                     }
                 }
             }
@@ -2173,7 +2190,14 @@ impl VM {
                 self.set_pc(self.pc() + 1);
             }
             NativeResult::Pending => {
+                self.set_pc(self.pc() + 1);  // Advance past arg_count before suspending
                 self.context.pending_native_result = Some(rd);
+                return Ok(ExecutionResult::Suspended);
+            }
+            NativeResult::PendingWithWaitId(wait_id) => {
+                self.set_pc(self.pc() + 1);  // Advance past arg_count before suspending
+                self.context.pending_native_result = Some(rd);
+                self.context.pending_wait_id = Some(wait_id);
                 return Ok(ExecutionResult::Suspended);
             }
         }
@@ -2242,6 +2266,12 @@ impl VM {
             NativeResult::Pending => {
                 self.set_pc(self.pc() + 1);
                 self.context.pending_native_result = Some(rd);
+                return Ok(ExecutionResult::Suspended);
+            }
+            NativeResult::PendingWithWaitId(wait_id) => {
+                self.set_pc(self.pc() + 1);
+                self.context.pending_native_result = Some(rd);
+                self.context.pending_wait_id = Some(wait_id);
                 return Ok(ExecutionResult::Suspended);
             }
         }
@@ -2454,6 +2484,12 @@ impl VM {
                     NativeResult::Pending => {
                         self.set_pc(self.pc() + 1);
                         self.context.pending_native_result = Some(rd);
+                        return Ok(ExecutionResult::Suspended);
+                    }
+                    NativeResult::PendingWithWaitId(wait_id) => {
+                        self.set_pc(self.pc() + 1);
+                        self.context.pending_native_result = Some(rd);
+                        self.context.pending_wait_id = Some(wait_id);
                         return Ok(ExecutionResult::Suspended);
                     }
                 }
@@ -3459,21 +3495,17 @@ impl VM {
         let spawned_vm = if let Some(ctx) = &self.program.green_thread_ctx {
             let mut vm = VM::new();
             vm.program.native_registry = ctx.native_registry.clone();
-            if vm.load(
-                &ctx.bytecode.data,
-                ctx.bytecode.strings.clone(),
-                ctx.bytecode.classes.clone(),
-                ctx.bytecode.functions.clone(),
-                ctx.bytecode.vtables.clone(),
-            ).is_ok() {
-                // Clear the call stack - we don't want to execute module-level code
-                vm.context.call_stack.clear();
-                
-                if vm.call_function(&func_name, args).is_ok() {
-                    Some(vm)
-                } else {
-                    None
-                }
+            // Share the data structures via Arc (they're immutable)
+            vm.program.strings = self.program.strings.clone();
+            vm.program.classes = self.program.classes.clone();
+            vm.program.functions = self.program.functions.clone();
+            vm.program.vtables = ctx.bytecode.vtables.clone();
+            
+            // Clear any existing call stack
+            vm.context.call_stack.clear();
+
+            if vm.call_function(&func_name, args).is_ok() {
+                Some(vm)
             } else {
                 None
             }

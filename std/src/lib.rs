@@ -18,6 +18,7 @@ use sparkler::{NativeFallbackFn, NativeModule, NativeResult, Value, VM};
 pub fn register_all(vm: &mut VM) {
     NativeModule::new("std.io")
         .function("print(str)", io::native_print)
+        .function("sleep(int)", io::native_sleep)
         .register(vm);
 
     NativeModule::new("std.data")

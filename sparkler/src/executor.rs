@@ -363,14 +363,15 @@ impl Executor {
     /// Run the scheduler loop for green threads
     async fn run_scheduler_loop(
         &mut self,
-        mut callback_rx: Receiver<Result<Value, Value>>,
+        callback_rx: Receiver<Result<Value, Value>>,
         _callback_tx: Sender<Result<Value, Value>>,
         scheduler_rc: Rc<RefCell<Scheduler>>,
         _bytecode: Bytecode,
         pending_spawns: Rc<RefCell<Vec<VM>>>,
     ) -> Result<Option<Value>, String> {
         let mut last_result = None;
-        
+        let callback_rx = std::sync::Arc::new(tokio::sync::Mutex::new(callback_rx));
+
         loop {
             // Run scheduler
             let (result, has_blocked) = {
@@ -395,7 +396,7 @@ impl Executor {
             // Check if we should continue (pending spawns or blocked threads or active threads)
             let has_pending = !pending_spawns.borrow().is_empty();
             let scheduler_has_active = scheduler_rc.borrow().active_thread_count() > 0;
-            
+
             if !has_pending && !has_blocked && !scheduler_has_active {
                 return Ok(last_result);
             }
@@ -403,9 +404,12 @@ impl Executor {
             // If we have blocked threads, wait for callback
             if has_blocked {
                 debug_vm!("scheduler: Blocked threads, waiting for callback");
-                let result = std::thread::spawn(move || {
-                    callback_rx.recv().map_err(|_| "Callback channel closed".to_string())
-                }).join().unwrap()?;
+                // Use tokio to wait for callback
+                let rx = callback_rx.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let rx = rx.blocking_lock();
+                    rx.recv().map_err(|_| "Callback channel closed".to_string())
+                }).await.map_err(|e| e.to_string())??;
 
                 let result: Result<Value, Value> = match result {
                     Ok(val) => Ok(val),
@@ -415,12 +419,23 @@ impl Executor {
                 // Wake up blocked threads and continue
                 if let Ok(ref val) = result {
                     let mut scheduler = scheduler_rc.borrow_mut();
-                    scheduler.wake_all_blocked(val.clone());
+                    // Check if the result is a wait_id string (for targeted wakeup)
+                    if let Value::String(wait_id) = val {
+                        if wait_id.starts_with("sleep_") {
+                            // Targeted wakeup for sleep
+                            scheduler.wake_by_wait_id(wait_id, Value::Null);
+                        } else {
+                            // Generic wakeup
+                            scheduler.wake_all_blocked(val.clone());
+                        }
+                    } else {
+                        // Non-string result, wake all blocked threads
+                        scheduler.wake_all_blocked(val.clone());
+                    }
                 }
 
-                // Note: callback_rx is consumed, so we can't continue the loop
-                // This is a limitation - for now we just break
-                break;
+                // Continue the loop to process more threads
+                continue;
             }
             // If no blocked threads, continue the loop to run active threads
         }
