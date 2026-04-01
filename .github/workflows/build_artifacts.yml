@@ -1,10 +1,5 @@
 on:
   push:
-    branches:
-      - main
-      - feat/workflows-update
-  release:
-    types: [published]
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,7 +32,7 @@ jobs:
           sudo apt install -y pkg-config libssl-dev
 
       - name: Build Debian package
-        run: cargo deb --release --no-build
+        run: cargo deb
 
       - name: Build release binary
         run: cargo build --release

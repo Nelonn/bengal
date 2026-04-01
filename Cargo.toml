@@ -29,6 +29,7 @@ assets = [
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/bengal", dest = "/usr/bin/bengal", mode = "755" },
+    { source = "LICENSE", dest = "/usr/share/licenses/bengal/LICENSE", mode = "644" },
 ]
 
 [[bin]]
