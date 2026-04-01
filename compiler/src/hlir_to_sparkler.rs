@@ -392,6 +392,13 @@ impl HlirToSparkler {
                 temps.push(*dest);
                 temps
             }
+            HlirInstr::Return { value, .. } => {
+                if let Some(v) = value {
+                    if let HlirValue::Temp(t) = v { vec![*t] } else { vec![] }
+                } else {
+                    vec![]
+                }
+            }
             _ => vec![],
         };
 
@@ -753,18 +760,9 @@ impl HlirToSparkler {
             }
 
             HlirInstr::Load { ptr, dest, ty } => {
-                // Copy propagation: reuse the source register directly when possible
-                if let HlirValue::Temp(temp) = ptr {
-                    if let Some(&src_reg) = self.reg_map.get(temp) {
-                        self.reg_map.insert(*dest, src_reg);
-                        self.reg_to_temps
-                            .entry(src_reg)
-                            .or_insert_with(std::collections::HashSet::new)
-                            .insert(*dest);
-                        return;
-                    }
-                }
-
+                // Load must always allocate a new register for the destination
+                // Copy propagation is not safe here because the pointer's value
+                // may change between loads (e.g., due to stores)
                 let dest_reg = self.alloc_reg_for_temp(*dest);
                 self.reg_map.insert(*dest, dest_reg);
 

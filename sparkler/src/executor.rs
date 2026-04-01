@@ -237,8 +237,14 @@ impl Executor {
         self.vm.load(&bytecode_data, strings, bytecode.classes, bytecode.functions, bytecode.vtables)?;
 
         // Take the callback receiver and keep sender alive
-        let callback_rx = self.callback_rx.take().unwrap();
-        let callback_tx = self.callback_tx.take().unwrap();
+        // Reinitialize channels if they were already taken (e.g., in REPL scenarios)
+        let (callback_rx, callback_tx) = match (self.callback_rx.take(), self.callback_tx.take()) {
+            (Some(rx), Some(tx)) => (rx, tx),
+            _ => {
+                let (tx, rx) = channel();
+                (rx, tx)
+            }
+        };
 
         // Set the callback sender in thread local storage for native functions
         // Keep a clone alive for the duration of run_to_completion
