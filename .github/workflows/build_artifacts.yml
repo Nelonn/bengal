@@ -14,7 +14,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -40,7 +40,7 @@ jobs:
         run: cargo deb
 
       - name: Upload Debian artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bengal-debian-${{ matrix.arch }}
           path: target/debian/*.deb
@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload .deb to release
         if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@v5
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: target/debian/*.deb
@@ -62,7 +62,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -91,7 +91,7 @@ jobs:
         run: cargo generate-rpm
 
       - name: Upload RPM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bengal-rpm-${{ matrix.arch }}
           path: target/generate-rpm/*.rpm
@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload .rpm to release
         if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@v5
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: target/generate-rpm/*.rpm
@@ -113,7 +113,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -149,7 +149,7 @@ jobs:
           zstd -19 bengal.pkg.tar --rm
 
       - name: Upload Arch Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bengal-archlinux-${{ matrix.arch }}
           path: bengal.pkg.tar.zst
@@ -157,7 +157,7 @@ jobs:
 
       - name: Upload .pkg.tar.zst to release
         if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@v5
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: bengal.pkg.tar.zst
@@ -169,7 +169,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -179,9 +179,9 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-alpine-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Set up Alpine Linux (Docker)
+      - name: Set up Alpine Linux (Podman)
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace \
+          podman run --rm -v ${{ github.workspace }}:/workspace -w /workspace \
             alpine:latest sh -c "
             apk add --no-cache rust cargo openssl-dev musl-dev && \
             cargo build --release && \
@@ -207,7 +207,7 @@ jobs:
           gzip -9 bengal.tar
 
       - name: Upload Alpine Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bengal-alpine-${{ matrix.arch }}
           path: bengal.tar.gz
@@ -215,7 +215,7 @@ jobs:
 
       - name: Upload .tar.gz to release
         if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@v5
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: bengal.tar.gz
@@ -227,7 +227,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -249,7 +249,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bengal-windows-${{ matrix.arch }}
           path: target/${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}/release/bengal.exe
@@ -257,7 +257,7 @@ jobs:
 
       - name: Upload .exe to release
         if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@v5
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: target/${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}/release/bengal.exe
