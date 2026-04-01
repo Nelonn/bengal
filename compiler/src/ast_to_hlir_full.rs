@@ -7,6 +7,13 @@ use crate::parser::{self, Expr, Stmt, BinaryOp, UnaryOp, Literal, CastType, Inte
 use crate::hlir::{HlirBuilder, HlirModule, HlirType, HlirValue, HlirBinOp, HlirUnaryOp, HlirCastKind, HlirClass};
 use crate::types::{self, Type};
 
+/// Stores default value expressions for function parameters
+#[derive(Clone)]
+pub struct FunctionDefaults {
+    pub param_names: Vec<String>,
+    pub default_exprs: Vec<Option<Expr>>,
+}
+
 /// AST to HLIR converter
 pub struct AstToHlirConverter {
     builder: HlirBuilder,
@@ -20,6 +27,8 @@ pub struct AstToHlirConverter {
     var_declared_type_names: std::collections::HashMap<String, String>,
     /// Map from class name to whether it's native
     native_classes: std::collections::HashMap<String, bool>,
+    /// Map from function name to its default parameter values
+    function_defaults: std::collections::HashMap<String, FunctionDefaults>,
     string_table: Vec<String>,
     module_prefix: String,
     current_line: usize,
@@ -37,9 +46,120 @@ impl AstToHlirConverter {
             var_classes: std::collections::HashMap::new(),
             var_declared_type_names: std::collections::HashMap::new(),
             native_classes: std::collections::HashMap::new(),
+            function_defaults: std::collections::HashMap::new(),
             string_table: Vec::new(),
             module_prefix: module_name.to_string(),
             current_line: 0,
+        }
+    }
+
+    /// Collect function defaults from the AST
+    pub fn collect_function_defaults(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            if let Stmt::Function(func) = stmt {
+                let default_exprs: Vec<Option<Expr>> = func.params.iter()
+                    .map(|p| p.default.clone())
+                    .collect();
+                let param_names: Vec<String> = func.params.iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                self.function_defaults.insert(func.name.clone(), FunctionDefaults {
+                    param_names,
+                    default_exprs,
+                });
+            }
+        }
+    }
+
+    /// Build complete argument list for a function call, including default values
+    /// Returns (mangled_func_name, arg_values)
+    fn build_call_args_with_defaults(
+        &mut self,
+        func_name: &str,
+        args: &[CallArg],
+    ) -> (String, Vec<HlirValue>) {
+        // Helper to extract expression from CallArg
+        fn get_expr(arg: &CallArg) -> &Expr {
+            match arg {
+                CallArg::Positional(expr) => expr,
+                CallArg::Named { value, .. } => value,
+            }
+        }
+
+        // Build a map of provided named arguments
+        use std::collections::HashMap;
+        let mut named_args: HashMap<&str, &Expr> = HashMap::new();
+        let mut positional_args: Vec<&Expr> = Vec::new();
+        
+        for arg in args {
+            match arg {
+                CallArg::Positional(expr) => positional_args.push(expr),
+                CallArg::Named { name, value, .. } => { named_args.insert(name.as_str(), value); }
+            }
+        }
+
+        // Check if we have defaults for this function
+        let defaults_clone = self.function_defaults.get(func_name).cloned();
+        
+        if let Some(defaults) = defaults_clone {
+            let mut complete_args: Vec<HlirValue> = Vec::new();
+            let mut arg_types: Vec<Type> = Vec::new();
+            let mut positional_idx = 0;
+            
+            for (param_idx, param_name) in defaults.param_names.iter().enumerate() {
+                let arg_expr_opt = if let Some(&named_expr) = named_args.get(param_name.as_str()) {
+                    Some(named_expr)
+                } else if positional_idx < positional_args.len() {
+                    let expr = positional_args[positional_idx];
+                    positional_idx += 1;
+                    Some(expr)
+                } else if let Some(Some(default_expr)) = defaults.default_exprs.get(param_idx) {
+                    Some(default_expr)
+                } else {
+                    None
+                };
+                
+                if let Some(arg_expr) = arg_expr_opt {
+                    complete_args.push(self.convert_expr(arg_expr));
+                    let ty = self.infer_expr_type(arg_expr);
+                    arg_types.push(match ty {
+                        HlirType::I8 => Type::Int8,
+                        HlirType::I32 => Type::Int,
+                        HlirType::I64 => Type::Int64,
+                        HlirType::F32 => Type::Float32,
+                        HlirType::F64 => Type::Float64,
+                        HlirType::Bool => Type::Bool,
+                        HlirType::String => Type::Str,
+                        _ => Type::Unknown,
+                    });
+                } else {
+                    // No argument and no default - shouldn't happen
+                    complete_args.push(HlirValue::IntConst(0));
+                    arg_types.push(Type::Int);
+                }
+            }
+            
+            // Mangle with ALL parameter types
+            let mangled_name = types::mangle(None, None, func_name, &arg_types);
+            (mangled_name, complete_args)
+        } else {
+            // No defaults known, just convert provided arguments
+            let arg_types: Vec<Type> = args.iter().map(|a| {
+                let ty = self.infer_expr_type(get_expr(a));
+                match ty {
+                    HlirType::I8 => Type::Int8,
+                    HlirType::I32 => Type::Int,
+                    HlirType::I64 => Type::Int64,
+                    HlirType::F32 => Type::Float32,
+                    HlirType::F64 => Type::Float64,
+                    HlirType::Bool => Type::Bool,
+                    HlirType::String => Type::Str,
+                    _ => Type::Unknown,
+                }
+            }).collect();
+            let func_args: Vec<HlirValue> = args.iter().map(|a| self.convert_expr(get_expr(a))).collect();
+            let mangled_name = types::mangle(None, None, func_name, &arg_types);
+            (mangled_name, func_args)
         }
     }
 
@@ -70,6 +190,9 @@ impl AstToHlirConverter {
     
     /// Convert a complete AST to HLIR module
     pub fn convert_module(&mut self, stmts: &[Stmt]) -> HlirModule {
+        // First, collect function defaults for later use
+        self.collect_function_defaults(stmts);
+        
         // Collect all top-level items
         let mut module_level_stmts: Vec<&Stmt> = Vec::new();
         let mut functions: Vec<&parser::FunctionDef> = Vec::new();
@@ -1067,12 +1190,6 @@ impl AstToHlirConverter {
             }
             
             Expr::Call { callee, args, .. } => {
-                let callee_type = match callee.as_ref() {
-                    Expr::Variable { name, .. } => format!("Variable({})", name),
-                    Expr::Get { object: _, name, .. } => format!("Get(method={})", name),
-                    _ => "Other".to_string(),
-                };
-                
                 // Helper to extract expression from CallArg
                 fn get_expr(arg: &CallArg) -> &Expr {
                     match arg {
@@ -1080,20 +1197,14 @@ impl AstToHlirConverter {
                         CallArg::Named { value, .. } => value,
                     }
                 }
-                
-                let func_args: Vec<HlirValue> = args.iter()
-                    .map(|a| self.convert_expr(get_expr(a)))
-                    .collect();
 
                 if let Expr::Variable { name, .. } = callee.as_ref() {
                     // Check if it's a class constructor call
-                    // For qualified names like "std.http.HttpClient", extract the last component "HttpClient"
                     let class_name = name.split('.').last().unwrap_or(name);
-                    let func_name = if class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
-                        // Mangle constructor name with parameter types using the central mangle function
+                    if class_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        // Constructor - use provided args only (constructors don't have defaults in current impl)
                         let arg_types: Vec<Type> = args.iter().map(|a| {
                             let ty = self.infer_expr_type(get_expr(a));
-                            // Convert HlirType to Type for mangling
                             match ty {
                                 HlirType::I8 => Type::Int8,
                                 HlirType::I32 => Type::Int,
@@ -1105,39 +1216,45 @@ impl AstToHlirConverter {
                                 _ => Type::Unknown,
                             }
                         }).collect();
-                        // Use the central mangle function for constructor names
-                        types::mangle(None, Some(name), "constructor", &arg_types)
+                        let func_name = types::mangle(None, Some(name), "constructor", &arg_types);
+                        let func = HlirValue::Function(func_name);
+                        let func_args: Vec<HlirValue> = args.iter()
+                            .map(|a| self.convert_expr(get_expr(a)))
+                            .collect();
+                        let return_ty = self.infer_expr_type(expr);
+                        let is_native_class = self.native_classes.get(name).copied().unwrap_or(false);
+                        if is_native_class {
+                            self.builder.call_native(func, func_args, return_ty)
+                        } else {
+                            self.builder.call(func, func_args, return_ty)
+                        }
                     } else {
-                        name.clone()
-                    };
-                    let func = HlirValue::Function(func_name);
-                    let return_ty = self.infer_expr_type(expr);
-
-                    // Check if this is a native class constructor
-                    let is_native_class = self.native_classes.get(name).copied().unwrap_or(false);
-                    if is_native_class {
-                        self.builder.call_native(func, func_args, return_ty)
-                    } else {
-                        self.builder.call(func, func_args, return_ty)
+                        // Regular function call - use defaults if available
+                        let (mangled_name, func_args) = self.build_call_args_with_defaults(name, args);
+                        let func = HlirValue::Function(mangled_name);
+                        let return_ty = self.infer_expr_type(expr);
+                        let is_native_class = self.native_classes.get(name).copied().unwrap_or(false);
+                        if is_native_class {
+                            self.builder.call_native(func, func_args, return_ty)
+                        } else {
+                            self.builder.call(func, func_args, return_ty)
+                        }
                     }
                 } else if let Expr::Get { object, name, .. } = callee.as_ref() {
-                    // Method call: mangle to Class_method(self, args)
+                    // Method call - use provided args only (methods with defaults need separate handling)
                     let obj_val = self.convert_expr(object);
-                    // Prepend self to arguments
+                    let func_args: Vec<HlirValue> = args.iter()
+                        .map(|a| self.convert_expr(get_expr(a)))
+                        .collect();
                     let mut call_args = vec![obj_val];
                     call_args.extend(func_args);
 
-                    // Get the class/interface name from the object's declared type (preferred) or inferred type
                     let class_name = if let Expr::Variable { name: var_name, .. } = object.as_ref() {
-                        // First check if we have a declared type name (e.g., from type annotation)
-                        // This is important for interface-typed variables
                         if let Some(declared_type_name) = self.var_declared_type_names.get(var_name) {
                             declared_type_name.clone()
                         } else if let Some(concrete_class) = self.var_classes.get(var_name) {
-                            // Fall back to concrete class from constructor
                             concrete_class.clone()
                         } else {
-                            // Last resort: infer from variable name (snake_case to PascalCase)
                             let parts = var_name.split('_');
                             let mut class = String::new();
                             for part in parts {
