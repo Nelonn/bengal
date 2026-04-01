@@ -221,6 +221,61 @@ jobs:
           file: bengal.tar.gz
           tag: ${{ github.ref }}
 
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-macos-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          brew install openssl
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+
+      - name: Create macOS package
+        run: |
+          mkdir -p artifacts/usr/bin
+          mkdir -p artifacts/usr/share/licenses/bengal
+          cp target/${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}/release/bengal artifacts/usr/bin/
+          cp LICENSE artifacts/usr/share/licenses/bengal/
+          chmod 755 artifacts/usr/bin/bengal
+          chmod 644 artifacts/usr/share/licenses/bengal/LICENSE
+          cd artifacts
+          tar -cvf ../bengal-darwin-${{ matrix.arch }}.tar usr
+          cd ..
+          gzip -9 bengal-darwin-${{ matrix.arch }}.tar
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: bengal-macos-${{ matrix.arch }}
+          path: bengal-darwin-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+      - name: Upload .tar.gz to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v5
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: bengal-darwin-${{ matrix.arch }}.tar.gz
+          tag: ${{ github.ref }}
+
   build-windows:
     runs-on: windows-latest
     strategy:
