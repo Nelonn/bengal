@@ -34,7 +34,7 @@ pub fn native_sleep(args: &mut Vec<Value>) -> NativeResult {
 
     // Get the async callback sender
     let callback_tx = get_async_callback_sender();
-    
+
     if let Some(tx) = callback_tx {
         // Spawn a tokio task to sleep and then send callback with wait_id
         let wait_id_clone = wait_id.clone();

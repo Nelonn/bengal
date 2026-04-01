@@ -374,7 +374,7 @@ impl Executor {
 
         loop {
             // Run scheduler
-            let (result, has_blocked) = {
+            let (result, _has_blocked) = {
                 let mut scheduler = scheduler_rc.borrow_mut();
                 scheduler.run()
             };
@@ -393,45 +393,94 @@ impl Executor {
                 }
             }
 
+            // After processing spawns, run scheduler to let new threads start
+            // This ensures workers start their sleeps before we wait for callbacks
+            let (result, has_blocked_after_spawns) = {
+                let mut scheduler = scheduler_rc.borrow_mut();
+                scheduler.run()
+            };
+            
+            if result.is_some() {
+                last_result = result;
+            }
+
             // Check if we should continue (pending spawns or blocked threads or active threads)
             let has_pending = !pending_spawns.borrow().is_empty();
             let scheduler_has_active = scheduler_rc.borrow().active_thread_count() > 0;
 
-            if !has_pending && !has_blocked && !scheduler_has_active {
+            if !has_pending && !has_blocked_after_spawns && !scheduler_has_active {
                 return Ok(last_result);
             }
 
             // If we have blocked threads, wait for callback
-            if has_blocked {
+            if has_blocked_after_spawns {
                 debug_vm!("scheduler: Blocked threads, waiting for callback");
-                // Use tokio to wait for callback
+                // Use tokio to wait for first callback
                 let rx = callback_rx.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let rx = rx.blocking_lock();
                     rx.recv().map_err(|_| "Callback channel closed".to_string())
                 }).await.map_err(|e| e.to_string())??;
 
+                // Process this callback
                 let result: Result<Value, Value> = match result {
                     Ok(val) => Ok(val),
                     Err(e) => Err(Value::String(e.to_string())),
                 };
 
-                // Wake up blocked threads and continue
                 if let Ok(ref val) = result {
                     let mut scheduler = scheduler_rc.borrow_mut();
-                    // Check if the result is a wait_id string (for targeted wakeup)
                     if let Value::String(wait_id) = val {
                         if wait_id.starts_with("sleep_") {
-                            // Targeted wakeup for sleep
                             scheduler.wake_by_wait_id(wait_id, Value::Null);
                         } else {
-                            // Generic wakeup
                             scheduler.wake_all_blocked(val.clone());
                         }
                     } else {
-                        // Non-string result, wake all blocked threads
                         scheduler.wake_all_blocked(val.clone());
                     }
+                }
+
+                // Drain any additional callbacks that arrived while waiting
+                // This ensures all completed sleeps are processed before continuing
+                let rx = callback_rx.clone();
+                loop {
+                    let rx_guard = rx.try_lock();
+                    if let Ok(rx_ref) = rx_guard {
+                        match rx_ref.try_recv() {
+                            Ok(Ok(val)) => {
+                                drop(rx_ref);
+                                let mut scheduler = scheduler_rc.borrow_mut();
+                                if let Value::String(wait_id) = &val {
+                                    if wait_id.starts_with("sleep_") {
+                                        scheduler.wake_by_wait_id(wait_id, Value::Null);
+                                        continue;
+                                    }
+                                }
+                                scheduler.wake_all_blocked(val);
+                            }
+                            Ok(Err(e)) => {
+                                eprintln!("Callback error: {:?}", e);
+                            }
+                            Err(_) => {
+                                // No more callbacks available
+                                break;
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // After processing all callbacks, run the scheduler to let awakened threads execute
+                // BEFORE the main loop continues. This ensures workers run before main thread finishes.
+                let result = {
+                    let mut scheduler = scheduler_rc.borrow_mut();
+                    scheduler.run()
+                };
+                
+                if result.0.is_some() {
+                    last_result = result.0;
                 }
 
                 // Continue the loop to process more threads

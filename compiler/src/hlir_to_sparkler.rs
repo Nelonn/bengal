@@ -605,6 +605,11 @@ impl HlirToSparkler {
                 self.max_reg = reg as u16;
             }
         }
+        
+        // Update next_sparkler_reg to skip parameter registers
+        if !func.params.is_empty() {
+            self.next_sparkler_reg = (func.params.len() + 1) as u16;
+        }
 
         // Record the start offset of this function's bytecode for relative jump calculations
         let func_start_offset = self.current_offset();

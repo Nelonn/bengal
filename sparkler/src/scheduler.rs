@@ -251,15 +251,34 @@ impl Scheduler {
         None
     }
 
+    /// Find the next ready thread starting from a specific index
+    fn find_next_ready_thread_from(&self, start_idx: usize) -> Option<usize> {
+        let len = self.threads.len();
+        if len == 0 {
+            return None;
+        }
+
+        // Search from start position (inclusive)
+        for i in 0..len {
+            let idx = (start_idx + i) % len;
+            if let Some(thread) = self.threads.get(idx) {
+                if thread.state == ThreadState::Ready {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
     /// Run the scheduler until all threads finish or we hit a blocking operation
     /// Returns (result, has_blocked_threads)
     pub fn run(&mut self) -> (Option<Value>, bool) {
-        // Find first ready thread
-        let first_ready = self.threads.iter()
-            .position(|t| t.state == ThreadState::Ready);
+        // Find first ready thread, starting from next thread after current for round-robin
+        let start_search_from = self.current_thread.map(|i| (i + 1) % self.threads.len()).unwrap_or(0);
+        let start_idx = self.find_next_ready_thread_from(start_search_from);
 
-        if let Some(start_idx) = first_ready {
-            self.current_thread = Some(start_idx);
+        if let Some(idx) = start_idx {
+            self.current_thread = Some(idx);
         } else {
             // No ready threads
             let has_blocked = self.threads.iter().any(|t| t.state == ThreadState::Blocked);
@@ -309,7 +328,7 @@ impl Scheduler {
                                 RunResult::Finished(val) => {
                                     thread.state = ThreadState::Finished;
                                     last_result = val;
-                                    
+
                                     // Move to next thread
                                     if self.yield_to_next().is_none() {
                                         break;
@@ -349,7 +368,7 @@ impl Scheduler {
                         Err(e) => {
                             eprintln!("Thread {} error: {:?}", thread.id, e);
                             thread.state = ThreadState::Finished;
-                            
+
                             if self.yield_to_next().is_none() {
                                 break;
                             }
