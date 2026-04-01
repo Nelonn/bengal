@@ -39,6 +39,11 @@ jobs:
       - name: Build Debian package (with build)
         run: cargo deb
 
+      - name: Package std files
+        run: |
+          mkdir -p target/debian/usr/share/bengal/std
+          cp std/*.bl target/debian/usr/share/bengal/std/
+
       - name: Upload Debian artifact
         uses: actions/upload-artifact@v5
         with:
@@ -90,6 +95,11 @@ jobs:
       - name: Generate RPM package
         run: cargo generate-rpm
 
+      - name: Package std files
+        run: |
+          mkdir -p target/generate-rpm/usr/share/bengal/std
+          cp std/*.bl target/generate-rpm/usr/share/bengal/std/
+
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v5
         with:
@@ -139,10 +149,13 @@ jobs:
         run: |
           mkdir -p artifacts/usr/bin
           mkdir -p artifacts/usr/share/licenses/bengal
+          mkdir -p artifacts/usr/share/bengal/std
           cp target/release/bengal artifacts/usr/bin/
           cp LICENSE artifacts/usr/share/licenses/bengal/
+          cp std/*.bl artifacts/usr/share/bengal/std/
           chmod 755 artifacts/usr/bin/bengal
           chmod 644 artifacts/usr/share/licenses/bengal/LICENSE
+          chmod 644 artifacts/usr/share/bengal/std/*.bl
           cd artifacts
           tar -cvf ../bengal.pkg.tar usr
           cd ..
@@ -197,10 +210,13 @@ jobs:
         run: |
           mkdir -p alpine-pkg/usr/bin
           mkdir -p alpine-pkg/usr/share/licenses/bengal
+          mkdir -p alpine-pkg/usr/share/bengal/std
           cp target/release/bengal alpine-pkg/usr/bin/
           cp LICENSE alpine-pkg/usr/share/licenses/bengal/
+          cp std/*.bl alpine-pkg/usr/share/bengal/std/
           chmod 755 alpine-pkg/usr/bin/bengal
           chmod 644 alpine-pkg/usr/share/licenses/bengal/LICENSE
+          chmod 644 alpine-pkg/usr/share/bengal/std/*.bl
           cd alpine-pkg
           tar -cvf ../bengal.tar usr
           cd ..
@@ -257,10 +273,13 @@ jobs:
         run: |
           mkdir -p artifacts/usr/bin
           mkdir -p artifacts/usr/share/licenses/bengal
+          mkdir -p artifacts/usr/share/bengal/std
           cp target/${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}/release/bengal artifacts/usr/bin/
           cp LICENSE artifacts/usr/share/licenses/bengal/
+          cp std/*.bl artifacts/usr/share/bengal/std/
           chmod 755 artifacts/usr/bin/bengal
           chmod 644 artifacts/usr/share/licenses/bengal/LICENSE
+          chmod 644 artifacts/usr/share/bengal/std/*.bl
           cd artifacts
           zip -r ../bengal-darwin-${{ matrix.arch }}.zip usr
 
@@ -306,17 +325,26 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}
 
+      - name: Create Windows package
+        run: |
+          mkdir -p artifacts/bin
+          mkdir -p artifacts/share/bengal/std
+          cp target/${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}/release/bengal.exe artifacts/bin/
+          cp std/*.bl artifacts/share/bengal/std/
+          cd artifacts
+          zip -r ../bengal-windows-${{ matrix.arch }}.zip bin share
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v5
         with:
           name: bengal-windows-${{ matrix.arch }}
-          path: target/${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}/release/bengal.exe
+          path: bengal-windows-${{ matrix.arch }}.zip
           retention-days: 30
 
-      - name: Upload .exe to release
+      - name: Upload .zip to release
         if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
+        uses: svenstaro/upload-release-action@v5
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/${{ matrix.arch == 'amd64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}/release/bengal.exe
+          file: bengal-windows-${{ matrix.arch }}.zip
           tag: ${{ github.ref }}
