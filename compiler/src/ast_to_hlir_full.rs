@@ -336,14 +336,39 @@ impl AstToHlirConverter {
                 for field in &class.fields {
                     if !field.is_static {
                         // Store default value directly to self.field
-                        if field.type_name == "int" {
-                            self.builder.set_property(self_val.clone(), &field.name, HlirValue::IntConst(42));
-                        }
+                        let default_value = if let Some(default_expr) = &field.default {
+                            // Use the default expression value
+                            self.convert_expr(default_expr)
+                        } else {
+                            // No default expression: zero-initialize based on type
+                            let is_optional = field.type_name.ends_with('?');
+                            self.zero_value_for_type(&field.type_name, is_optional)
+                        };
+                        self.builder.set_property(self_val.clone(), &field.name, default_value);
                     }
                 }
                 // Return self
                 self.builder.ret(Some(self_val), HlirType::Pointer(Box::new(HlirType::Unknown)));
             } else {
+                // For constructors, initialize fields with default values before compiling body
+                if is_constructor {
+                    let self_val = HlirValue::Param(0);
+                    for field in &class.fields {
+                        if !field.is_static {
+                            // Store default value directly to self.field
+                            let default_value = if let Some(default_expr) = &field.default {
+                                // Use the default expression value
+                                self.convert_expr(default_expr)
+                            } else {
+                                // No default expression: zero-initialize based on type
+                                let is_optional = field.type_name.ends_with('?');
+                                self.zero_value_for_type(&field.type_name, is_optional)
+                            };
+                            self.builder.set_property(self_val.clone(), &field.name, default_value);
+                        }
+                    }
+                }
+                
                 // Normal method - compile body statements
                 for stmt in &method.body {
                     self.convert_stmt(stmt);
@@ -387,9 +412,15 @@ impl AstToHlirConverter {
             for field in &class.fields {
                 if !field.is_static {
                     // Store default value directly to self.field
-                    if field.type_name == "int" {
-                        self.builder.set_property(self_val.clone(), &field.name, HlirValue::IntConst(42));
-                    }
+                    let default_value = if let Some(default_expr) = &field.default {
+                        // Use the default expression value
+                        self.convert_expr(default_expr)
+                    } else {
+                        // No default expression: zero-initialize based on type
+                        let is_optional = field.type_name.ends_with('?');
+                        self.zero_value_for_type(&field.type_name, is_optional)
+                    };
+                    self.builder.set_property(self_val.clone(), &field.name, default_value);
                 }
             }
 
@@ -1527,6 +1558,22 @@ impl AstToHlirConverter {
                     self.convert_stmt(stmt);
                 }
             }
+        }
+    }
+
+    /// Get zero value for a type
+    fn zero_value_for_type(&mut self, type_name: &str, is_optional: bool) -> HlirValue {
+        // Optional types default to null
+        if is_optional {
+            return HlirValue::Null;
+        }
+        
+        // Primitive types get zero-initialized
+        match type_name {
+            "int" => HlirValue::IntConst(0),
+            "float" => HlirValue::FloatConst(0.0),
+            "bool" => HlirValue::BoolConst(false),
+            _ => HlirValue::Null, // For classes and other types
         }
     }
 }
