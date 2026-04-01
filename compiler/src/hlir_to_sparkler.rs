@@ -277,9 +277,9 @@ impl HlirToSparkler {
         self.bytecode[offset + 1] = ((target >> 8) & 0xFF) as u8;
     }
 
-    /// Patch a TRY_START catch_pc (uses absolute offset)
+    /// Patch a TRY_START catch_pc (uses relative offset)
     fn patch_try_catch_pc(&mut self, offset: usize, target: usize) {
-        // TRY_START uses absolute PC offset, not relative
+        // TRY_START uses relative PC offset (relative to function start)
         // Write in little-endian order: low byte first, then high byte
         self.bytecode[offset] = (target & 0xFF) as u8;
         self.bytecode[offset + 1] = ((target >> 8) & 0xFF) as u8;
@@ -630,13 +630,14 @@ impl HlirToSparkler {
             }
         }
 
-        // Patch pending TRY_START catch_pc (uses absolute offset)
+        // Patch pending TRY_START catch_pc - convert absolute offsets to relative offsets
         let pending_try_starts = std::mem::take(&mut self.pending_try_starts);
         for (offset, label) in pending_try_starts {
             if let Some(&target) =
                 self.block_offsets.get(&format!("{}:{}", func.name, label))
             {
-                self.patch_try_catch_pc(offset, target);
+                let relative_target = target - func_start_offset;
+                self.patch_try_catch_pc(offset, relative_target);
             }
         }
     }

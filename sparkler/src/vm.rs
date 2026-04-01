@@ -1239,15 +1239,23 @@ impl VM {
 
                 let mut has_local_handler = false;
                 if let Some(handler) = self.context.exception_handlers.last() {
-                    if handler.call_stack_depth == self.context.call_stack.len() {
+                    // Check if the exception was thrown within the try block's scope
+                    // The call stack depth should be >= the handler's depth (same or deeper)
+                    if handler.call_stack_depth <= self.context.call_stack.len() {
                         has_local_handler = true;
                     }
                 }
 
                 if has_local_handler {
                     let handler = self.context.exception_handlers.pop().unwrap();
+                    // Unwind the call stack to the handler's level
+                    while self.context.call_stack.len() > handler.call_stack_depth {
+                        self.pop_frame();
+                    }
                     self.set_pc(handler.catch_pc);
-                    self.set_reg(handler.catch_register as u8, Value::Exception(exception));
+                    // Store the exception message (string) in the catch register, not the wrapped exception
+                    let exception_message = exception.message;
+                    self.set_reg(handler.catch_register as u8, Value::String(exception_message));
                     return Ok(RunResult::InProgress);
                 } else {
                     return Err(Value::Exception(exception));
