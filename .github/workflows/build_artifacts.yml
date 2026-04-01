@@ -1,0 +1,157 @@
+on:
+  push:
+    branches:
+      - main
+      - feat/workflows-update
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: bengal
+
+jobs:
+  build-debian:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-debian-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y pkg-config libssl-dev
+
+      - name: Build Debian package
+        run: cargo deb --release --no-build
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build Debian package (with build)
+        run: cargo deb --release
+
+      - name: Upload Debian artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-debian
+          path: target/debian/*.deb
+          retention-days: 30
+
+      - name: Upload .deb to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/debian/*.deb
+          file_glob: true
+          tag: ${{ github.ref }}
+          overwrite: true
+
+  build-rpm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rpm-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y pkg-config libssl-dev rpm
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate RPM package
+        run: cargo generate-rpm
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-rpm
+          path: target/generate-rpm/*.rpm
+          retention-days: 30
+
+      - name: Upload .rpm to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/generate-rpm/*.rpm
+          file_glob: true
+          tag: ${{ github.ref }}
+          overwrite: true
+
+  build-source-tarball:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-source-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y pkg-config libssl-dev
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Create tarball
+        run: |
+          mkdir -p artifacts
+          cp target/release/bengal artifacts/
+          tar -czvf artifacts/bengal-linux-x86_64.tar.gz -C artifacts bengal
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-linux-tarball
+          path: artifacts/bengal-linux-x86_64.tar.gz
+          retention-days: 30
+
+      - name: Upload tarball to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: artifacts/bengal-linux-x86_64.tar.gz
+          tag: ${{ github.ref }}
