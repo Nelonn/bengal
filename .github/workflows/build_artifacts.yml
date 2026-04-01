@@ -98,3 +98,56 @@ jobs:
           file_glob: true
           tag: ${{ github.ref }}
           overwrite: true
+
+  build-archlinux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-arch-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y pkg-config libssl-dev zstd
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Create Arch Linux package
+        run: |
+          mkdir -p artifacts/usr/bin
+          mkdir -p artifacts/usr/share/licenses/bengal
+          cp target/release/bengal artifacts/usr/bin/
+          cp LICENSE artifacts/usr/share/licenses/bengal/
+          chmod 755 artifacts/usr/bin/bengal
+          chmod 644 artifacts/usr/share/licenses/bengal/LICENSE
+          cd artifacts
+          tar -cvf ../bengal.pkg.tar usr
+          cd ..
+          zstd -19 bengal.pkg.tar --rm
+
+      - name: Upload Arch Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-archlinux
+          path: bengal.pkg.tar.zst
+          retention-days: 30
+
+      - name: Upload .pkg.tar.zst to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: bengal.pkg.tar.zst
+          tag: ${{ github.ref }}
