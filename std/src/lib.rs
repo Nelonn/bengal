@@ -203,7 +203,7 @@ pub fn register_all(vm: &mut VM) {
         .function("assertSame", test::native_assert_same)
         .register(vm);
 
-    vm.register_fallback(|name, _args| {
+    vm.register_fallback(|_ctx, name, _args| {
         NativeResult::Ready(Value::String(
             format!("Native method not available or disabled by runtime: {}", name),
         ))

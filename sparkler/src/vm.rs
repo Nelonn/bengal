@@ -449,9 +449,105 @@ impl From<Result<Value, Value>> for NativeResult {
 /// Async callback for native functions
 pub type AsyncCallback = Box<dyn FnOnce(Result<Value, Value>) + Send + 'static>;
 
-pub type NativeFn = fn(&mut Vec<Value>) -> NativeResult;
-pub type NativeFnAsync = fn(&mut Vec<Value>, AsyncCallback) -> NativeResult;
-pub type NativeFallbackFn = fn(&str, &mut Vec<Value>) -> NativeResult;
+/// Context provided to native functions for creating instances and manipulating objects
+pub struct NativeContext<'a> {
+    vm: &'a VM,
+}
+
+impl<'a> NativeContext<'a> {
+    /// Create a new native context
+    pub fn new(vm: &'a VM) -> Self {
+        Self { vm }
+    }
+
+    /// Create an instance of a class by name
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let instance = ctx.create_instance("std.http.Response")?;
+    /// ```
+    pub fn create_instance(&self, class_name: &str) -> Result<Value, String> {
+        // Look up the class in the VM's class registry
+        if let Some(class) = self.vm.program.classes.get(class_name) {
+            let instance = Value::Instance(Arc::new(Mutex::new(Instance {
+                class: class_name.to_string(),
+                fields: class.fields.clone(),
+                private_fields: class.private_fields.clone(),
+                native_data: Arc::new(Mutex::new(None)),
+            })));
+            Ok(instance)
+        } else {
+            Err(format!("Class '{}' not found", class_name))
+        }
+    }
+
+    /// Set a property on an instance
+    /// 
+    /// # Example
+    /// ```ignore
+    /// ctx.set_property(&instance, "code", Value::Int64(403))?;
+    /// ```
+    pub fn set_property(&self, instance: &Value, property_name: &str, value: Value) -> Result<(), String> {
+        match instance {
+            Value::Instance(inst) => {
+                let mut inst_lock = inst.lock().unwrap();
+                inst_lock.fields.insert(property_name.to_string(), value);
+                Ok(())
+            }
+            _ => Err("Expected an instance".to_string()),
+        }
+    }
+
+    /// Get a property from an instance
+    pub fn get_property(&self, instance: &Value, property_name: &str) -> Result<Value, String> {
+        match instance {
+            Value::Instance(inst) => {
+                let inst_lock = inst.lock().unwrap();
+                inst_lock.fields.get(property_name)
+                    .cloned()
+                    .ok_or_else(|| format!("Property '{}' not found", property_name))
+            }
+            _ => Err("Expected an instance".to_string()),
+        }
+    }
+
+    /// Get the native_data from an instance (for native state)
+    pub fn get_native_data<T: Any + Send + Sync>(&self, instance: &Value) -> Option<Arc<Mutex<T>>> {
+        match instance {
+            Value::Instance(inst) => {
+                let inst_lock = inst.lock().unwrap();
+                let native_data = inst_lock.native_data.clone();
+                drop(inst_lock);
+                
+                let data = native_data.lock().unwrap();
+                if let Some(boxed) = data.as_ref() {
+                    if let Some(concrete) = boxed.downcast_ref::<Arc<Mutex<T>>>() {
+                        return Some(concrete.clone());
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Set the native_data on an instance (for native state)
+    pub fn set_native_data<T: Any + Send + Sync>(&self, instance: &Value, data: Arc<Mutex<T>>) -> Result<(), String> {
+        match instance {
+            Value::Instance(inst) => {
+                let inst_lock = inst.lock().unwrap();
+                let mut native_data = inst_lock.native_data.lock().unwrap();
+                *native_data = Some(Box::new(data) as Box<dyn Any + Send + Sync>);
+                Ok(())
+            }
+            _ => Err("Expected an instance".to_string()),
+        }
+    }
+}
+
+pub type NativeFn = fn(&NativeContext, &mut Vec<Value>) -> NativeResult;
+pub type NativeFnAsync = fn(&NativeContext, &mut Vec<Value>, AsyncCallback) -> NativeResult;
+pub type NativeFallbackFn = fn(&NativeContext, &str, &mut Vec<Value>) -> NativeResult;
 
 pub struct NativeFunctionBuilder {
     name: String,
@@ -1841,7 +1937,8 @@ impl VM {
                 // Call native_create if available
                 if let Some(native_create) = class.native_create {
                     let mut args = vec![instance.clone()];
-                    let _ = native_create(&mut args);
+                    let ctx = NativeContext::new(&self);
+                    let _ = native_create(&ctx, &mut args);
                 }
 
                 // Check for native constructor method
@@ -1850,7 +1947,8 @@ impl VM {
                     let method_name = &func_name[paren_pos + 1..]; // "constructor()"
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
-                        let _ = native_ctor(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let _ = native_ctor(&ctx, &mut args);
                         // Don't overwrite rd - it already has the instance
                         return Ok(ExecutionResult::Continue);
                     }
@@ -1879,10 +1977,11 @@ impl VM {
                 for i in 0..arg_count {
                     args.push(self.get_reg(arg_start + i).clone());
                 }
+                let ctx = NativeContext::new(&self);
                 let result = match func_type {
-                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
-                    crate::linker::NativeFnType::Fallback(f) => f(&func_name, &mut args),
+                    crate::linker::NativeFnType::Fallback(f) => f(&ctx, &func_name, &mut args),
                 };
                 match result {
                     NativeResult::Ready(val) => {
@@ -2001,7 +2100,8 @@ impl VM {
                         for i in 0..arg_count {
                             args.push(self.get_reg(arg_start + i).clone());
                         }
-                        let result = native_method(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let result = native_method(&ctx, &mut args);
                         if let NativeResult::Ready(val) = result {
                             self.set_reg(rd, val);
                         }
@@ -2118,13 +2218,15 @@ impl VM {
                     // Call native_create if available
                     if let Some(native_create) = class.native_create {
                         let mut args = vec![instance.clone()];
-                        let _ = native_create(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let _ = native_create(&ctx, &mut args);
                     }
 
                     // Call the native constructor method if available
                     if let Some(native_ctor) = class.native_methods.get(method_name) {
                         let mut args = vec![instance];
-                        let _ = native_ctor(&mut args);
+                        let ctx = NativeContext::new(&self);
+                        let _ = native_ctor(&ctx, &mut args);
                         // Don't overwrite rd - it already has the instance
                     }
                     self.set_pc(self.pc() + 1);
@@ -2138,7 +2240,8 @@ impl VM {
                     for i in 1..arg_count {
                         args.push(self.get_reg(arg_start + i).clone());
                     }
-                    let result = native_method(&mut args);
+                    let ctx = NativeContext::new(&self);
+                    let result = native_method(&ctx, &mut args);
                     match result {
                         NativeResult::Ready(val) => {
                             self.set_reg(rd, val);
@@ -2166,23 +2269,26 @@ impl VM {
             args.push(self.get_reg(arg_start + i).clone());
         }
 
+        // Create context for native function
+        let ctx = NativeContext::new(&self);
+
         let result = match self.program.native_registry.get_index(&name)
             .or_else(|| self.program.native_registry.get_index_by_prefix(&name))
             .and_then(|idx| self.program.native_registry.get_by_index(idx)) {
             Some(func_type) => {
                 match func_type {
-                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
-                    crate::linker::NativeFnType::Fallback(f) => f(&name, &mut args),
+                    crate::linker::NativeFnType::Fallback(f) => f(&ctx, &name, &mut args),
                 }
             }
             None => {
                 match self.program.fallback_native.clone() {
                     Some(func_type) => {
                         match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                             crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
-                            crate::linker::NativeFnType::Fallback(f) => f(&name, &mut args),
+                            crate::linker::NativeFnType::Fallback(f) => f(&ctx, &name, &mut args),
                         }
                     }
                     None => {
@@ -2232,16 +2338,19 @@ impl VM {
             args.push(self.get_reg(arg_start + i).clone());
         }
 
+        // Create context for native function
+        let ctx = NativeContext::new(&self);
+
         let result = match self.program.native_registry.get_by_index(func_index) {
             Some(func_type) => {
                 match func_type {
-                    crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                    crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                     crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
                     crate::linker::NativeFnType::Fallback(f) => {
                         // For indexed calls, try to get the function name from the registry
                         let name = self.program.native_registry.get_name_by_index(func_index)
                             .unwrap_or_else(|| format!("unknown@{}", func_index));
-                        f(&name, &mut args)
+                        f(&ctx, &name, &mut args)
                     },
                 }
             }
@@ -2249,13 +2358,13 @@ impl VM {
                 match self.program.fallback_native.clone() {
                     Some(func_type) => {
                         match func_type {
-                            crate::linker::NativeFnType::Sync(f) => f(&mut args),
+                            crate::linker::NativeFnType::Sync(f) => f(&ctx, &mut args),
                             crate::linker::NativeFnType::Async(_f) => NativeResult::Pending,
                             crate::linker::NativeFnType::Fallback(f) => {
                                 // For indexed calls, try to get the function name from the registry
                                 let name = self.program.native_registry.get_name_by_index(func_index)
                                     .unwrap_or_else(|| format!("unknown@{}", func_index));
-                                f(&name, &mut args)
+                                f(&ctx, &name, &mut args)
                             },
                         }
                     }
@@ -2479,7 +2588,8 @@ impl VM {
         if let Some(class) = self.program.classes.get(&class_name).cloned() {
             if let Some(native_method) = class.native_methods.get(&name) {
                 let mut method_args = args.clone();
-                let result = native_method(&mut method_args);
+                let ctx = NativeContext::new(&self);
+                let result = native_method(&ctx, &mut method_args);
                 match result {
                     NativeResult::Ready(val) => {
                         if name == "constructor" {

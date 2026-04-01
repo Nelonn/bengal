@@ -1,17 +1,17 @@
-use sparkler::{Value, NativeResult, get_async_callback_sender};
+use sparkler::{Value, NativeResult, get_async_callback_sender, NativeContext};
 use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static SLEEP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub fn native_print(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_print(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     for arg in args {
         print!("{}", arg.to_string());
     }
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_println(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_println(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     for arg in args {
         print!("{}", arg.to_string());
     }
@@ -19,7 +19,7 @@ pub fn native_println(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_sleep(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_sleep(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     // Get sleep duration in milliseconds
     let ms = match &args[0] {
         Value::Int32(n) => *n as u64,

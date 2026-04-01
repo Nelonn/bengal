@@ -1,4 +1,4 @@
-use sparkler::{Value, NativeResult, get_async_callback_sender, debug_vm, vm::Instance};
+use sparkler::{Value, NativeResult, get_async_callback_sender, NativeContext, debug_vm, vm::Instance};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -8,7 +8,7 @@ fn create_response_instance(status: u16, body: String) -> Value {
     let mut fields = HashMap::new();
     fields.insert("code".to_string(), Value::Int64(status as i64));
     fields.insert("body".to_string(), Value::String(body));
-    
+
     Value::Instance(Arc::new(Mutex::new(Instance {
         class: "std.http.Response".to_string(),
         fields,
@@ -17,7 +17,7 @@ fn create_response_instance(status: u16, body: String) -> Value {
     })))
 }
 
-pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_http_get(args: &mut Vec<Value>, _ctx: &NativeContext) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String("http_get requires URL argument".to_string()));
     }
@@ -25,7 +25,7 @@ pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
 
     // Get the callback sender from sparkler
     let callback_tx = get_async_callback_sender();
-    
+
     if let Some(tx) = callback_tx {
         let url_clone = url.clone();
         // We're in async context, spawn a thread and return Pending
@@ -50,7 +50,7 @@ pub fn native_http_get(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_http_post(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_http_post(args: &mut Vec<Value>, _ctx: &NativeContext) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ready(Value::String(
             "http_post requires URL and body arguments".to_string(),
@@ -61,7 +61,7 @@ pub fn native_http_post(args: &mut Vec<Value>) -> NativeResult {
 
     // Get the callback sender from sparkler
     let callback_tx = get_async_callback_sender();
-    
+
     if let Some(tx) = callback_tx {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -379,13 +379,13 @@ impl From<HttpClientState> for HttpClientConfig {
     }
 }
 
-pub fn native_http_client_constructor(_args: &mut Vec<Value>) -> NativeResult {
+pub fn native_http_client_constructor(_ctx: &NativeContext, _args: &mut Vec<Value>) -> NativeResult {
     // Constructor is called after native_create, state is already initialized
     NativeResult::Ready(Value::Null)
 }
 
 /// Helper function to get HttpClientState from instance's native_data
-fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientState>>, Value> {
+fn get_http_client_state(_ctx: &NativeContext, args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientState>>, Value> {
     if args.is_empty() {
         return Err(Value::String(
             "HttpClient method requires instance".to_string(),
@@ -408,8 +408,8 @@ fn get_http_client_state(args: &mut Vec<Value>) -> Result<Arc<Mutex<HttpClientSt
     Err(Value::String("Expected HttpClient instance".to_string()))
 }
 
-pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_set_timeout(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -430,8 +430,8 @@ pub fn native_http_client_set_timeout(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_set_base_url(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -447,8 +447,8 @@ pub fn native_http_client_set_base_url(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_add_header(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_add_header(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -466,8 +466,8 @@ pub fn native_http_client_add_header(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_get(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -487,9 +487,9 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(http_client_request_async(&state_clone.into(), "GET", &url_clone, "", None));
             match result {
-                Ok(response) => { 
+                Ok(response) => {
                     let response_value = create_response_instance(response.status, response.body);
-                    let _ = tx.send(Ok(response_value)); 
+                    let _ = tx.send(Ok(response_value));
                 }
                 Err(_) => { let _ = tx.send(Ok(Value::Null)); }
             }
@@ -505,8 +505,8 @@ pub fn native_http_client_get(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_post(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -529,9 +529,9 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(http_client_request_async(&state_clone.into(), "POST", &url_clone, "", Some(&body)));
             match result {
-                Ok(response) => { 
+                Ok(response) => {
                     let response_value = create_response_instance(response.status, response.body);
-                    let _ = tx.send(Ok(response_value)); 
+                    let _ = tx.send(Ok(response_value));
                 }
                 Err(_) => { let _ = tx.send(Ok(Value::Null)); }
             }
@@ -548,29 +548,29 @@ pub fn native_http_client_post(args: &mut Vec<Value>) -> NativeResult {
 }
 
 // CamelCase aliases for Bengal API compatibility
-pub fn native_http_client_set_timeout_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_set_timeout(args)
+pub fn native_http_client_set_timeout_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_set_timeout(ctx, args)
 }
 
-pub fn native_http_client_set_base_url_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_set_base_url(args)
+pub fn native_http_client_set_base_url_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_set_base_url(ctx, args)
 }
 
-pub fn native_http_client_add_header_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_add_header(args)
+pub fn native_http_client_add_header_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_add_header(ctx, args)
 }
 
-pub fn native_http_client_get_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_get(args)
+pub fn native_http_client_get_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_get(ctx, args)
 }
 
-pub fn native_http_client_post_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_post(args)
+pub fn native_http_client_post_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_post(ctx, args)
 }
 
 // Additional HttpClient methods
-pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_set_redirect_policy(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -597,8 +597,8 @@ pub fn native_http_client_set_redirect_policy(args: &mut Vec<Value>) -> NativeRe
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_max_redirects(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_set_max_redirects(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -621,8 +621,8 @@ pub fn native_http_client_set_max_redirects(args: &mut Vec<Value>) -> NativeResu
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_proxy(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_set_proxy(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -647,8 +647,8 @@ pub fn native_http_client_set_proxy(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_http_client_set_verify_ssl(args: &mut Vec<Value>) -> NativeResult {
-    let state = match get_http_client_state(args) {
+pub fn native_http_client_set_verify_ssl(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    let state = match get_http_client_state(ctx, args) {
         Ok(val) => val,
         Err(e) => return NativeResult::Ready(e),
     };
@@ -669,24 +669,24 @@ pub fn native_http_client_set_verify_ssl(args: &mut Vec<Value>) -> NativeResult 
 }
 
 // CamelCase aliases for additional methods
-pub fn native_http_client_set_redirect_policy_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_set_redirect_policy(args)
+pub fn native_http_client_set_redirect_policy_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_set_redirect_policy(ctx, args)
 }
 
-pub fn native_http_client_set_max_redirects_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_set_max_redirects(args)
+pub fn native_http_client_set_max_redirects_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_set_max_redirects(ctx, args)
 }
 
-pub fn native_http_client_set_proxy_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_set_proxy(args)
+pub fn native_http_client_set_proxy_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_set_proxy(ctx, args)
 }
 
-pub fn native_http_client_set_verify_ssl_camel(args: &mut Vec<Value>) -> NativeResult {
-    native_http_client_set_verify_ssl(args)
+pub fn native_http_client_set_verify_ssl_camel(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
+    native_http_client_set_verify_ssl(ctx, args)
 }
 
 // HttpClient native_create callback
-pub fn native_http_client_native_create(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_http_client_native_create(ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     // Initialize the HttpClient instance with default state
     if args.is_empty() {
         return NativeResult::Ready(Value::String(

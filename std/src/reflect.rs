@@ -1,7 +1,7 @@
-use sparkler::{vm::Instance, Value, NativeResult};
+use sparkler::{vm::Instance, Value, NativeResult, NativeContext};
 use std::sync::{Arc, Mutex};
 
-pub fn native_reflect_typeof(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_reflect_typeof(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "typeof requires at least one argument".to_string(),
@@ -30,7 +30,7 @@ pub fn native_reflect_typeof(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String(type_name.to_string()))
 }
 
-pub fn native_reflect_class_name(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_reflect_class_name(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "class_name requires at least one argument".to_string(),
@@ -43,7 +43,7 @@ pub fn native_reflect_class_name(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_reflect_fields(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_reflect_fields(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "fields requires at least one argument".to_string(),

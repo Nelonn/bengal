@@ -3,7 +3,7 @@
 /// Executes bytecode using green threads with cooperative multitasking.
 /// Supports the `spawn` keyword for creating new threads.
 
-use crate::vm::{VM, Value, NativeFn, NativeResult};
+use crate::vm::{VM, Value, NativeFn, NativeResult, NativeContext};
 use crate::scheduler::{Scheduler, ThreadId};
 use crate::linker::RuntimeLinker;
 use crate::executor::Bytecode;
@@ -33,45 +33,6 @@ where
 /// Get a copy of the bytecode for spawning new threads
 fn get_bytecode() -> Option<Bytecode> {
     BYTECODE_STORE.with(|cell| cell.borrow().as_ref().cloned())
-}
-
-/// Native function for spawning a new green thread
-/// Usage: __spawn("function_name", arg1, arg2, ...)
-fn native_spawn(args: &mut Vec<Value>) -> NativeResult {
-    if args.is_empty() {
-        return NativeResult::Ready(Value::Null);
-    }
-
-    // First argument should be the function name (string)
-    let func_name = match &args[0] {
-        Value::String(s) => s.clone(),
-        _ => return NativeResult::Ready(Value::Null),
-    };
-
-    // Remaining arguments are passed to the function
-    let func_args: Vec<Value> = args[1..].to_vec();
-
-    // Get the bytecode and create a new VM
-    if let Some(bytecode) = get_bytecode() {
-        let mut vm = VM::new();
-        if vm.load(
-            &bytecode.data,
-            bytecode.strings,
-            bytecode.classes,
-            bytecode.functions,
-            bytecode.vtables,
-        ).is_ok() {
-            // Call the function in the new VM
-            if vm.call_function(&func_name, func_args).is_ok() {
-                // Spawn the new thread
-                with_scheduler(|scheduler| {
-                    scheduler.spawn(vm);
-                });
-            }
-        }
-    }
-
-    NativeResult::Ready(Value::Null)
 }
 
 /// Green thread executor with scheduler support
@@ -140,9 +101,6 @@ impl GreenThreadExecutor {
             bytecode.functions.clone(),
             bytecode.vtables.clone(),
         )?;
-
-        // Register the __spawn native function
-        vm.register_native("__spawn", native_spawn);
 
         // Call the main function
         vm.call_function(main_function, vec![])?;

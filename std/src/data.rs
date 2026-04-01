@@ -1,7 +1,7 @@
-use sparkler::{Value, NativeResult};
+use sparkler::{Value, NativeResult, NativeContext};
 use std::sync::{Arc, Mutex};
 
-pub fn native_byte_buffer_native_create(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_byte_buffer_native_create(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -14,15 +14,15 @@ pub fn native_byte_buffer_native_create(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_byte_buffer_constructor(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_byte_buffer_constructor(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.len() > 1 {
         // constructor(size)
-        return native_byte_buffer_reserve(args);
+        return native_byte_buffer_reserve(_ctx, args);
     }
     NativeResult::Ready(Value::Null)
 }
 
-pub fn native_byte_buffer_reserve(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_byte_buffer_reserve(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -43,7 +43,7 @@ pub fn native_byte_buffer_reserve(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("ByteBuffer native data not initialized".to_string()))
 }
 
-pub fn native_byte_buffer_get(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_byte_buffer_get(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -67,7 +67,7 @@ pub fn native_byte_buffer_get(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("ByteBuffer native data not initialized".to_string()))
 }
 
-pub fn native_byte_buffer_set(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_byte_buffer_set(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {
@@ -93,7 +93,7 @@ pub fn native_byte_buffer_set(args: &mut Vec<Value>) -> NativeResult {
     NativeResult::Ready(Value::String("ByteBuffer native data not initialized".to_string()))
 }
 
-pub fn native_byte_buffer_length(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_byte_buffer_length(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     let instance = if let Value::Instance(inst) = &args[0] {
         inst.clone()
     } else {

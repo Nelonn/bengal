@@ -1,6 +1,6 @@
-use sparkler::{Value, NativeResult};
+use sparkler::{Value, NativeResult, NativeContext};
 
-pub fn native_json_stringify(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_json_stringify(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "stringify requires at least one argument".to_string(),
@@ -13,7 +13,7 @@ pub fn native_json_stringify(args: &mut Vec<Value>) -> NativeResult {
     }
 }
 
-pub fn native_json_parse(args: &mut Vec<Value>) -> NativeResult {
+pub fn native_json_parse(_ctx: &NativeContext, args: &mut Vec<Value>) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Ready(Value::String(
             "parse requires at least one argument".to_string(),
