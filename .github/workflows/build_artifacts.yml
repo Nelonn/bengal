@@ -163,6 +163,64 @@ jobs:
           file: bengal.pkg.tar.zst
           tag: ${{ github.ref }}
 
+  build-alpine:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-alpine-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Set up Alpine Linux (Docker)
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace \
+            alpine:latest sh -c "
+            apk add --no-cache rust cargo openssl-dev musl-dev && \
+            cargo build --release && \
+            mkdir -p /tmp/pkg/usr/bin && \
+            mkdir -p /tmp/pkg/usr/share/licenses/bengal && \
+            cp target/release/bengal /tmp/pkg/usr/bin/ && \
+            cp LICENSE /tmp/pkg/usr/share/licenses/bengal/ && \
+            chmod 755 /tmp/pkg/usr/bin/bengal && \
+            chmod 644 /tmp/pkg/usr/share/licenses/bengal/LICENSE
+            "
+
+      - name: Create Alpine package
+        run: |
+          mkdir -p alpine-pkg/usr/bin
+          mkdir -p alpine-pkg/usr/share/licenses/bengal
+          cp target/release/bengal alpine-pkg/usr/bin/
+          cp LICENSE alpine-pkg/usr/share/licenses/bengal/
+          chmod 755 alpine-pkg/usr/bin/bengal
+          chmod 644 alpine-pkg/usr/share/licenses/bengal/LICENSE
+          cd alpine-pkg
+          tar -cvf ../bengal.tar usr
+          cd ..
+          gzip -9 bengal.tar
+
+      - name: Upload Alpine Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bengal-alpine-${{ matrix.arch }}
+          path: bengal.tar.gz
+          retention-days: 30
+
+      - name: Upload .tar.gz to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: bengal.tar.gz
+          tag: ${{ github.ref }}
+
   build-windows:
     runs-on: windows-latest
     strategy:
