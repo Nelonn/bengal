@@ -1,0 +1,65 @@
+import std.io
+
+// Test for named arguments and default parameter values
+
+fn add(a: int, b: int = 10, c: int = 20): int {
+    return a + b + c;
+}
+
+fn greet(name: str, greeting: str = "Hello", punctuation: str = "!"): str {
+    return greeting + ", " + name + punctuation;
+}
+
+fn create_point(x: int = 0, y: int = 0, z: int = 0): str {
+    return "Point(" + str(x) + ", " + str(y) + ", " + str(z) + ")";
+}
+
+// Test positional
+let r1 = add(1, 2, 3);
+println("add(1, 2, 3) = " + str(r1));
+
+// Test defaults
+let r2 = add(1);
+println("add(1) = " + str(r2));
+
+// Test named skip middle
+let r3 = add(1, c: 5);
+println("add(1, c: 5) = " + str(r3));
+
+// Test all named
+let r4 = add(c: 100, a: 1, b: 2);
+println("add(c: 100, a: 1, b: 2) = " + str(r4));
+
+// Test trailing comma positional
+let r5 = add(1, 2, 3,);
+println("add(1, 2, 3,) = " + str(r5));
+
+// Test trailing comma named
+let r6 = add(a: 5, b: 10,);
+println("add(a: 5, b: 10,) = " + str(r6));
+
+// Test greet
+let msg1 = greet("Alice");
+println("greet(Alice) = " + msg1);
+
+let msg2 = greet(name: "Bob", greeting: "Hi");
+println("greet(name: Bob, greeting: Hi) = " + msg2);
+
+let msg3 = greet(name: "Charlie", greeting: "Hey", punctuation: "!!!");
+println("greet(all named) = " + msg3);
+
+// Test trailing comma with mixed args
+let msg4 = greet("Dave", "Welcome", punctuation: "?",);
+println("greet(trailing comma) = " + msg4);
+
+// Test point
+let p1 = create_point();
+println("create_point() = " + p1);
+
+let p2 = create_point(x: 5, y: 10, z: 15);
+println("create_point(x: 5, y: 10, z: 15) = " + p2);
+
+let p3 = create_point(x: 100, y: 200,);
+println("create_point(x: 100, y: 200,) = " + p3);
+
+println("=== All named arguments tests completed ===");
