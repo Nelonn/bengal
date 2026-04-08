@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use crate::parser::{ClassDef, Method, Expr, Literal, Stmt, CastType, CallArg};
+use serde::{Serialize, Deserialize};
 
 fn is_numeric_type(ty: &Type) -> bool {
     ty.is_numeric()
@@ -10,7 +11,7 @@ fn is_integer_type(ty: &Type) -> bool {
              Type::Int32 | Type::UInt32 | Type::Int64 | Type::UInt64)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Type {
     Int,
     Float,

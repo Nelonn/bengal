@@ -9,9 +9,12 @@ use crate::hlir::HlirModule;
 use crate::ast_to_hlir_full::ast_to_hlir;
 use crate::hlir_to_sparkler::{compile_hlir_to_sparkler, compile_hlir_to_sparkler_with_natives, CompiledBytecode};
 use crate::types::{TypeChecker, TypeContext};
+use crate::import_graph::ImportGraph;
+use crate::cache::{CacheManager, CompiledModule};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// Unified compiler error
 #[derive(Debug, Clone)]
@@ -76,6 +79,21 @@ struct ModuleInfo {
     native_classes: Vec<String>,    // Track which classes are native
 }
 
+/// Thread-safe module info for parallel loading
+#[derive(Debug, Clone)]
+struct ParsedModule {
+    module_path: String,
+    path: PathBuf,
+    statements: Vec<Stmt>,
+    source: String,
+    functions: Vec<String>,
+    native_functions: Vec<String>,
+    generic_functions: Vec<String>,
+    classes: Vec<String>,
+    native_classes: Vec<String>,
+    imports: Vec<Vec<String>>,  // List of imported module paths
+}
+
 /// Bengal Compiler using HLIR with full module support
 pub struct HlirCompiler {
     source: String,
@@ -85,6 +103,8 @@ pub struct HlirCompiler {
     search_paths: Vec<PathBuf>,
     import_map: HashMap<String, String>,
     native_functions: HashMap<String, bool>,  // Map function name -> is_native
+    cache: Option<CacheManager>,
+    cached_modules: HashMap<String, CompiledModule>,  // Modules loaded from cache
 }
 
 impl HlirCompiler {
@@ -97,9 +117,11 @@ impl HlirCompiler {
             search_paths: Vec::new(),
             import_map: HashMap::new(),
             native_functions: HashMap::new(),
+            cache: None,
+            cached_modules: HashMap::new(),
         }
     }
-    
+
     pub fn with_path(source: &str, path: &str) -> Self {
         let mut compiler = Self::new(source);
         compiler.source_path = Some(path.to_string());
@@ -108,7 +130,7 @@ impl HlirCompiler {
         }
         compiler
     }
-    
+
     pub fn with_options(source: &str, options: CompilerOptions) -> Self {
         let mut compiler = Self::new(source);
         compiler.options = options.clone();
@@ -117,7 +139,7 @@ impl HlirCompiler {
         }
         compiler
     }
-    
+
     pub fn with_path_and_options(source: &str, path: &str, options: CompilerOptions) -> Self {
         let mut compiler = Self::new(source);
         compiler.source_path = Some(path.to_string());
@@ -136,6 +158,23 @@ impl HlirCompiler {
         }
         compiler.options = options;
         compiler
+    }
+
+    /// Enable caching with a custom cache directory
+    pub fn with_cache<P: AsRef<Path>>(mut self, cache_dir: P) -> Self {
+        self.cache = Some(CacheManager::new(cache_dir, true));
+        self
+    }
+
+    /// Enable caching with default directory (.bengal_cache)
+    pub fn enable_cache(&mut self) {
+        let cache_dir = PathBuf::from(".bengal_cache");
+        self.cache = Some(CacheManager::new(cache_dir, true));
+    }
+
+    /// Disable caching
+    pub fn disable_cache(&mut self) {
+        self.cache = None;
     }
     
     pub fn set_emit_llvm_ir(&mut self, emit: bool) {
@@ -193,7 +232,7 @@ impl HlirCompiler {
                 return path.join(".");
             }
         }
-        
+
         let mut components: Vec<String> = Vec::new();
         if let Some(parent) = file_path.parent() {
             for component in parent.components() {
@@ -209,7 +248,272 @@ impl HlirCompiler {
         }
         components.join(".")
     }
-    
+
+    /// Extract import paths from statements without loading the modules
+    fn extract_imports(stmts: &[Stmt]) -> Vec<Vec<String>> {
+        stmts.iter()
+            .filter_map(|stmt| {
+                if let Stmt::Import { path, .. } = stmt {
+                    Some(path.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Parse a module file without processing its imports (for parallel loading)
+    fn parse_module_file(&self, module_path: &[String]) -> Result<ParsedModule, Vec<ParseError>> {
+        let module_name = module_path.join(".");
+
+        let module_file = match self.find_module_file(module_path) {
+            Ok(f) => f,
+            Err(e) => return Err(vec![ParseError::new(e, "system".to_string(), 0, 0)]),
+        };
+
+        let source = match fs::read_to_string(&module_file) {
+            Ok(s) => s,
+            Err(e) => return Err(vec![ParseError::new(
+                format!("Failed to read module '{}': {}", module_file.display(), e),
+                "system".to_string(), 0, 0
+            )]),
+        };
+
+        let mut lexer = Lexer::new(&source, module_file.to_str().unwrap_or("unknown"));
+        let (tokens, token_positions) = match lexer.tokenize() {
+            Ok(t) => t,
+            Err(e) => return Err(vec![ParseError::new(
+                format!("Lexical error in '{}': {}", module_file.display(), e),
+                module_file.display().to_string(), 0, 0
+            )]),
+        };
+
+        let mut parser = Parser::new(tokens, &source, module_file.to_str().unwrap_or("unknown"), token_positions);
+        let mut statements = parser.parse()
+            .unwrap_or_default();
+
+        // Check for parse errors in the module
+        let parse_errors = parser.get_errors();
+        if !parse_errors.is_empty() {
+            return Err(parse_errors);
+        }
+
+        let actual_module_path = Self::extract_module_path(&statements, &module_file);
+
+        // Build internal import map for this module
+        let mut internal_import_map = HashMap::new();
+        for stmt in &statements {
+            match stmt {
+                Stmt::Function(func) => {
+                    let qualified_name = format!("{}.{}", actual_module_path, func.name);
+                    internal_import_map.insert(func.name.clone(), qualified_name);
+                }
+                Stmt::Class(class) => {
+                    let qualified_name = format!("{}.{}", actual_module_path, class.name);
+                    internal_import_map.insert(class.name.clone(), qualified_name);
+                }
+                _ => {}
+            }
+        }
+
+        // Rewrite calls within the module to use qualified names
+        Self::rewrite_calls(&mut statements, &internal_import_map);
+
+        // Extract imports for dependency graph
+        let imports = Self::extract_imports(&statements);
+
+        let mut functions = Vec::new();
+        let mut native_functions = Vec::new();
+        let mut generic_functions = Vec::new();
+        let mut classes = Vec::new();
+        let mut native_classes = Vec::new();
+
+        for stmt in &statements {
+            match stmt {
+                Stmt::Function(func) => {
+                    let qualified_name = format!("{}.{}", actual_module_path, func.name);
+                    functions.push(qualified_name.clone());
+                    if func.is_native {
+                        native_functions.push(qualified_name.clone());
+                    }
+                    if !func.type_params.is_empty() {
+                        generic_functions.push(qualified_name);
+                    }
+                }
+                Stmt::Class(class) => {
+                    let qualified_name = format!("{}.{}", actual_module_path, class.name);
+                    classes.push(qualified_name.clone());
+                    if class.is_native {
+                        native_classes.push(qualified_name);
+                        native_classes.push(class.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ParsedModule {
+            module_path: actual_module_path,
+            path: module_file,
+            statements,
+            source,
+            functions,
+            native_functions,
+            generic_functions,
+            classes,
+            native_classes,
+            imports,
+        })
+    }
+
+    /// Build the import graph from the main module
+    fn build_import_graph(&mut self, main_stmts: &[Stmt]) -> Result<ImportGraph, Vec<CompilerError>> {
+        let mut graph = ImportGraph::new();
+        
+        // Add main module
+        let main_module = self.source_path
+            .as_ref()
+            .and_then(|p| Path::new(p).file_stem().and_then(|s| s.to_str()))
+            .unwrap_or("main")
+            .to_string();
+        graph.add_module(&main_module);
+
+        // Discover all modules by iteratively parsing
+        // We'll track which modules import which
+        let mut module_imports_map: std::collections::HashMap<String, Vec<Vec<String>>> = 
+            std::collections::HashMap::new();
+        
+        // Collect imports from main module
+        let main_imports = Self::extract_imports(main_stmts);
+        module_imports_map.insert(main_module.clone(), main_imports);
+        
+        // Iteratively discover all modules
+        let mut to_discover: Vec<Vec<String>> = module_imports_map.get(&main_module).unwrap().clone();
+        let mut discovered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut errors = Vec::new();
+        
+        while !to_discover.is_empty() {
+            let import_path = to_discover.remove(0);
+            let module_key = import_path.join(".");
+            
+            if discovered.contains(&module_key) {
+                continue;
+            }
+            
+            // Parse this module
+            match self.parse_module_file(&import_path) {
+                Ok(parsed) => {
+                    let actual_path = parsed.module_path.clone();
+                    let imports = parsed.imports.clone();
+                    
+                    // Store its imports
+                    module_imports_map.insert(actual_path.clone(), imports.clone());
+                    
+                    // Add new imports to queue
+                    for imp in &imports {
+                        if !discovered.contains(&imp.join(".")) {
+                            to_discover.push(imp.clone());
+                        }
+                    }
+                    
+                    discovered.insert(actual_path);
+                }
+                Err(parse_errors) => {
+                    for pe in parse_errors {
+                        errors.push(CompilerError::Parse(pe));
+                    }
+                }
+            }
+        }
+        
+        // Now build the graph with proper edges
+        // For each module, add edges to its dependencies
+        use rayon::prelude::*;
+        let graph_data: Vec<_> = module_imports_map.par_iter().collect();
+        
+        for (module, imports) in module_imports_map.iter() {
+            for import_path in imports {
+                // We need to find the actual module path for this import
+                // Since we don't have it yet, we'll add it as-is and it will be resolved later
+                // For now, just mark the dependency
+                let import_key = import_path.join(".");
+                // The actual resolved name will be found when we load modules
+                graph.add_dependency(module, &import_key);
+            }
+        }
+        
+        if !errors.is_empty() {
+            Err(errors)
+        } else {
+            Ok(graph)
+        }
+    }
+
+    /// Load and parse modules in parallel based on import graph levels
+    fn load_modules_parallel(&mut self, import_graph: &ImportGraph) -> Result<(), Vec<CompilerError>> {
+        use rayon::prelude::*;
+        
+        let levels = import_graph.get_parallel_groups()
+            .ok_or_else(|| vec![CompilerError::Import(
+                "Circular dependency detected in imports".to_string()
+            )])?;
+        
+        let modules_cache: Arc<Mutex<HashMap<String, ParsedModule>>> = 
+            Arc::new(Mutex::new(HashMap::new()));
+        let errors: Arc<Mutex<Vec<CompilerError>>> = Arc::new(Mutex::new(Vec::new()));
+        
+        // Process each level sequentially (modules within a level can be parallel)
+        for level in &levels {
+            // Parse all modules in this level in parallel
+            let results: Vec<_> = level.par_iter()
+                .map(|module_path| {
+                    let path_parts: Vec<String> = module_path.split('.')
+                        .map(|s| s.to_string())
+                        .collect();
+                    self.parse_module_file(&path_parts)
+                })
+                .collect();
+            
+            // Collect successful parses
+            for (module_path, result) in level.iter().zip(results.into_iter()) {
+                match result {
+                    Ok(parsed) => {
+                        modules_cache.lock().unwrap()
+                            .insert(module_path.clone(), parsed);
+                    }
+                    Err(parse_errors) => {
+                        for pe in parse_errors {
+                            errors.lock().unwrap().push(CompilerError::Parse(pe));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Convert parsed modules to ModuleInfo and add to loaded_modules
+        let cache = Arc::try_unwrap(modules_cache).unwrap().into_inner().unwrap();
+        for (module_name, parsed) in cache {
+            self.loaded_modules.insert(module_name, ModuleInfo {
+                module_path: parsed.module_path,
+                path: parsed.path,
+                statements: parsed.statements,
+                source: parsed.source,
+                functions: parsed.functions,
+                native_functions: parsed.native_functions,
+                generic_functions: parsed.generic_functions,
+                classes: parsed.classes,
+                native_classes: parsed.native_classes,
+            });
+        }
+        
+        let errs = Arc::try_unwrap(errors).unwrap().into_inner().unwrap();
+        if !errs.is_empty() {
+            Err(errs)
+        } else {
+            Ok(())
+        }
+    }
+
     fn load_module(&mut self, module_path: &[String]) -> Result<String, Vec<ParseError>> {
         let module_name = module_path.join(".");
 
@@ -644,6 +948,194 @@ impl HlirCompiler {
         }
     }
     
+    /// Type check modules in parallel using import graph levels
+    fn type_check_parallel(&mut self, main_stmts: &[Stmt]) -> Result<(), String> {
+        use rayon::prelude::*;
+        
+        // Build a shared TypeContext with all functions and classes registered
+        let mut ctx = TypeContext::new();
+
+        // Register all classes first to exclude them from function registration
+        for (module_name, module_info) in &self.loaded_modules {
+            for stmt in &module_info.statements {
+                if let Stmt::Class(class) = stmt {
+                    let qualified_name = format!("{}.{}", module_name, class.name);
+                    let mut class_copy = class.clone();
+                    class_copy.name = qualified_name.clone();
+                    ctx.add_class(&class_copy);
+                    
+                    if !class.private {
+                        ctx.add_class(class);
+                    }
+                }
+            }
+        }
+
+        // Register all functions from loaded modules
+        for (module_name, module_info) in &self.loaded_modules {
+            for stmt in &module_info.statements {
+                if let Stmt::Function(func) = stmt {
+                    if func.private {
+                        continue;
+                    }
+
+                    let qualified_name = format!("{}.{}", module_name, func.name);
+                    let params: Vec<crate::types::ParamSignature> = func.params.iter().map(|p| {
+                        crate::types::ParamSignature {
+                            name: p.name.clone(),
+                            type_name: p.type_name.as_ref().map(|t| crate::types::Type::from_str(t)),
+                            default: p.default.is_some(),
+                        }
+                    }).collect();
+
+                    let sig = crate::types::FunctionSignature {
+                        name: qualified_name.clone(),
+                        params,
+                        return_type: func.return_type.as_ref().map(|t| crate::types::Type::from_str(t)),
+                        return_optional: func.return_optional,
+                        is_method: false,
+                        is_native: func.is_native,
+                        private: func.private,
+                        type_params: func.type_params.clone(),
+                        mangled_name: None,
+                    };
+
+                    ctx.add_function(&qualified_name, sig);
+                }
+            }
+        }
+
+        // Add imports to the type context
+        for stmt in main_stmts {
+            if let Stmt::Import { path, kind, .. } = stmt {
+                let module_name = path.join(".");
+                let (alias, import_module_path) = match kind {
+                    ImportKind::Module => (path.last().cloned(), module_name.clone()),
+                    ImportKind::Simple => (path.last().cloned(), module_name.clone()),
+                    ImportKind::Aliased(ref alias_str) => (Some(alias_str.clone()), module_name.clone()),
+                    ImportKind::Member => {
+                        let import_path = if path.len() > 1 {
+                            path[..path.len()-1].join(".")
+                        } else {
+                            module_name.clone()
+                        };
+                        (path.last().cloned(), import_path)
+                    }
+                    ImportKind::Wildcard => {
+                        let import_path = if path.len() > 1 {
+                            path[..path.len()-1].join(".")
+                        } else {
+                            module_name.clone()
+                        };
+                        (None, import_path)
+                    }
+                };
+
+                let mut import_entry = crate::types::ImportEntry {
+                    module_path: import_module_path.clone(),
+                    alias,
+                    kind: kind.clone(),
+                    members: Vec::new(),
+                };
+
+                if matches!(kind, ImportKind::Wildcard | ImportKind::Simple) {
+                    if let Some(module_info) = self.loaded_modules.get(&import_module_path) {
+                        for stmt in &module_info.statements {
+                            match stmt {
+                                Stmt::Function(func) => import_entry.members.push(func.name.clone()),
+                                Stmt::Class(class) => import_entry.members.push(class.name.clone()),
+                                Stmt::Interface(iface) => import_entry.members.push(iface.name.clone()),
+                                Stmt::Let { name, .. } => import_entry.members.push(name.clone()),
+                                Stmt::Const { name, .. } => import_entry.members.push(name.clone()),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                ctx.imports.push(import_entry);
+                if !ctx.import_paths.contains(&module_name) {
+                    ctx.import_paths.push(module_name);
+                }
+            }
+        }
+
+        // Now type check modules in parallel by levels
+        // First, we need to build an import graph for proper ordering
+        let import_graph = match self.build_import_graph(main_stmts) {
+            Ok(graph) => graph,
+            Err(errors) => {
+                let formatted = errors.iter().map(|e| e.format()).collect::<Vec<_>>().join("\n");
+                return Err(formatted);
+            }
+        };
+
+        let levels = import_graph.get_parallel_groups()
+            .ok_or_else(|| "Circular dependency detected during type checking".to_string())?;
+
+        // Type check each level in parallel
+        let ctx_arc = Arc::new(Mutex::new(ctx));
+        let source = Arc::new(self.source.clone());
+        let errors_arc = Arc::new(Mutex::new(Vec::new()));
+
+        for level in &levels {
+            // Type check all modules in this level in parallel
+            let results: Vec<_> = level.par_iter()
+                .map(|module_path| {
+                    // For the main module, use main_stmts
+                    let main_module_name = self.source_path.as_ref().and_then(|p| {
+                        Path::new(p).file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+                    });
+                    let is_main = module_path == "main" || main_module_name.as_ref().map(|s| s.as_str()) == Some(module_path.as_str());
+                    
+                    let stmts = if is_main {
+                        main_stmts.to_vec()
+                    } else if let Some(module_info) = self.loaded_modules.get(module_path) {
+                        module_info.statements.clone()
+                    } else {
+                        return Ok(());
+                    };
+
+                    // Clone context for this module
+                    let mut ctx = ctx_arc.lock().unwrap().clone();
+                    
+                    // Type check
+                    let mut type_checker = TypeChecker::with_context(ctx);
+                    match type_checker.check(&stmts) {
+                        Ok(_) => Ok(()),
+                        Err(type_errors) => {
+                            let mut error_msgs = Vec::new();
+                            for error in type_errors {
+                                let location = if let Some(ref file) = error.source_file {
+                                    format!("{}:{}:{}", file, error.line, error.column)
+                                } else {
+                                    format!("{}:{}", error.line, error.column)
+                                };
+                                error_msgs.push(format!("{}: error: {}", location, error.message));
+                            }
+                            Err(error_msgs.join("\n"))
+                        }
+                    }
+                })
+                .collect();
+
+            // Collect errors
+            for result in results {
+                if let Err(e) = result {
+                    errors_arc.lock().unwrap().push(e);
+                }
+            }
+
+            // If there are errors, we can return early
+            if !errors_arc.lock().unwrap().is_empty() {
+                let errors = Arc::try_unwrap(errors_arc).unwrap().into_inner().unwrap();
+                return Err(errors.join("\n"));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn compile(&mut self) -> Result<CompilationResult, String> {
         let source_path = self.source_path.as_deref().unwrap_or("unknown");
         let mut lexer = Lexer::new(&self.source, source_path);
@@ -654,7 +1146,36 @@ impl HlirCompiler {
         let mut statements = parser.parse()
             .unwrap_or_default();  // Always continue, even with parse errors
 
-        // Process imports to find errors in imported modules too
+        // Build import graph to understand dependencies
+        let import_graph = match self.build_import_graph(&statements) {
+            Ok(graph) => graph,
+            Err(errors) => {
+                let error_count = errors.len();
+                let plural = if error_count == 1 { "" } else { "s" };
+                let formatted = errors.iter().map(|e| e.format()).collect::<Vec<_>>().join("\n");
+                return Err(format!("{} error{} found\n{}", error_count, plural, formatted));
+            }
+        };
+
+        // Check for cycles
+        if import_graph.has_cycles() {
+            let cycles = import_graph.detect_cycles();
+            let cycle_strs: Vec<String> = cycles.iter()
+                .map(|cycle| format!("Circular dependency: {}", cycle.join(" -> ")))
+                .collect();
+            return Err(cycle_strs.join("\n"));
+        }
+
+        // Load modules in parallel based on import graph
+        if let Err(errors) = self.load_modules_parallel(&import_graph) {
+            let error_count = errors.len();
+            let plural = if error_count == 1 { "" } else { "s" };
+            let formatted = errors.iter().map(|e| e.format()).collect::<Vec<_>>().join("\n");
+            return Err(format!("{} error{} found\n{}", error_count, plural, formatted));
+        }
+
+        // Now process imports to build import_map and native_functions
+        // This is fast since modules are already loaded
         let import_result = self.process_imports(&statements);
 
         // Rewrite function calls to use fully qualified names
@@ -668,7 +1189,7 @@ impl HlirCompiler {
             errors.push(CompilerError::Parse(parse_err));
         }
 
-        // Add import errors (each error from import is already a list)
+        // Add import errors
         if let Err(import_errors) = import_result {
             errors.extend(import_errors);
         }
@@ -682,185 +1203,9 @@ impl HlirCompiler {
 
         // Type check the code if type checking is enabled
         if self.options.enable_type_checking {
-            let mut ctx = TypeContext::new();
-
-            // Collect all class names to exclude them from function registration
-            let mut class_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for (module_name, module_info) in &self.loaded_modules {
-                for stmt in &module_info.statements {
-                    if let Stmt::Class(class) = stmt {
-                        let qualified_name = format!("{}.{}", module_name, class.name);
-                        class_names.insert(qualified_name);
-                        if !class.private {
-                            class_names.insert(class.name.clone());
-                        }
-                    }
-                }
-            }
-
-            // Register imported functions in the type context with their actual signatures
-            // This allows the type checker to properly check function calls
-            for (module_name, module_info) in &self.loaded_modules {
-                for stmt in &module_info.statements {
-                    if let Stmt::Function(func) = stmt {
-                        // Skip private functions from other modules
-                        if func.private {
-                            continue;
-                        }
-
-                        let qualified_name = format!("{}.{}", module_name, func.name);
-
-                        // Build parameter signatures
-                        let params: Vec<crate::types::ParamSignature> = func.params.iter().map(|p| {
-                            crate::types::ParamSignature {
-                                name: p.name.clone(),
-                                type_name: p.type_name.as_ref().map(|t| crate::types::Type::from_str(t)),
-                                default: p.default.is_some(),
-                            }
-                        }).collect();
-
-                        let sig = crate::types::FunctionSignature {
-                            name: qualified_name.clone(),
-                            params,
-                            return_type: func.return_type.as_ref().map(|t| crate::types::Type::from_str(t)),
-                            return_optional: func.return_optional,
-                            is_method: false,
-                            is_native: func.is_native,
-                            private: func.private,
-                            type_params: func.type_params.clone(),
-                            mangled_name: None,
-                        };
-
-                        ctx.add_function(&qualified_name, sig);
-                    }
-                }
-            }
-
-            // Register imported classes in the type context
-            // We need to register classes from all loaded modules
-            for (module_name, module_info) in &self.loaded_modules {
-                for stmt in &module_info.statements {
-                    if let Stmt::Class(class) = stmt {
-                        // Register the class with its qualified name
-                        let mut class_copy = class.clone();
-                        class_copy.name = format!("{}.{}", module_name, class.name);
-                        ctx.add_class(&class_copy);
-
-                        // Also register with simple name for non-private classes
-                        if !class.private {
-                            ctx.add_class(class);
-                        }
-                    }
-                }
-            }
-
-            // Add imports to the type context so resolve_function_call can find imported functions
-            for stmt in &statements {
-                if let Stmt::Import { path, kind, .. } = stmt {
-                    let module_name = path.join(".");
-                    
-                    // Create import entry based on the import kind
-                    let (alias, import_module_path) = match kind {
-                        ImportKind::Module => {
-                            let alias = path.last().cloned();
-                            (alias, module_name.clone())
-                        }
-                        ImportKind::Simple => {
-                            let alias = path.last().cloned();
-                            (alias, module_name.clone())
-                        }
-                        ImportKind::Aliased(ref alias_str) => {
-                            (Some(alias_str.clone()), module_name.clone())
-                        }
-                        ImportKind::Member => {
-                            let import_path = if path.len() > 1 {
-                                path[..path.len()-1].join(".")
-                            } else {
-                                module_name.clone()
-                            };
-                            let alias = path.last().cloned();
-                            (alias, import_path)
-                        }
-                        ImportKind::Wildcard => {
-                            let import_path = if path.len() > 1 {
-                                path[..path.len()-1].join(".")
-                            } else {
-                                module_name.clone()
-                            };
-                            (None, import_path)
-                        }
-                    };
-
-                    // Create import entry
-                    let mut import_entry = crate::types::ImportEntry {
-                        module_path: import_module_path.clone(),
-                        alias,
-                        kind: kind.clone(),
-                        members: Vec::new(),
-                    };
-
-                    // For wildcard and simple imports, discover members from the loaded module
-                    if matches!(kind, ImportKind::Wildcard | ImportKind::Simple) {
-                        if let Some(module_info) = self.loaded_modules.get(&import_module_path) {
-                            for stmt in &module_info.statements {
-                                match stmt {
-                                    Stmt::Function(func) => {
-                                        import_entry.members.push(func.name.clone());
-                                    }
-                                    Stmt::Class(class) => {
-                                        import_entry.members.push(class.name.clone());
-                                    }
-                                    Stmt::Interface(iface) => {
-                                        import_entry.members.push(iface.name.clone());
-                                    }
-                                    Stmt::Let { name, .. } => {
-                                        import_entry.members.push(name.clone());
-                                    }
-                                    Stmt::Const { name, .. } => {
-                                        import_entry.members.push(name.clone());
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-
-                    ctx.imports.push(import_entry);
-                    if !ctx.import_paths.contains(&module_name) {
-                        ctx.import_paths.push(module_name);
-                    }
-                }
-            }
-
-            let mut type_checker = TypeChecker::with_context(ctx);
-
-            let result = type_checker.check(&statements);
-            if let Err(errors) = result {
-                let mut error_msg = String::new();
-                let source_lines: Vec<&str> = self.source.lines().collect();
-
-                for mut error in errors {
-                    // Extract source line if we have line number
-                    if error.source_line.is_none() && error.line > 0 && error.line <= source_lines.len() {
-                        error.source_line = Some(source_lines[error.line - 1].to_string());
-                    }
-
-                    let location = if let Some(ref file) = error.source_file {
-                        format!("{}:{}:{}", file, error.line, error.column)
-                    } else {
-                        format!("{}:{}", error.line, error.column)
-                    };
-
-                    error_msg.push_str(&format!("{}: error: {}\n", location, error.message));
-                    if let Some(ref line) = error.source_line {
-                        error_msg.push_str(&format!("  {}\n", line));
-                        let caret_pos = error.column.saturating_sub(1);
-                        let caret_line: String = " ".repeat(caret_pos) + "^";
-                        error_msg.push_str(&format!("  {}\n", caret_line));
-                    }
-                }
-
-                return Err(error_msg);
+            // Use parallel type checking
+            if let Err(type_errors) = self.type_check_parallel(&statements) {
+                return Err(type_errors);
             }
         }
 
@@ -1094,11 +1439,11 @@ mod tests {
         let source = r#"fn add(a: int, b: int): int {
     return a + b;
 }"#;
-        
+
         let options = CompilerOptions::default();
-        let mut compiler = HlirCompiler::with_options(source, options);
+        let mut compiler = HlirCompiler::with_path_and_options(source, "test.bl", options);
         let result = compiler.compile().unwrap();
-        
+
         assert!(result.sparkler_bytecode.is_some());
         #[cfg(feature = "llvm")]
         assert!(result.llvm_ir.is_none());
@@ -1129,11 +1474,11 @@ mod tests {
     let y = x * 2;
     return y + 3;
 }"#;
-        
+
         let options = CompilerOptions::default();
-        let mut compiler = HlirCompiler::with_options(source, options);
+        let mut compiler = HlirCompiler::with_path_and_options(source, "test.bl", options);
         let result = compiler.compile().unwrap();
-        
+
         assert!(result.sparkler_bytecode.is_some());
         let bytecode = result.sparkler_bytecode.unwrap();
         assert!(!bytecode.data.is_empty());
@@ -1150,12 +1495,12 @@ mod tests {
 }"#;
 
         let options = CompilerOptions::default();
-        let mut compiler = HlirCompiler::with_options(source, options);
+        let mut compiler = HlirCompiler::with_path_and_options(source, "test.bl", options);
         let result = compiler.compile().unwrap();
 
         assert!(result.sparkler_bytecode.is_some());
     }
-    
+
     #[test]
     fn test_conditional_compilation() {
         let source = r#"fn max(a: int, b: int): int {
@@ -1165,11 +1510,11 @@ mod tests {
         return b;
     }
 }"#;
-        
+
         let options = CompilerOptions::default();
-        let mut compiler = HlirCompiler::with_options(source, options);
+        let mut compiler = HlirCompiler::with_path_and_options(source, "test.bl", options);
         let result = compiler.compile().unwrap();
-        
+
         assert!(result.sparkler_bytecode.is_some());
     }
 }

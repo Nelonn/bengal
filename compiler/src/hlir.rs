@@ -1,12 +1,13 @@
 //! High-Level Intermediate Representation (HLIR)
-//! 
+//!
 //! This is a simplified, uniform IR that sits between the AST and backend code generators.
 //! It can be lowered to both LLVM IR and Sparkler bytecode.
 
 use std::fmt::Write;
+use serde::{Serialize, Deserialize};
 
 /// HLIR Type system
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HlirType {
     Void,
     Bool,
@@ -42,7 +43,7 @@ impl HlirType {
 }
 
 /// HLIR Value - represents values in the IR
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HlirValue {
     /// Constant integer
     IntConst(i64),
@@ -65,7 +66,7 @@ pub enum HlirValue {
 }
 
 /// HLIR Binary Operations
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum HlirBinOp {
     Add, Sub, Mul, SDiv, UDiv, SRem, URem,
     FAdd, FSub, FMul, FDiv,
@@ -78,15 +79,30 @@ pub enum HlirBinOp {
 }
 
 /// HLIR Unary Operations
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum HlirUnaryOp {
     Neg,
     Not,
     LNot,  // Logical not
 }
 
+/// HLIR Cast Kind
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum HlirCastKind {
+    Trunc,    // Truncate to smaller type
+    ZExt,     // Zero extend to larger type
+    SExt,     // Sign extend to larger type
+    FpToSi,   // Float to signed int
+    FpToUi,   // Float to unsigned int
+    SiToFp,   // Signed int to float
+    UiToFp,   // Unsigned int to float
+    BitCast,  // Bitwise cast
+    PtrToInt, // Pointer to int
+    IntToPtr, // Int to pointer
+}
+
 /// HLIR Instructions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HlirInstr {
     /// Binary operation: dest = op(lhs, rhs)
     BinOp {
@@ -96,7 +112,7 @@ pub enum HlirInstr {
         dest: usize,
         ty: HlirType,
     },
-    
+
     /// Unary operation: dest = op(value)
     UnaryOp {
         op: HlirUnaryOp,
@@ -104,28 +120,28 @@ pub enum HlirInstr {
         dest: usize,
         ty: HlirType,
     },
-    
+
     /// Load from memory: dest = *ptr
     Load {
         ptr: HlirValue,
         dest: usize,
         ty: HlirType,
     },
-    
+
     /// Store to memory: *ptr = value
     Store {
         value: HlirValue,
         ptr: HlirValue,
         ty: HlirType,
     },
-    
+
     /// Stack allocation: dest = alloca ty
     Alloca {
         ty: HlirType,
         dest: usize,
         name: String,
     },
-    
+
     /// Function call: dest = call func(args) (dest is None if return value is unused)
     Call {
         func: HlirValue,
@@ -151,32 +167,32 @@ pub enum HlirInstr {
         values: Vec<HlirValue>,
         dest: usize,
     },
-    
+
     /// Return from function
     Return {
         value: Option<HlirValue>,
         ty: HlirType,
     },
-    
+
     /// Unconditional branch
     Br {
         target: String,
     },
-    
+
     /// Conditional branch
     CondBr {
         cond: HlirValue,
         then_block: String,
         else_block: String,
     },
-    
+
     /// Phi node for SSA
     Phi {
         ty: HlirType,
         sources: Vec<(HlirValue, String)>,  // (value, block_name)
         dest: usize,
     },
-    
+
     /// Cast/convert type
     Cast {
         value: HlirValue,
@@ -185,7 +201,7 @@ pub enum HlirInstr {
         dest: usize,
         kind: HlirCastKind,
     },
-    
+
     /// Get element pointer
     GetElementPtr {
         base: HlirValue,
@@ -193,7 +209,7 @@ pub enum HlirInstr {
         dest: usize,
         ty: HlirType,
     },
-    
+
     /// Compare values
     Cmp {
         op: HlirBinOp,
@@ -202,7 +218,7 @@ pub enum HlirInstr {
         dest: usize,
         ty: HlirType,
     },
-    
+
     /// Select (ternary): dest = cond ? then_val : else_val
     Select {
         cond: HlirValue,
@@ -255,23 +271,8 @@ pub enum HlirInstr {
     },
 }
 
-/// Cast kinds
-#[derive(Debug, Clone, Copy)]
-pub enum HlirCastKind {
-    Trunc,    // Truncate to smaller type
-    ZExt,     // Zero extend to larger type
-    SExt,     // Sign extend to larger type
-    FpToSi,   // Float to signed int
-    FpToUi,   // Float to unsigned int
-    SiToFp,   // Signed int to float
-    UiToFp,   // Unsigned int to float
-    BitCast,  // Bitwise cast
-    PtrToInt, // Pointer to int
-    IntToPtr, // Int to pointer
-}
-
 /// HLIR Basic Block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlirBasicBlock {
     pub name: String,
     pub instructions: Vec<HlirInstr>,
@@ -296,7 +297,7 @@ impl HlirBasicBlock {
 }
 
 /// HLIR Function
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlirFunction {
     pub name: String,
     pub params: Vec<(String, HlirType)>,  // (name, type)
@@ -333,7 +334,7 @@ impl HlirFunction {
 }
 
 /// HLIR Global variable
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlirGlobal {
     pub name: String,
     pub ty: HlirType,
@@ -342,7 +343,7 @@ pub struct HlirGlobal {
 }
 
 /// HLIR Module - top-level container
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlirModule {
     pub name: String,
     pub functions: Vec<HlirFunction>,
@@ -351,7 +352,7 @@ pub struct HlirModule {
 }
 
 /// HLIR Class information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HlirClass {
     pub name: String,
     pub fields: Vec<String>,
